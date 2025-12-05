@@ -7,6 +7,10 @@
   "bin": {
     "mcp-emacs": "dist/index.js"
   },
+  "files": [
+    "dist",
+    "elisp"
+  ],
   "scripts": {
     "build": "tsc",
     "watch": "tsc --watch",

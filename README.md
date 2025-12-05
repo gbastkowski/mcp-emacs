@@ -5,9 +5,16 @@ Provides tools to interact with Emacs from Claude Desktop/Code.
 
 ## Features
 
+### Tools
+
 - **get_buffer_content**: Get the content of the current Emacs buffer
 - **get_selection**: Get the current selection (region) in Emacs
 - **open_file**: Open a file in the current Emacs window
+- **describe_flycheck_info_at_point**: Get flycheck diagnostics at cursor
+
+### Resources
+
+- **org-tasks://all**: All TODO items from org-mode agenda files with status, priority, scheduled/deadline dates
 
 ## Prerequisites
 

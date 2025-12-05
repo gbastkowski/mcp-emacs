@@ -2,8 +2,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { execSync } from "child_process"
 import { z } from "zod"
+import { EmacsClient } from "./emacs-client.js"
 
 const server = new McpServer(
   {
@@ -13,21 +13,12 @@ const server = new McpServer(
   {
     capabilities: {
       tools: {},
+      resources: {},
     },
   }
 )
 
-function evalInEmacs(elisp: string): string {
-  try {
-    const result = execSync(`emacsclient --eval '${elisp}'`, {
-      encoding: "utf-8",
-      timeout: 5000,
-    })
-    return result.trim()
-  } catch (error) {
-    throw new Error(`Failed to communicate with Emacs: ${error}`)
-  }
-}
+const emacs = new EmacsClient()
 
 server.registerTool(
   "get_buffer_content",
@@ -35,14 +26,12 @@ server.registerTool(
     description: "Get the content of the current Emacs buffer",
   },
   async () => {
-    const content = evalInEmacs(
-      "(with-current-buffer (window-buffer (frame-selected-window (selected-frame))) (buffer-substring-no-properties (point-min) (point-max)))"
-    )
+    const content = emacs.getBufferContent()
     return {
       content: [
         {
           type: "text",
-          text: content.slice(1, -1), // Remove surrounding quotes
+          text: content,
         },
       ],
     }
@@ -55,10 +44,8 @@ server.registerTool(
     description: "Get the current selection (region) in Emacs",
   },
   async () => {
-    const selection = evalInEmacs(
-      "(with-current-buffer (window-buffer (frame-selected-window (selected-frame))) (if (use-region-p) (buffer-substring-no-properties (region-beginning) (region-end)) nil))"
-    )
-    if (selection === "nil") {
+    const selection = emacs.getSelection()
+    if (selection === null) {
       return {
         content: [
           {
@@ -72,7 +59,7 @@ server.registerTool(
       content: [
         {
           type: "text",
-          text: selection.slice(1, -1), // Remove surrounding quotes
+          text: selection,
         },
       ],
     }
@@ -88,7 +75,7 @@ server.registerTool(
     },
   },
   async (args) => {
-    evalInEmacs(`(find-file "${args.path}")`)
+    emacs.openFile(args.path)
     return {
       content: [
         {
@@ -107,27 +94,33 @@ server.registerTool(
       "Get flycheck error/warning/info messages at the current cursor position",
   },
   async () => {
-    const result = evalInEmacs(
-      `(with-current-buffer (window-buffer (frame-selected-window (selected-frame)))
-         (if (bound-and-true-p flycheck-mode)
-             (let ((errors (flycheck-overlay-errors-at (point))))
-               (if errors
-                   (mapconcat
-                    (lambda (err)
-                      (format "%s: %s [%s]"
-                              (flycheck-error-level err)
-                              (flycheck-error-message err)
-                              (flycheck-error-checker err)))
-                    errors
-                    "\\n")
-                 "No flycheck messages at point"))
-           "Flycheck mode not active"))`
-    )
+    const result = emacs.getFlycheckInfo()
     return {
       content: [
         {
           type: "text",
-          text: result.slice(1, -1), // Remove surrounding quotes
+          text: result,
+        },
+      ],
+    }
+  }
+)
+
+server.registerResource(
+  "org-tasks",
+  "org-tasks://all",
+  {
+    description: "All TODO items from org-mode agenda files",
+    mimeType: "text/plain",
+  },
+  async () => {
+    const tasks = emacs.getOrgTasks()
+    return {
+      contents: [
+        {
+          uri: "org-tasks://all",
+          mimeType: "text/plain",
+          text: tasks,
         },
       ],
     }
