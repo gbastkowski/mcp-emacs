@@ -60,6 +60,12 @@ export class EmacsClient {
     this.evalElispFile("open-file.el", { "%PATH%": path })
   }
 
+  getBufferFilename(): string | null {
+    const filename = this.evalElispFile("get-buffer-filename.el")
+    if (filename === "nil") return null
+    return this.stripQuotes(filename)
+  }
+
   getFlycheckInfo(): string {
     const result = this.evalElispFile("get-flycheck-info.el")
     return this.stripQuotes(result)

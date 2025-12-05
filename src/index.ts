@@ -39,6 +39,34 @@ server.registerTool(
 )
 
 server.registerTool(
+  "get_buffer_filename",
+  {
+    description: "Get the filename associated with the current Emacs buffer",
+  },
+  async () => {
+    const filename = emacs.getBufferFilename()
+    if (filename === null) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "Current buffer is not visiting a file",
+          },
+        ],
+      }
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: filename,
+        },
+      ],
+    }
+  }
+)
+
+server.registerTool(
   "get_selection",
   {
     description: "Get the current selection (region) in Emacs",
