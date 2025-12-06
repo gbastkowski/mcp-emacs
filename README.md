@@ -12,6 +12,7 @@ Provides tools to interact with Emacs from Claude Desktop/Code.
 - **get_selection**: Get the current selection (region) in Emacs
 - **open_file**: Open a file in the current Emacs window
 - **describe_flycheck_info_at_point**: Get flycheck diagnostics at cursor
+- **get_error_context**: Summarize contents of error-related buffers (*Messages*, *Warnings*, compilation logs)
 
 ### Resources
 

@@ -134,6 +134,24 @@ server.registerTool(
   }
 )
 
+server.registerTool(
+  "get_error_context",
+  {
+    description: "Summarize recent error-related buffers such as *Messages*, *Warnings*, or compilation logs",
+  },
+  async () => {
+    const info = emacs.getErrorContext()
+    return {
+      content: [
+        {
+          type: "text",
+          text: info,
+        },
+      ],
+    }
+  }
+)
+
 server.registerResource(
   "org-tasks",
   "org-tasks://all",

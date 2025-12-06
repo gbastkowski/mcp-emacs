@@ -71,6 +71,11 @@ export class EmacsClient {
     return this.stripQuotes(result)
   }
 
+  getErrorContext(): string {
+    const result = this.evalElispFile("get-error-context.el")
+    return this.stripQuotes(result)
+  }
+
   getOrgTasks(): string {
     const result = this.evalElispFile("get-org-tasks.el")
     return this.stripQuotes(result)
