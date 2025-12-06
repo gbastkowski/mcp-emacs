@@ -1,4 +1,4 @@
-import { execSync } from "child_process"
+import { execFileSync } from "child_process"
 import { readFileSync } from "fs"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
@@ -21,10 +21,14 @@ export class EmacsClient {
 
   private evalInEmacs(elisp: string): string {
     try {
-      const result = execSync(`emacsclient --eval '${elisp}'`, {
-        encoding: "utf-8",
-        timeout: this.timeout,
-      })
+      const result = execFileSync(
+        "emacsclient",
+        ["--eval", elisp],
+        {
+          encoding: "utf-8",
+          timeout: this.timeout,
+        }
+      )
       return result.trim()
     } catch (error) {
       throw new Error(`Failed to communicate with Emacs: ${error}`)
@@ -78,6 +82,11 @@ export class EmacsClient {
 
   getOrgTasks(): string {
     const result = this.evalElispFile("get-org-tasks.el")
+    return this.stripQuotes(result)
+  }
+
+  getEnvVars(): string {
+    const result = this.evalElispFile("get-env-vars.el")
     return this.stripQuotes(result)
   }
 }

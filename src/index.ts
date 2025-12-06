@@ -152,6 +152,24 @@ server.registerTool(
   }
 )
 
+server.registerTool(
+  "get_env_vars",
+  {
+    description: "List the environment variables currently visible to Emacs",
+  },
+  async () => {
+    const vars = emacs.getEnvVars()
+    return {
+      content: [
+        {
+          type: "text",
+          text: vars,
+        },
+      ],
+    }
+  }
+)
+
 server.registerResource(
   "org-tasks",
   "org-tasks://all",
