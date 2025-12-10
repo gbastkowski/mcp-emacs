@@ -1,0 +1,55 @@
+# MCP Emacs Project Guidelines
+
+## Project Overview
+
+MCP server that enables Claude Desktop/Code to interact with Emacs.
+Uses `emacsclient` for communication.
+
+## Tech Stack
+
+- TypeScript with @modelcontextprotocol/sdk
+- Node.js (ES modules)
+- emacsclient for Emacs communication
+- STDIO transport
+
+## Architecture Decisions
+
+### Emacs Communication
+- Use `emacsclient --eval` for all Emacs interactions
+- Timeout set to 5 seconds for safety
+- Requires Emacs server mode to be running
+
+### Error Handling
+- Catch and wrap emacsclient errors with descriptive messages
+- Return "No active selection" for empty regions (not an error)
+
+## Code Style
+
+- Use ES modules (type: "module" in package.json)
+- Strict TypeScript configuration
+- Prefer explicit types over inference where it improves clarity
+
+## Tools Implementation
+
+Each tool should:
+1. Define clear input schema with required fields
+2. Use `evalInEmacs()` helper for Elisp evaluation
+3. Strip surrounding quotes from Elisp string results
+4. Return MCP-compliant response objects with content array
+
+## Testing
+
+Manual testing workflow:
+1. Start Emacs with server-start
+2. Build the MCP server: `npm run build`
+3. Test with Claude Desktop/Code
+4. Check emacsclient behavior directly when debugging
+
+## Future Enhancements
+
+Potential additions (not yet implemented):
+- More buffer operations (save, close, switch)
+- Region manipulation (insert, replace text)
+- Navigation commands (goto line, search)
+- Emacs Lisp evaluation with variable capture
+- File system operations via dired
