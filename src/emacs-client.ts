@@ -1,5 +1,4 @@
 import { execFileSync } from "child_process"
-import { readFileSync } from "fs"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
 
@@ -9,14 +8,14 @@ const __dirname = dirname(__filename)
 export class EmacsClient {
   private timeout: number
   private elispDir: string
+  private initFile: string
+  private initialized: boolean
 
   constructor(timeout: number = 5000) {
     this.timeout = timeout
     this.elispDir = join(__dirname, "..", "elisp")
-  }
-
-  private loadElisp(filename: string): string {
-    return readFileSync(join(this.elispDir, filename), "utf-8").trim()
+    this.initFile = join(this.elispDir, "mcp-init.el")
+    this.initialized = false
   }
 
   private evalInEmacs(elisp: string): string {
@@ -35,14 +34,47 @@ export class EmacsClient {
     }
   }
 
-  private evalElispFile(filename: string, substitutions?: Record<string, string>): string {
-    let elisp = this.loadElisp(filename)
-    if (substitutions) {
-      for (const [key, value] of Object.entries(substitutions)) {
-        elisp = elisp.replace(key, value)
-      }
+  private ensureInitialized(): void {
+    if (this.initialized) return
+    const escapedPath = this.escapeElispString(this.initFile)
+    const loadCommand = `(progn (unless (featurep 'mcp-emacs) (load-file "${escapedPath}")) 'mcp-emacs-ready)`
+    this.evalInEmacs(loadCommand)
+    this.initialized = true
+  }
+
+  private escapeElispString(value: string): string {
+    return value
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, "\\n")
+      .replace(/\r/g, "\\r")
+      .replace(/\t/g, "\\t")
+  }
+
+  private formatElispArg(value: string | number | boolean | null): string {
+    if (typeof value === "string") {
+      return `"${this.escapeElispString(value)}"`
     }
-    return this.evalInEmacs(elisp)
+    if (typeof value === "number") {
+      return value.toString()
+    }
+    if (typeof value === "boolean") {
+      return value ? "t" : "nil"
+    }
+    if (value === null) {
+      return "nil"
+    }
+    throw new Error("Unsupported elisp argument type")
+  }
+
+  private callElispFunction(
+    functionName: string,
+    args: Array<string | number | boolean | null> = []
+  ): string {
+    this.ensureInitialized()
+    const formattedArgs = args.map((arg) => this.formatElispArg(arg)).join(" ")
+    const form = `(${functionName}${formattedArgs ? " " + formattedArgs : ""})`
+    return this.evalInEmacs(form)
   }
 
   private stripQuotes(str: string): string {
@@ -50,43 +82,43 @@ export class EmacsClient {
   }
 
   getBufferContent(): string {
-    const content = this.evalElispFile("get-buffer-content.el")
+    const content = this.callElispFunction("mcp-emacs-get-buffer-content")
     return this.stripQuotes(content)
   }
 
   getSelection(): string | null {
-    const selection = this.evalElispFile("get-selection.el")
+    const selection = this.callElispFunction("mcp-emacs-get-selection")
     if (selection === "nil") return null
     return this.stripQuotes(selection)
   }
 
   openFile(path: string): void {
-    this.evalElispFile("open-file.el", { "%PATH%": path })
+    this.callElispFunction("mcp-emacs-open-file", [path])
   }
 
   getBufferFilename(): string | null {
-    const filename = this.evalElispFile("get-buffer-filename.el")
+    const filename = this.callElispFunction("mcp-emacs-get-buffer-filename")
     if (filename === "nil") return null
     return this.stripQuotes(filename)
   }
 
   getFlycheckInfo(): string {
-    const result = this.evalElispFile("get-flycheck-info.el")
+    const result = this.callElispFunction("mcp-emacs-get-flycheck-info")
     return this.stripQuotes(result)
   }
 
   getErrorContext(): string {
-    const result = this.evalElispFile("get-error-context.el")
+    const result = this.callElispFunction("mcp-emacs-get-error-context")
     return this.stripQuotes(result)
   }
 
   getOrgTasks(): string {
-    const result = this.evalElispFile("get-org-tasks.el")
+    const result = this.callElispFunction("mcp-emacs-get-org-tasks")
     return this.stripQuotes(result)
   }
 
   getEnvVars(): string {
-    const result = this.evalElispFile("get-env-vars.el")
+    const result = this.callElispFunction("mcp-emacs-get-env-vars")
     return this.stripQuotes(result)
   }
 }
