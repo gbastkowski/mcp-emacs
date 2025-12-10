@@ -1,0 +1,52 @@
+#!/usr/bin/env node
+import { appendFileSync } from "node:fs"
+
+const args = process.argv.slice(2)
+if (args[0] !== "--eval" || !args[1]) {
+  console.error("Unexpected arguments", args)
+  process.exit(1)
+}
+
+const form = args[1]
+const logPath = process.env.MCP_TEST_LOG
+if (logPath) {
+  appendFileSync(logPath, form + "\n", "utf8")
+}
+
+if (form.includes("(unless (featurep 'mcp-emacs)")) {
+  console.log("'mcp-emacs-ready'")
+  process.exit(0)
+}
+
+const fnMatch = form.match(/^\(([^\s)]+)/)
+const fn = fnMatch ? fnMatch[1] : null
+
+switch (fn) {
+  case "mcp-emacs-get-buffer-content":
+    console.log('"Hello from buffer"')
+    break
+  case "mcp-emacs-get-selection":
+    console.log("nil")
+    break
+  case "mcp-emacs-open-file":
+    console.log('"Opened"')
+    break
+  case "mcp-emacs-get-buffer-filename":
+    console.log('"/tmp/sample.txt"')
+    break
+  case "mcp-emacs-get-flycheck-info":
+    console.log('"Flycheck mode not active"')
+    break
+  case "mcp-emacs-get-error-context":
+    console.log('"No error-related buffers were found."')
+    break
+  case "mcp-emacs-get-org-tasks":
+    console.log('"No tasks found"')
+    break
+  case "mcp-emacs-get-env-vars":
+    console.log('"FOO=bar"')
+    break
+  default:
+    console.log('"ok"')
+    break
+}
