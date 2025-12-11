@@ -106,6 +106,74 @@
         (mapconcat #'identity sorted "\n")
       "Environment is empty")))
 
+(defun mcp-emacs--format-list (items)
+  (if items
+      (mapconcat (lambda (item) (format "  - %s" item)) items "\n")
+    "  [none]"))
+
+(defun mcp-emacs--check-commands (commands)
+  (mapcar
+   (lambda (cmd)
+     (format "%s: %s"
+             cmd
+             (if (executable-find cmd)
+                 "FOUND"
+               "MISSING")))
+   commands))
+
+(defun mcp-emacs--collect-lsp-workspaces ()
+  (when (require 'lsp-mode nil t)
+    (let ((seen (make-hash-table :test 'eq))
+          (entries '()))
+      (dolist (buf (buffer-list))
+        (with-current-buffer buf
+          (when (and (boundp 'lsp-mode) lsp-mode (fboundp 'lsp-workspaces))
+            (dolist (ws (lsp-workspaces))
+              (unless (gethash ws seen)
+                (puthash ws t seen)
+                (push (mcp-emacs--describe-workspace ws) entries))))))
+      (nreverse entries))))
+
+(defun mcp-emacs--describe-workspace (workspace)
+  (let* ((client (when (fboundp 'lsp--workspace-client)
+                   (lsp--workspace-client workspace)))
+         (server (when (and client (fboundp 'lsp--client-server-id))
+                   (lsp--client-server-id client)))
+         (root (when (fboundp 'lsp--workspace-root)
+                 (lsp--workspace-root workspace)))
+         (status (when (fboundp 'lsp--workspace-status)
+                   (lsp--workspace-status workspace))))
+    (format "%s (root: %s, status: %s)"
+            (or server "unknown")
+            (or root "?")
+            (or status "unknown"))))
+
+(defun mcp-emacs-diagnose ()
+  (let* ((basic (list
+                 (format "Emacs version: %s" emacs-version)
+                 (format "System type: %s" system-type)
+                 (format "System configuration: %s" system-configuration)
+                 (when (boundp 'doom-version)
+                   (format "Doom version: %s" doom-version))))
+         (exec (mapcar (lambda (path) (format "  - %s" path)) exec-path))
+         (commands '("semgrep" "deno" "typescript-language-server" "metals"))
+         (command-results (mcp-emacs--check-commands commands))
+         (workspaces (mcp-emacs--collect-lsp-workspaces))
+         (sections (list
+                    (concat "Basic Info:\n"
+                            (mcp-emacs--format-list (delq nil basic)))
+                    (concat "exec-path:\n"
+                            (if exec
+                                (mapconcat #'identity exec "\n")
+                              "  [empty]"))
+                    (concat "Command availability:\n"
+                            (mcp-emacs--format-list command-results))
+                    (concat "LSP workspaces:\n"
+                            (if workspaces
+                                (mcp-emacs--format-list workspaces)
+                              "  [none detected or lsp-mode not active]")))))
+    (mapconcat #'identity sections "\n\n")))
+
 (provide 'mcp-emacs)
 
 ;;; mcp-init.el ends here

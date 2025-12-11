@@ -46,6 +46,9 @@ switch (fn) {
   case "mcp-emacs-get-env-vars":
     console.log('"FOO=bar"')
     break
+  case "mcp-emacs-diagnose":
+    console.log('"Diagnostics stub"')
+    break
   default:
     console.log('"ok"')
     break

@@ -83,6 +83,14 @@ describe(
       assert.ok(last.includes("\\\\segment"), "expected backslash escaped")
       assert.ok(last.includes("\\nnext"), "expected newline escaped")
     })
+
+    it("returns diagnostics from Emacs", () => {
+      const client = new EmacsClient(1000)
+      const report = client.diagnoseEmacs()
+      assert.equal(report, "Diagnostics stub")
+      const entries = readLog()
+      assert.ok(entries.some((line) => line.startsWith("(mcp-emacs-diagnose")))
+    })
   }
 )
 

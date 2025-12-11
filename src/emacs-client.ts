@@ -121,4 +121,9 @@ export class EmacsClient {
     const result = this.callElispFunction("mcp-emacs-get-env-vars")
     return this.stripQuotes(result)
   }
+
+  diagnoseEmacs(): string {
+    const result = this.callElispFunction("mcp-emacs-diagnose")
+    return this.stripQuotes(result)
+  }
 }

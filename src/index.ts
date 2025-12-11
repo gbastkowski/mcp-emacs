@@ -170,6 +170,25 @@ server.registerTool(
   }
 )
 
+server.registerTool(
+  "diagnose_emacs",
+  {
+    description:
+      "Collect diagnostic information about the running Emacs, including exec-path and LSP clients",
+  },
+  async () => {
+    const report = emacs.diagnoseEmacs()
+    return {
+      content: [
+        {
+          type: "text",
+          text: report,
+        },
+      ],
+    }
+  }
+)
+
 server.registerResource(
   "org-tasks",
   "org-tasks://all",
