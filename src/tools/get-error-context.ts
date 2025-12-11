@@ -13,19 +13,8 @@ export class GetErrorContextTool extends EmacsTool {
     })
   }
 
-  protected handle(
-    _args: unknown,
-    _extra: unknown,
-    _context: unknown
-  ) {
+  protected handle(_args: unknown, _extra: unknown, _context: unknown) {
     const info = this.callTextFunction("mcp-emacs-get-error-context")
-    return {
-      content: [
-        {
-          type: "text",
-          text: info,
-        },
-      ],
-    }
+    return { content: [ { type: "text", text: info } ] }
   }
 }

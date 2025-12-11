@@ -23,7 +23,11 @@ const fn = fnMatch ? fnMatch[1] : null
 
 switch (fn) {
   case "mcp-emacs-get-buffer-content":
-    console.log('"Hello from buffer"')
+    {
+      const fakeBuffer = `Hello from "buffer"\\path
+Next line with tab	and bell`
+      console.log(JSON.stringify(fakeBuffer))
+    }
     break
   case "mcp-emacs-get-selection":
     console.log("nil")

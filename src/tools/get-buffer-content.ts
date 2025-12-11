@@ -12,19 +12,8 @@ export class GetBufferContentTool extends EmacsTool {
     })
   }
 
-  protected handle(
-    _args: unknown,
-    _extra: unknown,
-    _context: unknown
-  ): Record<string, unknown> {
+  protected handle(_args: unknown, _extra: unknown, _context: unknown): Record<string, unknown> {
     const content = this.callTextFunction("mcp-emacs-get-buffer-content")
-    return {
-      content: [
-        {
-          type: "text",
-          text: content,
-        },
-      ],
-    }
+    return { content: [ { type: "text", text: content } ] }
   }
 }

@@ -12,19 +12,8 @@ export class GetEnvVarsTool extends EmacsTool {
     })
   }
 
-  protected handle(
-    _args: unknown,
-    _extra: unknown,
-    _context: unknown
-  ) {
+  protected handle(_args: unknown, _extra: unknown, _context: unknown) {
     const vars = this.callTextFunction("mcp-emacs-get-env-vars")
-    return {
-      content: [
-        {
-          type: "text",
-          text: vars,
-        },
-      ],
-    }
+    return { content: [ { type: "text", text: vars } ] }
   }
 }

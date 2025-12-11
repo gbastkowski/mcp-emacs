@@ -13,19 +13,8 @@ export class DiagnoseEmacsTool extends EmacsTool {
     })
   }
 
-  protected handle(
-    _args: unknown,
-    _extra: unknown,
-    _context: unknown
-  ) {
+  protected handle(_args: unknown, _extra: unknown, _context: unknown) {
     const report = this.callTextFunction("mcp-emacs-diagnose")
-    return {
-      content: [
-        {
-          type: "text",
-          text: report,
-        },
-      ],
-    }
+    return { content: [ { type: "text", text: report } ] }
   }
 }

@@ -1,0 +1,14 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.{ts,tsx,js,jsx}]
+max_line_length = 100
+ij_typescript_trailing_comma = remove
+ij_typescript_align_multiline_parameters = false

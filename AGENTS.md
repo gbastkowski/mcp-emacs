@@ -28,6 +28,10 @@ Uses `emacsclient` for communication.
 - Use ES modules (type: "module" in package.json)
 - Strict TypeScript configuration
 - Prefer explicit types over inference where it improves clarity
+- Two-space indentation, LF endings, and final newlines are enforced via `.editorconfig`
+- Keep public members at the top of classes, with private helpers grouped below
+- Keep short parameter lists on a single line when they fit and avoid trailing commas on the last element/argument
+- For simple `switch` branches prefer single-line `case` statements (`case "x": doWork(); break`)
 
 ## Tools Implementation
 

@@ -27,7 +27,7 @@ server.registerResource(
   "org-tasks://all",
   {
     description: "All TODO items from org-mode agenda files",
-    mimeType: "text/plain",
+    mimeType: "text/plain"
   },
   async () => {
     const tasks = emacs.callElispStringFunction("mcp-emacs-get-org-tasks")
@@ -36,9 +36,9 @@ server.registerResource(
         {
           uri: "org-tasks://all",
           mimeType: "text/plain",
-          text: tasks,
-        },
-      ],
+          text: tasks
+        }
+      ]
     }
   }
 )
