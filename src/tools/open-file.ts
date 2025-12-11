@@ -1,13 +1,19 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { EmacsClient } from "../emacs-client.js"
 import { z } from "zod"
 import { EmacsTool } from "./base-tool.js"
 
 export class OpenFileTool extends EmacsTool {
-  protected name = "open_file"
-  protected metadata = {
-    description: "Open a file in the current Emacs window",
-    inputSchema: {
-      path: z.string().describe("Absolute path to the file to open"),
-    },
+  constructor(server: McpServer, emacs: EmacsClient) {
+    super(server, emacs, {
+      name: "open_file",
+      metadata: {
+        description: "Open a file in the current Emacs window",
+        inputSchema: {
+          path: z.string().describe("Absolute path to the file to open"),
+        },
+      },
+    })
   }
 
   protected handle(

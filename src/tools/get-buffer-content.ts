@@ -1,9 +1,15 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { EmacsClient } from "../emacs-client.js"
 import { EmacsTool } from "./base-tool.js"
 
 export class GetBufferContentTool extends EmacsTool {
-  protected name = "get_buffer_content"
-  protected metadata = {
-    description: "Get the content of the current Emacs buffer",
+  constructor(server: McpServer, emacs: EmacsClient) {
+    super(server, emacs, {
+      name: "get_buffer_content",
+      metadata: {
+        description: "Get the content of the current Emacs buffer",
+      },
+    })
   }
 
   protected handle(

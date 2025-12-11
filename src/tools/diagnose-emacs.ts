@@ -1,10 +1,16 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { EmacsClient } from "../emacs-client.js"
 import { EmacsTool } from "./base-tool.js"
 
 export class DiagnoseEmacsTool extends EmacsTool {
-  protected name = "diagnose_emacs"
-  protected metadata = {
-    description:
-      "Collect diagnostic information about the running Emacs, including exec-path and LSP clients",
+  constructor(server: McpServer, emacs: EmacsClient) {
+    super(server, emacs, {
+      name: "diagnose_emacs",
+      metadata: {
+        description:
+          "Collect diagnostic information about the running Emacs, including exec-path and LSP clients",
+      },
+    })
   }
 
   protected handle(
