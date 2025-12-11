@@ -4,12 +4,16 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { spawnSync } from "node:child_process"
 import { EmacsClient } from "../dist/emacs-client.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const originalPath = process.env.PATH ?? ""
 const binDir = path.join(__dirname, "bin")
+const hasRealEmacs =
+  spawnSync("emacsclient", ["--eval", "t"], { stdio: "ignore" }).status === 0
+const describeReal = hasRealEmacs ? describe : describe.skip
 
 describe(
   "EmacsClient integration",
@@ -78,6 +82,19 @@ describe(
       )
       assert.ok(last.includes("\\\\segment"), "expected backslash escaped")
       assert.ok(last.includes("\\nnext"), "expected newline escaped")
+    })
+  }
+)
+
+describeReal(
+  "EmacsClient real Emacs roundtrip",
+  () => {
+    it("formats strings correctly for Emacs", () => {
+      const client = new EmacsClient(3000)
+      const weird = 'real test "quotes" here \\ newline' + "\nmore"
+      const rawResult = client.callElispFunction("format", ["%s", weird])
+      const stripped = client.stripQuotes(rawResult)
+      assert.equal(stripped, weird)
     })
   }
 )
