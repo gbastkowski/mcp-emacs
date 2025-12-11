@@ -2,8 +2,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { z } from "zod"
 import { EmacsClient } from "./emacs-client.js"
+import { registerTools } from "./tools/index.js"
 
 const server = new McpServer(
   {
@@ -20,174 +20,7 @@ const server = new McpServer(
 
 const emacs = new EmacsClient()
 
-server.registerTool(
-  "get_buffer_content",
-  {
-    description: "Get the content of the current Emacs buffer",
-  },
-  async () => {
-    const content = emacs.getBufferContent()
-    return {
-      content: [
-        {
-          type: "text",
-          text: content,
-        },
-      ],
-    }
-  }
-)
-
-server.registerTool(
-  "get_buffer_filename",
-  {
-    description: "Get the filename associated with the current Emacs buffer",
-  },
-  async () => {
-    const filename = emacs.getBufferFilename()
-    if (filename === null) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "Current buffer is not visiting a file",
-          },
-        ],
-      }
-    }
-    return {
-      content: [
-        {
-          type: "text",
-          text: filename,
-        },
-      ],
-    }
-  }
-)
-
-server.registerTool(
-  "get_selection",
-  {
-    description: "Get the current selection (region) in Emacs",
-  },
-  async () => {
-    const selection = emacs.getSelection()
-    if (selection === null) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: "No active selection",
-          },
-        ],
-      }
-    }
-    return {
-      content: [
-        {
-          type: "text",
-          text: selection,
-        },
-      ],
-    }
-  }
-)
-
-server.registerTool(
-  "open_file",
-  {
-    description: "Open a file in the current Emacs window",
-    inputSchema: {
-      path: z.string().describe("Absolute path to the file to open"),
-    },
-  },
-  async (args) => {
-    emacs.openFile(args.path)
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Opened file: ${args.path}`,
-        },
-      ],
-    }
-  }
-)
-
-server.registerTool(
-  "describe_flycheck_info_at_point",
-  {
-    description:
-      "Get flycheck error/warning/info messages at the current cursor position",
-  },
-  async () => {
-    const result = emacs.getFlycheckInfo()
-    return {
-      content: [
-        {
-          type: "text",
-          text: result,
-        },
-      ],
-    }
-  }
-)
-
-server.registerTool(
-  "get_error_context",
-  {
-    description: "Summarize recent error-related buffers such as *Messages*, *Warnings*, or compilation logs",
-  },
-  async () => {
-    const info = emacs.getErrorContext()
-    return {
-      content: [
-        {
-          type: "text",
-          text: info,
-        },
-      ],
-    }
-  }
-)
-
-server.registerTool(
-  "get_env_vars",
-  {
-    description: "List the environment variables currently visible to Emacs",
-  },
-  async () => {
-    const vars = emacs.getEnvVars()
-    return {
-      content: [
-        {
-          type: "text",
-          text: vars,
-        },
-      ],
-    }
-  }
-)
-
-server.registerTool(
-  "diagnose_emacs",
-  {
-    description:
-      "Collect diagnostic information about the running Emacs, including exec-path and LSP clients",
-  },
-  async () => {
-    const report = emacs.diagnoseEmacs()
-    return {
-      content: [
-        {
-          type: "text",
-          text: report,
-        },
-      ],
-    }
-  }
-)
+registerTools(server, emacs)
 
 server.registerResource(
   "org-tasks",
@@ -197,7 +30,7 @@ server.registerResource(
     mimeType: "text/plain",
   },
   async () => {
-    const tasks = emacs.getOrgTasks()
+    const tasks = emacs.callElispStringFunction("mcp-emacs-get-org-tasks")
     return {
       contents: [
         {

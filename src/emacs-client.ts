@@ -67,7 +67,7 @@ export class EmacsClient {
     throw new Error("Unsupported elisp argument type")
   }
 
-  private callElispFunction(
+  callElispFunction(
     functionName: string,
     args: Array<string | number | boolean | null> = []
   ): string {
@@ -77,53 +77,105 @@ export class EmacsClient {
     return this.evalInEmacs(form)
   }
 
-  private stripQuotes(str: string): string {
-    return str.slice(1, -1)
+  parseElispString(str: string): string {
+    if (str.length < 2) return str
+    const firstChar = str[0]
+    const lastChar = str[str.length - 1]
+    if (firstChar !== '"' || lastChar !== '"') {
+      return str
+    }
+
+    const body = str.slice(1, -1)
+    let result = ""
+    for (let i = 0; i < body.length; ) {
+      const char = body[i]
+      if (char !== "\\") {
+        result += char
+        i += 1
+        continue
+      }
+
+      if (i === body.length - 1) {
+        result += "\\"
+        break
+      }
+
+      const next = body[i + 1]
+      i += 2
+      switch (next) {
+        case "\\":
+          result += "\\"
+          break
+        case '"':
+          result += '"'
+          break
+        case "n":
+          result += "\n"
+          break
+        case "r":
+          result += "\r"
+          break
+        case "t":
+          result += "\t"
+          break
+        case "b":
+          result += "\b"
+          break
+        case "f":
+          result += "\f"
+          break
+        case "v":
+          result += "\v"
+          break
+        case "x": {
+          const hexMatch = body.slice(i).match(/^[0-9a-fA-F]{1,2}/)
+          if (hexMatch) {
+            result += String.fromCharCode(parseInt(hexMatch[0], 16))
+            i += hexMatch[0].length
+          } else {
+            result += "x"
+          }
+          break
+        }
+        case "u": {
+          const unicodeMatch = body.slice(i).match(/^[0-9a-fA-F]{4}/)
+          if (unicodeMatch) {
+            result += String.fromCharCode(parseInt(unicodeMatch[0], 16))
+            i += unicodeMatch[0].length
+          } else {
+            result += "u"
+          }
+          break
+        }
+        default: {
+          if (/[0-7]/.test(next)) {
+            let octalDigits = next
+            let consumed = 1
+            while (
+              consumed < 3 &&
+              i < body.length &&
+              /[0-7]/.test(body[i])
+            ) {
+              octalDigits += body[i]
+              i += 1
+              consumed++
+            }
+            result += String.fromCharCode(parseInt(octalDigits, 8))
+          } else {
+            result += next
+          }
+        }
+      }
+    }
+
+    return result
   }
 
-  getBufferContent(): string {
-    const content = this.callElispFunction("mcp-emacs-get-buffer-content")
-    return this.stripQuotes(content)
-  }
-
-  getSelection(): string | null {
-    const selection = this.callElispFunction("mcp-emacs-get-selection")
-    if (selection === "nil") return null
-    return this.stripQuotes(selection)
-  }
-
-  openFile(path: string): void {
-    this.callElispFunction("mcp-emacs-open-file", [path])
-  }
-
-  getBufferFilename(): string | null {
-    const filename = this.callElispFunction("mcp-emacs-get-buffer-filename")
-    if (filename === "nil") return null
-    return this.stripQuotes(filename)
-  }
-
-  getFlycheckInfo(): string {
-    const result = this.callElispFunction("mcp-emacs-get-flycheck-info")
-    return this.stripQuotes(result)
-  }
-
-  getErrorContext(): string {
-    const result = this.callElispFunction("mcp-emacs-get-error-context")
-    return this.stripQuotes(result)
-  }
-
-  getOrgTasks(): string {
-    const result = this.callElispFunction("mcp-emacs-get-org-tasks")
-    return this.stripQuotes(result)
-  }
-
-  getEnvVars(): string {
-    const result = this.callElispFunction("mcp-emacs-get-env-vars")
-    return this.stripQuotes(result)
-  }
-
-  diagnoseEmacs(): string {
-    const result = this.callElispFunction("mcp-emacs-diagnose")
-    return this.stripQuotes(result)
+  callElispStringFunction(
+    functionName: string,
+    args: Array<string | number | boolean | null> = []
+  ): string {
+    const raw = this.callElispFunction(functionName, args)
+    return this.parseElispString(raw)
   }
 }

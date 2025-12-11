@@ -6,11 +6,14 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 import { EmacsClient } from "../dist/emacs-client.js"
+import { GetSelectionTool } from "../dist/tools/get-selection.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 const originalPath = process.env.PATH ?? ""
 const binDir = path.join(__dirname, "bin")
+const COMPLEX_BUFFER = `Hello from "buffer"\\path
+Next line with tab	and bell`
 const hasRealEmacs =
   spawnSync("emacsclient", ["--eval", "t"], { stdio: "ignore" }).status === 0
 const describeReal = hasRealEmacs ? describe : describe.skip
@@ -48,10 +51,16 @@ describe(
 
     it("loads helper only once per client instance", () => {
       const client = new EmacsClient(1000)
-      const first = client.getBufferContent()
-      assert.equal(first, "Hello from buffer")
-      const second = client.getBufferContent()
-      assert.equal(second, "Hello from buffer")
+      const firstRaw = client.callElispFunction(
+        "mcp-emacs-get-buffer-content"
+      )
+      const first = client.parseElispString(firstRaw)
+      assert.equal(first, COMPLEX_BUFFER)
+      const secondRaw = client.callElispFunction(
+        "mcp-emacs-get-buffer-content"
+      )
+      const second = client.parseElispString(secondRaw)
+      assert.equal(second, COMPLEX_BUFFER)
 
       const entries = readLog()
       const loadCalls = entries.filter((line) => line.includes("load-file"))
@@ -62,17 +71,20 @@ describe(
       assert.equal(contentCalls.length, 2)
     })
 
-    it("returns null selection when Emacs reports nil", () => {
+    it("returns user-friendly text when selection is inactive", () => {
       const client = new EmacsClient(1000)
-      client.getBufferContent() // trigger init
-      const selection = client.getSelection()
-      assert.equal(selection, null)
+      const fakeServer = {
+        registerTool() {},
+      }
+      const tool = new GetSelectionTool(fakeServer, client)
+      const response = tool.handle(undefined, undefined, undefined)
+      assert.equal(response.content[0].text, "No active selection")
     })
 
     it("escapes complex file paths when opening files", () => {
       const client = new EmacsClient(1000)
       const weirdPath = '/tmp/weird "quote" path\\segment' + "\nnext"
-      client.openFile(weirdPath)
+      client.callElispFunction("mcp-emacs-open-file", [weirdPath])
       const entries = readLog()
       const last = entries[entries.length - 1]
       assert.ok(last.startsWith("(mcp-emacs-open-file"))
@@ -86,7 +98,7 @@ describe(
 
     it("returns diagnostics from Emacs", () => {
       const client = new EmacsClient(1000)
-      const report = client.diagnoseEmacs()
+      const report = client.callElispStringFunction("mcp-emacs-diagnose")
       assert.equal(report, "Diagnostics stub")
       const entries = readLog()
       assert.ok(entries.some((line) => line.startsWith("(mcp-emacs-diagnose")))
@@ -101,7 +113,7 @@ describeReal(
       const client = new EmacsClient(3000)
       const weird = 'real test "quotes" here \\ newline' + "\nmore"
       const rawResult = client.callElispFunction("format", ["%s", weird])
-      const stripped = client.stripQuotes(rawResult)
+      const stripped = client.parseElispString(rawResult)
       assert.equal(stripped, weird)
     })
   }
