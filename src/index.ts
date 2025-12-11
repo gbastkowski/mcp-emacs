@@ -8,7 +8,7 @@ import { EmacsClient } from "./emacs-client.js"
 const server = new McpServer(
   {
     name: "mcp-emacs",
-    version: "0.1.0",
+    version: "0.2.0",
   },
   {
     capabilities: {
