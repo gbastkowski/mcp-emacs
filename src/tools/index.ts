@@ -9,6 +9,7 @@ import { GetErrorContextTool } from "./get-error-context.js"
 import { GetSelectionTool } from "./get-selection.js"
 import { OpenFileTool } from "./open-file.js"
 import { EditFileRegionTool } from "./edit-file-region.js"
+import { InsertAtPointTool } from "./insert-at-point.js"
 
 export function registerTools(server: McpServer, emacs: EmacsClient): void {
   const tools = [
@@ -17,6 +18,7 @@ export function registerTools(server: McpServer, emacs: EmacsClient): void {
     GetSelectionTool,
     OpenFileTool,
     EditFileRegionTool,
+    InsertAtPointTool,
     DescribeFlycheckInfoTool,
     GetErrorContextTool,
     GetEnvVarsTool,

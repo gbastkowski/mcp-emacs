@@ -67,6 +67,29 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
                 e-col
                 (if save " (saved)" ""))))))
 
+(defun mcp-emacs-insert-at-point (text replace-selection)
+  "Insert TEXT at point. When REPLACE-SELECTION is non-nil and a region is active, replace it."
+  (let ((buffer (mcp-emacs--current-buffer))
+        (payload (or text "")))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t)
+            (had-selection (use-region-p))
+            (inserted-length (length payload)))
+        (if (and replace-selection had-selection)
+            (let ((start (region-beginning))
+                  (end (region-end)))
+              (delete-region start end)
+              (goto-char start)
+              (insert payload)
+              (format "Replaced selection (%d chars) with %d chars"
+                      (- end start)
+                      inserted-length))
+          (progn
+            (insert payload)
+            (if replace-selection
+                (format "No selection active; inserted %d chars at point" inserted-length)
+              (format "Inserted %d chars at point" inserted-length)))))))
+
 (defun mcp-emacs-get-flycheck-info ()
   (with-current-buffer (mcp-emacs--current-buffer)
     (if (bound-and-true-p flycheck-mode)
