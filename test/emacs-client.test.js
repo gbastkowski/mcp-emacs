@@ -14,8 +14,7 @@ const originalPath = process.env.PATH ?? ""
 const binDir = path.join(__dirname, "bin")
 const COMPLEX_BUFFER = `Hello from "buffer"\\path
 Next line with tab	and bell`
-const hasRealEmacs =
-  spawnSync("emacsclient", ["--eval", "t"], { stdio: "ignore" }).status === 0
+const hasRealEmacs = spawnSync("emacsclient", ["--eval", "t"], { stdio: "ignore" }).status === 0
 const describeReal = hasRealEmacs ? describe : describe.skip
 
 describe(
@@ -51,34 +50,33 @@ describe(
 
     it("loads helper only once per client instance", () => {
       const client = new EmacsClient(1000)
-      const firstRaw = client.callElispFunction(
-        "mcp-emacs-get-buffer-content"
+
+      assert.equal(
+        client.parseElispString(client.callElispFunction("mcp-emacs-get-buffer-content")),
+        COMPLEX_BUFFER
       )
-      const first = client.parseElispString(firstRaw)
-      assert.equal(first, COMPLEX_BUFFER)
-      const secondRaw = client.callElispFunction(
-        "mcp-emacs-get-buffer-content"
+
+      assert.equal(
+        client.parseElispString(client.callElispFunction("mcp-emacs-get-buffer-content")),
+        COMPLEX_BUFFER
       )
-      const second = client.parseElispString(secondRaw)
-      assert.equal(second, COMPLEX_BUFFER)
 
       const entries = readLog()
-      const loadCalls = entries.filter((line) => line.includes("load-file"))
-      assert.equal(loadCalls.length, 1)
-      const contentCalls = entries.filter((line) =>
-        line.startsWith("(mcp-emacs-get-buffer-content")
-      )
+
+      assert.equal(entries.filter((line) => line.includes("load-file")).length, 1)
+
+      const contentCalls = entries.filter((line) => line.startsWith("(mcp-emacs-get-buffer-content"))
       assert.equal(contentCalls.length, 2)
     })
 
     it("returns user-friendly text when selection is inactive", () => {
       const client = new EmacsClient(1000)
-      const fakeServer = {
-        registerTool() {},
-      }
-      const tool = new GetSelectionTool(fakeServer, client)
-      const response = tool.handle(undefined, undefined, undefined)
-      assert.equal(response.content[0].text, "No active selection")
+      const fakeServer = { registerTool() {} }
+
+      assert.equal(
+        new GetSelectionTool(fakeServer, client).handle(undefined, undefined, undefined).content[0].text,
+        "No active selection"
+      )
     })
 
     it("escapes complex file paths when opening files", () => {
@@ -97,11 +95,11 @@ describe(
     })
 
     it("returns diagnostics from Emacs", () => {
-      const client = new EmacsClient(1000)
-      const report = client.callElispStringFunction("mcp-emacs-diagnose")
-      assert.equal(report, "Diagnostics stub")
-      const entries = readLog()
-      assert.ok(entries.some((line) => line.startsWith("(mcp-emacs-diagnose")))
+      assert.equal(
+        new EmacsClient(1000).callElispStringFunction("mcp-emacs-diagnose"),
+        "Diagnostics stub"
+      )
+      assert.ok(readLog().some((line) => line.startsWith("(mcp-emacs-diagnose")))
     })
   }
 )

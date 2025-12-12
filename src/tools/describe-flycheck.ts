@@ -14,7 +14,13 @@ export class DescribeFlycheckInfoTool extends EmacsTool {
   }
 
   protected handle(_args: unknown, _extra: unknown, _context: unknown) {
-    const result = this.callTextFunction("mcp-emacs-get-flycheck-info")
-    return { content: [ { type: "text", text: result } ] }
+    return {
+      content: [
+        {
+          type: "text",
+          text: this.callTextFunction("mcp-emacs-get-flycheck-info")
+        }
+      ]
+    }
   }
 }

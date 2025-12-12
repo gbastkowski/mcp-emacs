@@ -18,7 +18,13 @@ export class GetBufferFilenameTool extends EmacsTool {
       return { content: [ { type: "text", text: "Current buffer is not visiting a file" } ] }
     }
 
-    const filename = this.emacs.parseElispString(raw)
-    return { content: [ { type: "text", text: filename } ] }
+    return {
+      content: [
+        {
+          type: "text",
+          text: this.emacs.parseElispString(raw)
+        }
+      ]
+    }
   }
 }
