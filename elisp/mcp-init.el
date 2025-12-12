@@ -25,6 +25,48 @@
   (find-file path)
   path)
 
+(defun mcp-emacs--line-column-position (line column)
+  (let ((line (if (and (integerp line) (> line 0)) line 1))
+        (column (if (and (integerp column) (> column 0)) column 1)))
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line (1- line))
+      (let* ((line-start (line-beginning-position))
+             (line-end (line-end-position))
+             (line-length (- line-end line-start))
+             (offset (min (max 0 (1- column)) line-length)))
+        (+ line-start offset)))))
+
+(defun mcp-emacs-edit-file-region (path start-line start-column end-line end-column replacement save)
+  "Replace the text in PATH between START and END with REPLACEMENT.
+START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
+  (unless (and (stringp path) (not (string-empty-p path)))
+    (error "Path must be a non-empty string"))
+  (let* ((buffer (or (get-file-buffer path) (find-file-noselect path)))
+         (s-line (if (and (integerp start-line) (> start-line 0)) start-line 1))
+         (s-col (if (and (integerp start-column) (> start-column 0)) start-column 1))
+         (e-line (if (and (integerp end-line) (> end-line 0)) end-line 1))
+         (e-col (if (and (integerp end-column) (> end-column 0)) end-column 1))
+         (text (or replacement "")))
+    (with-current-buffer buffer
+      (let ((start (mcp-emacs--line-column-position s-line s-col))
+            (end (mcp-emacs--line-column-position e-line e-col)))
+        (when (> start end)
+          (error "Start position %d:%d must be before end position %d:%d" s-line s-col e-line e-col))
+        (let ((inhibit-read-only t))
+          (save-excursion
+            (goto-char start)
+            (delete-region start end)
+            (insert text)))
+        (when save (save-buffer))
+        (format "Edited %s at %d:%d-%d:%d%s"
+                path
+                s-line
+                s-col
+                e-line
+                e-col
+                (if save " (saved)" ""))))))
+
 (defun mcp-emacs-get-flycheck-info ()
   (with-current-buffer (mcp-emacs--current-buffer)
     (if (bound-and-true-p flycheck-mode)
