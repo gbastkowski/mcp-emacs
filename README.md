@@ -33,6 +33,16 @@ npm install
 npm run build
 ```
 
+### Run via npx
+
+Install the package or run it directly with npx:
+
+```bash
+npx --yes mcp-emacs
+```
+
+This uses the package's binary entrypoint (`bin/mcp-emacs.js`), which ensures the TypeScript build is present before starting the MCP server.
+
 ## Usage with Claude Desktop
 
 Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):

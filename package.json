@@ -5,9 +5,10 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "mcp-emacs": "dist/index.js"
+    "mcp-emacs": "bin/mcp-emacs.js"
   },
   "files": [
+    "bin",
     "dist",
     "elisp"
   ],
