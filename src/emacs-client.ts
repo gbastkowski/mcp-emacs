@@ -102,6 +102,10 @@ export class EmacsClient {
     return this.parseElispString(raw)
   }
 
+  getNamedBufferText(bufferName: string): string {
+    return this.callElispStringFunction("mcp-emacs-get-buffer-text", [bufferName])
+  }
+
   private evalInEmacs(elisp: string): string {
     try {
       const result = execFileSync(

@@ -70,6 +70,17 @@
         (mapconcat #'identity (nreverse results) "\n\n---\n\n")
       "No error-related buffers were found.")))
 
+(defun mcp-emacs-get-buffer-text (name)
+  (let ((buf (get-buffer name)))
+    (if (not buf)
+        (format "[Buffer %s not found]" name)
+      (with-current-buffer buf
+        (let* ((raw (buffer-substring-no-properties (point-min) (point-max)))
+               (trimmed (string-trim raw)))
+          (if (string-empty-p trimmed)
+              "[Buffer is empty]"
+            raw)))))
+
 (defun mcp-emacs-get-org-tasks ()
   (let ((result '()))
     (org-map-entries

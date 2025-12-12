@@ -47,6 +47,9 @@ Next line with tab	and bell`
   case "mcp-emacs-get-org-tasks":
     console.log('"No tasks found"')
     break
+  case "mcp-emacs-get-buffer-text":
+    console.log('"[Buffer is empty]"')
+    break
   case "mcp-emacs-get-env-vars":
     console.log('"FOO=bar"')
     break

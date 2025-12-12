@@ -33,13 +33,15 @@ Uses `emacsclient` for communication.
 - Keep short parameter lists on a single line when they fit and avoid trailing commas on the last element/argument
 - For simple `switch` branches prefer single-line `case` statements (`case "x": doWork(); break`)
 
-## Tools Implementation
+## Tools & Resources Implementation
 
 Each tool should:
 1. Define clear input schema with required fields
 2. Use `evalInEmacs()` helper for Elisp evaluation
 3. Strip surrounding quotes from Elisp string results
 4. Return MCP-compliant response objects with content array
+
+Resources follow the same pattern using the `src/resources` base class. Prefer dedicated resource classes over ad-hoc registrations so metadata, URIs, and read callbacks live together.
 
 ## Testing
 
