@@ -87,6 +87,33 @@ npm run watch
 - **emacsclient**: Communication with Emacs via `--eval`
 - **STDIO transport**: Standard MCP communication protocol
 
+### Flow Diagram
+
+```plantuml
+@startuml
+actor Client
+participant "npx mcp-emacs" as Launcher
+participant "MCP Server (Node)" as Server
+participant "EmacsClient" as EmacsClient
+participant "emacsclient" as EmacsBinary
+participant "Emacs" as Emacs
+
+Client -> Launcher: run (stdin/stdout MCP transport)
+Launcher -> Server: load dist/index.js
+Server -> EmacsClient: register tools/resources
+Client -> Server: JSON-RPC tool/resource request
+Server -> EmacsClient: callElispFunction(...)
+EmacsClient -> EmacsBinary: `emacsclient --eval (...)`
+EmacsBinary -> Emacs: evaluate helper in `mcp-init.el`
+Emacs -> EmacsBinary: serialized string response
+EmacsBinary -> EmacsClient: raw result
+EmacsClient -> Server: parsed content (text, resource)
+Server -> Client: MCP-compliant response
+@enduml
+```
+
+The same diagram is stored in `docs/architecture.puml` if you prefer editing/rendering it with an external PlantUML tool.
+
 ## Requirements
 
 The server requires Emacs to be running with server mode enabled.
