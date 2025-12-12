@@ -32,6 +32,7 @@ Uses `emacsclient` for communication.
 - Keep public members at the top of classes, with private helpers grouped below
 - Keep short parameter lists on a single line when they fit and avoid trailing commas on the last element/argument
 - For simple `switch` branches prefer single-line `case` statements (`case "x": doWork(); break`)
+- Git commits should follow the tbaggery guidelines: short imperative subject (~50 chars), wrap additional context at ~72 chars, and keep messages brief unless extra detail is essential.
 
 ## Tools & Resources Implementation
 
