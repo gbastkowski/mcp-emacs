@@ -13,6 +13,8 @@ Provides tools to interact with Emacs from Claude Desktop/Code.
 - **open_file**: Open a file in the current Emacs window
 - **edit_file_region**: Replace text in a file by specifying start/end line & column coordinates (optionally save)
 - **insert_at_point**: Insert text at point or replace the current selection in the active buffer
+- **goto_line**: Jump to a specific line/column or navigate directly to a named function via imenu
+- **toggle_org_todo**: Toggle the TODO keyword (or set a specific state) on the current Org heading
 - **describe_flycheck_info_at_point**: Get flycheck diagnostics at cursor
 - **get_error_context**: Summarize contents of error-related buffers (*Messages*, *Warnings*, compilation logs)
 

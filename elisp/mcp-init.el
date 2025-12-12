@@ -37,6 +37,88 @@
              (offset (min (max 0 (1- column)) line-length)))
         (+ line-start offset)))))
 
+(defun mcp-emacs--normalize-position (pos)
+  (cond
+   ((markerp pos) (marker-position pos))
+   ((overlayp pos) (overlay-start pos))
+   ((numberp pos) pos)
+   ((and (consp pos) (numberp (car pos))) (car pos))
+   (t nil)))
+
+(defun mcp-emacs--find-imenu-position (target entries)
+  (catch 'mcp-emacs--found
+    (dolist (entry entries nil)
+      (cond
+       ((or (null entry)
+            (and (stringp (car entry))
+                 (string-prefix-p "*" (car entry))))
+        nil)
+       ((and (consp entry) (imenu--subalist-p entry))
+        (let ((child (mcp-emacs--find-imenu-position target (cdr entry))))
+          (when child (throw 'mcp-emacs--found child))))
+       ((and (consp entry)
+             (stringp (car entry))
+             (string= target (car entry)))
+        (let ((pos (mcp-emacs--normalize-position (cdr entry))))
+          (when pos (throw 'mcp-emacs--found pos))))))))
+
+(defun mcp-emacs--goto-function (name)
+  (when (and (stringp name)
+             (not (string-empty-p name))
+             (require 'imenu nil t))
+    (let* ((index (imenu--make-index-alist t))
+           (pos (mcp-emacs--find-imenu-position name index)))
+      (when pos
+        (goto-char pos)
+        t))))
+
+(defun mcp-emacs-goto-location (line column function-name)
+  "Move point to LINE/COLUMN or FUNCTION-NAME in the current buffer."
+  (let* ((buffer (mcp-emacs--current-buffer))
+         (line (if (and (integerp line) (> line 0)) line nil))
+         (column (if (and (integerp column) (> column 0)) column nil))
+         (fn (and (stringp function-name)
+                  (not (string-empty-p function-name))
+                  function-name)))
+    (with-current-buffer buffer
+      (cond
+       (fn
+        (unless (mcp-emacs--goto-function fn)
+          (error "Function %s not found" fn))
+        (when column (move-to-column (1- column) t))
+        (recenter)
+        (format "Moved to function %s (line %d, column %d)"
+                fn
+                (line-number-at-pos)
+                (1+ (current-column))))
+       (line
+        (goto-char (point-min))
+        (forward-line (1- line))
+        (when column (move-to-column (1- column) t))
+        (recenter)
+        (format "Moved to line %d, column %d" (line-number-at-pos) (1+ (current-column))))
+       (t
+        (error "Either line or function-name must be provided"))))))
+
+(defun mcp-emacs-toggle-org-todo (state)
+  "Toggle the TODO state at the current heading. When STATE is non-nil, set it explicitly."
+  (unless (derived-mode-p 'org-mode)
+    (error "Not in an org buffer"))
+  (save-excursion
+    (org-back-to-heading t)
+    (let* ((current (org-get-todo-state))
+           (next (cond
+                  ((and (stringp state) (not (string-empty-p state))) state)
+                  ((null state) (or (org-get-todo-state) (car org-todo-keywords-1)))
+                  (t nil))))
+      (if next
+          (progn
+            (org-todo next)
+            (format "Set TODO state to %s" next))
+        (org-todo 'next)
+        (format "Advanced TODO state%s"
+                (if current (format " (now %s)" (org-get-todo-state)) ""))))))
+
 (defun mcp-emacs-edit-file-region (path start-line start-column end-line end-column replacement save)
   "Replace the text in PATH between START and END with REPLACEMENT.
 START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."

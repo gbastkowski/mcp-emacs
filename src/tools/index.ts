@@ -10,6 +10,8 @@ import { GetSelectionTool } from "./get-selection.js"
 import { OpenFileTool } from "./open-file.js"
 import { EditFileRegionTool } from "./edit-file-region.js"
 import { InsertAtPointTool } from "./insert-at-point.js"
+import { GotoLineTool } from "./goto-line.js"
+import { ToggleOrgTodoTool } from "./toggle-org-todo.js"
 
 export function registerTools(server: McpServer, emacs: EmacsClient): void {
   const tools = [
@@ -19,6 +21,8 @@ export function registerTools(server: McpServer, emacs: EmacsClient): void {
     OpenFileTool,
     EditFileRegionTool,
     InsertAtPointTool,
+    GotoLineTool,
+    ToggleOrgTodoTool,
     DescribeFlycheckInfoTool,
     GetErrorContextTool,
     GetEnvVarsTool,
