@@ -1,20 +1,15 @@
 @startuml
 actor Client
-participant "npx mcp-emacs" as Launcher
 participant "MCP Server (Node)" as Server
-participant "EmacsClient" as EmacsClient
-participant "emacsclient" as EmacsBinary
+participant "Emacs bridge" as Bridge
 participant "Emacs" as Emacs
 
-Client -> Launcher: run (stdin/stdout MCP transport)
-Launcher -> Server: load dist/index.js
-Server -> EmacsClient: register tools/resources
+Client -> Server: run (stdin/stdout MCP transport)
+Server -> Bridge: register tools/resources
 Client -> Server: JSON-RPC tool/resource request
-Server -> EmacsClient: callElispFunction(...)
-EmacsClient -> EmacsBinary: `emacsclient --eval (...)`
-EmacsBinary -> Emacs: evaluate helper in `mcp-init.el`
-Emacs -> EmacsBinary: serialized string response
-EmacsBinary -> EmacsClient: raw result
-EmacsClient -> Server: parsed content (text, resource)
+Server -> Bridge: callElispFunction(...)
+Bridge -> Emacs: emacsclient --eval (helper call)
+Emacs -> Bridge: serialized string response
+Bridge -> Server: parsed content (text, resource)
 Server -> Client: MCP-compliant response
 @enduml
