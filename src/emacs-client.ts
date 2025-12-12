@@ -18,6 +18,10 @@ export class EmacsClient {
     this.initialized = false
   }
 
+  /**
+   * Evaluate an arbitrary Elisp function via `emacsclient --eval` and return the raw string result.
+   * Accepts basic JavaScript primitives as arguments and handles quoting/escaping for Emacs.
+   */
   callElispFunction(functionName: string, args: Array<string | number | boolean | null> = []): string {
     this.ensureInitialized()
     const formattedArgs = args.map((arg) => this.formatElispArg(arg)).join(" ")
@@ -25,6 +29,10 @@ export class EmacsClient {
     return this.evalInEmacs(form)
   }
 
+  /**
+   * Convert the string returned by Emacs into a plain JavaScript string.
+   * Emacs wraps strings in quotes and escapes characters; this removes those artifacts.
+   */
   parseElispString(str: string): string {
     if (str.length < 2) return str
     const firstChar = str[0]
@@ -97,11 +105,17 @@ export class EmacsClient {
     return result
   }
 
+  /**
+   * Convenience helper that both evaluates an Elisp function and strips the surrounding quotes.
+   */
   callElispStringFunction(functionName: string, args: Array<string | number | boolean | null> = []): string {
     const raw = this.callElispFunction(functionName, args)
     return this.parseElispString(raw)
   }
 
+  /**
+   * Fetch the text contents of an arbitrary Emacs buffer, used by resource readers.
+   */
   getNamedBufferText(bufferName: string): string {
     return this.callElispStringFunction("mcp-emacs-get-buffer-text", [bufferName])
   }
