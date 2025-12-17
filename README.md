@@ -22,9 +22,11 @@ Provides tools to interact with Emacs from Claude Desktop/Code.
 
 ### Resources
 
-- **org-tasks://all**: All TODO items from org-mode agenda files with status, priority, scheduled/deadline dates
-- **buffer://messages**: Live contents of the Emacs `*Messages*` buffer
-- **buffer://warnings**: Live contents of the Emacs `*Warnings*` buffer
+| Resource | Description |
+| --- | --- |
+| `org-tasks://all` | All TODO items from org-mode agenda files with status, priority, scheduled/deadline dates |
+| `buffer://messages` | Live contents of the Emacs `*Messages*` buffer |
+| `buffer://warnings` | Live contents of the Emacs `*Warnings*` buffer |
 
 ## Prerequisites
 
