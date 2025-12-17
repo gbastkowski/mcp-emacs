@@ -12,6 +12,7 @@ import { EditFileRegionTool } from "./edit-file-region.js"
 import { InsertAtPointTool } from "./insert-at-point.js"
 import { GotoLineTool } from "./goto-line.js"
 import { ToggleOrgTodoTool } from "./toggle-org-todo.js"
+import { EvalTool } from "./eval.js"
 
 export function registerTools(server: McpServer, emacs: EmacsClient): void {
   const tools = [
@@ -26,6 +27,7 @@ export function registerTools(server: McpServer, emacs: EmacsClient): void {
     DescribeFlycheckInfoTool,
     GetErrorContextTool,
     GetEnvVarsTool,
+    EvalTool,
     DiagnoseEmacsTool,
   ]
 

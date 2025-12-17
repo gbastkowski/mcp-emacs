@@ -23,7 +23,6 @@ export class EmacsClient {
    * Accepts basic JavaScript primitives as arguments and handles quoting/escaping for Emacs.
    */
   callElispFunction(functionName: string, args: Array<string | number | boolean | null> = []): string {
-    this.ensureInitialized()
     const formattedArgs = args.map((arg) => this.formatElispArg(arg)).join(" ")
     const form = `(${functionName}${formattedArgs ? " " + formattedArgs : ""})`
     return this.evalInEmacs(form)
@@ -120,7 +119,8 @@ export class EmacsClient {
     return this.callElispStringFunction("mcp-emacs-get-buffer-text", [bufferName])
   }
 
-  private evalInEmacs(elisp: string): string {
+  public evalInEmacs(elisp: string): string {
+    this.ensureInitialized()
     try {
       const result = execFileSync(
         "emacsclient",
