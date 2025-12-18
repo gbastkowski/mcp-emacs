@@ -43,23 +43,50 @@ Install the Emacs package inside your editor, then run the MCP server to make th
 
 ### 1. Install the Emacs package
 
+At minimum you can drop the package onto your load-path:
+
 ```elisp
 (add-to-list 'load-path "/path/to/mcp-emacs/packages/emacs/lisp")
 (require 'mcp-emacs)
 (server-start)
 ```
 
-You can also wire this directory up via `use-package`, `straight.el`, or your preferred package manager. The Emacs package lives entirely under `packages/emacs`.
+Prefer to keep things managed? A few options:
+
+- **Straight / use-package**
+
+  ```elisp
+  (use-package mcp-emacs
+    :straight (mcp-emacs :type git :host github :repo "gbastkowski/mcp-emacs" :files ("packages/emacs/lisp/*.el"))
+    :config
+    (server-start))
+  ```
+
+- **package-install-file**: run `M-x package-install-file`, choose `packages/emacs/mcp-emacs-pkg.el`, and Emacs will register it like any other package.
+
+Whatever route you pick, make sure `(require 'mcp-emacs)` succeeds before starting the MCP server.
 
 ### 2. Install/build the Node MCP server
 
-```bash
-cd packages/server
-npm install
-npm run build
-```
+You can consume the server straight from npm or build from this repo:
 
-This produces `packages/server/dist/index.js` plus the CLI wrapper `packages/server/bin/mcp-emacs.js`.
+- **Install from npm** (recommended once published)
+
+  ```bash
+  npm install --global mcp-emacs-server
+  # or add to a specific project
+  npm install --save-dev mcp-emacs-server
+  ```
+
+- **Build from source**
+
+  ```bash
+  cd packages/server
+  npm install
+  npm run build
+  ```
+
+Both approaches produce the same CLI (`mcp-emacs`) and `dist/index.js` entrypoint.
 
 ### Run via npx
 
