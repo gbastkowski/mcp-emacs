@@ -2,8 +2,12 @@
 
 ## Project Overview
 
-MCP server that enables Claude Desktop/Code to interact with Emacs.
+MCP server that enables AI agents to interact with Emacs.
 Uses `emacsclient` for communication.
+
+Repository layout:
+- `packages/server`: Node.js MCP server module
+- `packages/emacs`: Emacs Lisp package that must be installed separately
 
 ## Tech Stack
 
@@ -48,8 +52,8 @@ Resources follow the same pattern using the `src/resources` base class. Prefer d
 
 Manual testing workflow:
 1. Start Emacs with server-start
-2. Build the MCP server: `npm run build`
-3. Test with Claude Desktop/Code
+2. Build the MCP server (run `npm run build` inside `packages/server`)
+3. Test with MCP client
 4. Check emacsclient behavior directly when debugging
 
 ## Future Enhancements

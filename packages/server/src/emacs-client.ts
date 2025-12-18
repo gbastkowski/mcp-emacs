@@ -1,20 +1,11 @@
 import { execFileSync } from "child_process"
-import { join, dirname } from "path"
-import { fileURLToPath } from "url"
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
 
 export class EmacsClient {
   private timeout: number
-  private elispDir: string
-  private initFile: string
   private initialized: boolean
 
   constructor(timeout: number = 5000) {
     this.timeout = timeout
-    this.elispDir = join(__dirname, "..", "elisp")
-    this.initFile = join(this.elispDir, "mcp-init.el")
     this.initialized = false
   }
 
@@ -121,6 +112,23 @@ export class EmacsClient {
 
   public evalInEmacs(elisp: string): string {
     this.ensureInitialized()
+    return this.runEval(elisp)
+  }
+
+  private ensureInitialized(): void {
+    if (this.initialized) return
+    try {
+      this.runEval("(require 'mcp-emacs)")
+      this.initialized = true
+    } catch (error) {
+      throw new Error(
+        "Failed to load the mcp-emacs Emacs package. Add it to your Emacs load-path and ensure it can be required. " +
+          `Original error: ${error}`
+      )
+    }
+  }
+
+  private runEval(elisp: string): string {
     try {
       const result = execFileSync(
         "emacsclient",
@@ -134,13 +142,6 @@ export class EmacsClient {
     } catch (error) {
       throw new Error(`Failed to communicate with Emacs: ${error}`)
     }
-  }
-
-  private ensureInitialized(): void {
-    if (this.initialized) return
-    const escapedPath = this.escapeElispString(this.initFile)
-    this.evalInEmacs(`(progn (unless (featurep 'mcp-emacs) (load-file "${escapedPath}")) 'mcp-emacs-ready)`)
-    this.initialized = true
   }
 
   private escapeElispString(value: string): string {

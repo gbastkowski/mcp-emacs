@@ -1,5 +1,5 @@
 {
-  "name": "mcp-emacs",
+  "name": "mcp-emacs-server",
   "version": "0.2.0",
   "description": "MCP server for Emacs integration",
   "type": "module",
@@ -9,8 +9,7 @@
   },
   "files": [
     "bin",
-    "dist",
-    "elisp"
+    "dist"
   ],
   "scripts": {
     "build": "tsc",

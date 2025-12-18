@@ -1,7 +1,11 @@
 # MCP Emacs
 
-Model Context Protocol (MCP) server for Emacs integration.
-Provides tools to interact with Emacs from Claude Desktop/Code.
+Model Context Protocol (MCP) tooling for Emacs, now split into two dedicated modules:
+
+- `packages/server`: the Node.js MCP server (`mcp-emacs-server` npm package)
+- `packages/emacs`: the Emacs Lisp package (`mcp-emacs`) that exposes editor-side commands
+
+Install the Emacs package inside your editor, then run the MCP server to make those operations available to Claude Desktop/Code.
 
 ## Features
 
@@ -31,36 +35,52 @@ Provides tools to interact with Emacs from Claude Desktop/Code.
 ## Prerequisites
 
 - Node.js 20+
-- Emacs with server mode running (`M-x server-start` or in your init file)
+- Emacs with server mode running (`M-x server-start` or via your init file)
 - `emacsclient` available in PATH
+- The `mcp-emacs` Emacs package loaded (see below)
 
 ## Installation
 
+### 1. Install the Emacs package
+
+```elisp
+(add-to-list 'load-path "/path/to/mcp-emacs/packages/emacs/lisp")
+(require 'mcp-emacs)
+(server-start)
+```
+
+You can also wire this directory up via `use-package`, `straight.el`, or your preferred package manager. The Emacs package lives entirely under `packages/emacs`.
+
+### 2. Install/build the Node MCP server
+
 ```bash
+cd packages/server
 npm install
 npm run build
 ```
 
+This produces `packages/server/dist/index.js` plus the CLI wrapper `packages/server/bin/mcp-emacs.js`.
+
 ### Run via npx
 
-Install the package or run it directly with npx:
+Use the published package directly:
 
 ```bash
-npx --yes mcp-emacs
+npx --yes mcp-emacs-server
 ```
 
-This uses the package's binary entrypoint (`bin/mcp-emacs.js`), which ensures the TypeScript build is present before starting the MCP server.
+The CLI entrypoint remains `mcp-emacs`; `npx` downloads the `mcp-emacs-server` package and runs that binary.
 
 ## Usage with Claude Desktop
 
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+Update `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS example):
 
 ```json
 {
   "mcpServers": {
     "emacs": {
       "command": "node",
-      "args": ["/path/to/mcp-emacs/dist/index.js"]
+      "args": ["/path/to/mcp-emacs/packages/server/dist/index.js"]
     }
   }
 }
@@ -68,13 +88,11 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 ## Usage with Claude Code
 
-Add to your Claude Code MCP settings:
-
 ```json
 {
   "emacs": {
     "command": "node",
-    "args": ["/path/to/mcp-emacs/dist/index.js"]
+    "args": ["/path/to/mcp-emacs/packages/server/dist/index.js"]
   }
 }
 ```
@@ -82,18 +100,20 @@ Add to your Claude Code MCP settings:
 ## Development
 
 ```bash
-# Build
-npm run build
-
-# Watch mode
-npm run watch
+cd packages/server
+npm run build      # Single build
+npm run watch      # Rebuild on change
+npm test           # TypeScript unit tests
 ```
+
+The Emacs package is plain Elisp; edit files under `packages/emacs/lisp` and load them into your Emacs session as usual.
 
 ## Architecture
 
-- **TypeScript/Node.js**: MCP server implementation
-- **emacsclient**: Communication with Emacs via `--eval`
-- **STDIO transport**: Standard MCP communication protocol
+- **TypeScript/Node.js**: MCP server implementation (`mcp-emacs-server`)
+- **Emacs Lisp**: `mcp-emacs` package that implements the editor-side helpers
+- **emacsclient**: Communication bridge (always via `--eval`)
+- **STDIO transport**: Standard MCP communication channel
 
 ### Flow Diagram
 
@@ -103,11 +123,10 @@ The source PlantUML definition lives in `docs/architecture.puml` if you need to 
 
 ## Requirements
 
-The server requires Emacs to be running with server mode enabled.
-Add this to your Emacs init file:
+The server still requires Emacs to already be running with server mode enabled. Add this to your init file if needed:
 
 ```elisp
 (server-start)
 ```
 
-Or manually start the server with `M-x server-start`.
+Or run `M-x server-start` manually before launching the MCP server.

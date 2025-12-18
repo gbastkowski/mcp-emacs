@@ -1,4 +1,17 @@
-;;; mcp-init.el --- Helper functions for MCP Emacs -*- lexical-binding: t; -*-
+;;; mcp-emacs.el --- Helper functions for MCP Emacs -*- lexical-binding: t; -*-
+
+;; Author: Gunnar Bastkowski
+;; Version: 0.2.0
+;; Package-Requires: ((emacs "28.1"))
+;; Keywords: tools
+;; URL: https://github.com/gbastkowski/mcp-emacs
+
+;;; Commentary:
+
+;; Helper entry points invoked by the MCP server; load this file and
+;; ensure the Emacs server is running before starting the MCP server.
+
+;;; Code:
 
 (require 'subr-x nil t)
 (require 'org nil t)
@@ -334,4 +347,4 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
 
 (provide 'mcp-emacs)
 
-;;; mcp-init.el ends here
+;;; mcp-emacs.el ends here
