@@ -1,7 +1,7 @@
 @startuml
 actor Client
 participant "MCP Server (Node)" as Server
-participant "Emacs bridge" as Bridge
+participant "emacsclient" as Bridge
 participant "Emacs" as Emacs
 
 Client -> Server: run (stdin/stdout MCP transport)
