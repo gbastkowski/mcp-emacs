@@ -1,7 +1,7 @@
 ;;; mcp-emacs.el --- Helper functions for MCP Emacs -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 0.2.0
+;; Version: 0.2.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
