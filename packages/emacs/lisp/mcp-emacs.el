@@ -183,7 +183,7 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
             (insert payload)
             (if replace-selection
                 (format "No selection active; inserted %d chars at point" inserted-length)
-              (format "Inserted %d chars at point" inserted-length)))))))
+              (format "Inserted %d chars at point" inserted-length))))))))
 
 (defun mcp-emacs-get-flycheck-info ()
   (with-current-buffer (mcp-emacs--current-buffer)
@@ -239,7 +239,7 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
                (trimmed (string-trim raw)))
           (if (string-empty-p trimmed)
               "[Buffer is empty]"
-            raw)))))
+            raw))))))
 
 (defun mcp-emacs-get-org-tasks ()
   (let ((result '()))
