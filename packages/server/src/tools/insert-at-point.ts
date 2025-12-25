@@ -30,13 +30,6 @@ export class InsertAtPointTool extends EmacsTool {
       parsed.replaceSelection,
     ])
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: result,
-        },
-      ],
-    }
+    return { content: [ { type: "text", text: result } ] }
   }
 }

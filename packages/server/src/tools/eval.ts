@@ -1,5 +1,5 @@
 import type { EmacsClient } from "../emacs-client.js"
-import { z } from "zod"
+import { z         } from "zod"
 import { EmacsTool } from "./base-tool.js"
 
 const evalSchema = z.object({

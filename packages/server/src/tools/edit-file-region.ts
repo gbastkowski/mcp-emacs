@@ -1,5 +1,3 @@
-
-
 import type { EmacsClient } from "../emacs-client.js"
 import      { z           } from "zod"
 import      { EmacsTool   } from "./base-tool.js"
@@ -40,25 +38,14 @@ export class EditFileRegionTool extends EmacsTool {
       parsed.end.line,
       parsed.end.column,
       parsed.text,
-      parsed.save,
+      parsed.save
     ])
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: result,
-        },
-      ],
-    }
+    return { content: [ { type: "text", text: result } ] }
   }
 
   private ensureValidRange({ start, end }: EditArgs): void {
-    if (start.line > end.line) {
-      throw new Error("Start line must be before or equal to end line")
-    }
-    if (start.line === end.line && start.column > end.column) {
-      throw new Error("Start column must be before or equal to end column")
-    }
+    if (start.line > end.line) { throw new Error("Start line must be before or equal to end line") }
+    if (start.line === end.line && start.column > end.column) { throw new Error("Start column must be before or equal to end column") }
   }
 }

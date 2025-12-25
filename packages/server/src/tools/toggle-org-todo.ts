@@ -22,13 +22,6 @@ export class ToggleOrgTodoTool extends EmacsTool {
   protected handle(args: unknown, _extra: unknown, _context: unknown) {
     const parsed: ToggleArgs = toggleSchema.parse(args ?? {})
     const result = this.callTextFunction("mcp-emacs-toggle-org-todo", [parsed.state ?? null])
-    return {
-      content: [
-        {
-          type: "text",
-          text: result,
-        },
-      ],
-    }
+    return { content: [ { type: "text", text: result } ] }
   }
 }

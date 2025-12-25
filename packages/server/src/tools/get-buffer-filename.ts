@@ -13,17 +13,8 @@ export class GetBufferFilenameTool extends EmacsTool {
 
   protected handle(_args: unknown, _extra: unknown, _context: unknown) {
     const raw = this.emacs.callElispFunction("mcp-emacs-get-buffer-filename")
-    if (raw === "nil") {
-      return { content: [ { type: "text", text: "Current buffer is not visiting a file" } ] }
-    }
+    if (raw === "nil") { return { content: [ { type: "text", text: "Current buffer is not visiting a file" } ] } }
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: this.emacs.parseElispString(raw)
-        }
-      ]
-    }
+    return { content: [ { type: "text", text: this.emacs.parseElispString(raw) } ] }
   }
 }

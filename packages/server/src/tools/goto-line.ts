@@ -4,7 +4,7 @@ import { EmacsTool } from "./base-tool.js"
 
 const gotoSchema = z
   .object({
-    line: z.number().int().min(1).describe("1-based line number to jump to").optional(),
+    line:   z.number().int().min(1).describe("1-based line number to jump to").optional(),
     column: z.number().int().min(1).describe("1-based column to position the cursor at").optional(),
     functionName: z
       .string()
@@ -38,13 +38,6 @@ export class GotoLineTool extends EmacsTool {
       parsed.functionName ?? null,
     ])
 
-    return {
-      content: [
-        {
-          type: "text",
-          text: result,
-        },
-      ],
-    }
+    return { content: [ { type: "text", text: result } ] }
   }
 }
