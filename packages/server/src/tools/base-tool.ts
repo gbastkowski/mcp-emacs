@@ -22,7 +22,7 @@ export abstract class EmacsTool {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  abstract handle(args: unknown, extra: unknown, context: unknown): Promise<any> | any
+  protected abstract handle(args: unknown, extra: unknown, context: unknown): Promise<any> | any
 
   protected callTextFunction(functionName: string, args: ElispArg[] = []): string {
     const raw = this.emacs.callElispFunction(functionName, args)

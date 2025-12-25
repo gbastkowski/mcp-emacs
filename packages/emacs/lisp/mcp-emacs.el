@@ -1,7 +1,7 @@
 ;;; mcp-emacs.el --- Helper functions for MCP Emacs -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 0.2.1
+;; Version: 0.3.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
@@ -22,23 +22,28 @@
   (window-buffer (frame-selected-window (selected-frame))))
 
 (defun mcp-emacs-get-buffer-content ()
+  "Return the full text of the current buffer without properties."
   (with-current-buffer (mcp-emacs--current-buffer)
     (buffer-substring-no-properties (point-min) (point-max))))
 
 (defun mcp-emacs-get-buffer-filename ()
+  "Return the filename associated with the current buffer, or nil."
   (with-current-buffer (mcp-emacs--current-buffer)
     (buffer-file-name)))
 
 (defun mcp-emacs-get-selection ()
+  "Return the active region text for the current buffer, or nil."
   (with-current-buffer (mcp-emacs--current-buffer)
     (when (use-region-p)
       (buffer-substring-no-properties (region-beginning) (region-end)))))
 
 (defun mcp-emacs-open-file (path)
+  "Open PATH in the current window and return PATH."
   (find-file path)
   path)
 
 (defun mcp-emacs--line-column-position (line column)
+  "Return buffer position for 1-based LINE and COLUMN."
   (let ((line (if (and (integerp line) (> line 0)) line 1))
         (column (if (and (integerp column) (> column 0)) column 1)))
     (save-excursion
@@ -51,6 +56,7 @@
         (+ line-start offset)))))
 
 (defun mcp-emacs--normalize-position (pos)
+  "Normalize an imenu position POS to a numeric buffer position."
   (cond
    ((markerp pos) (marker-position pos))
    ((overlayp pos) (overlay-start pos))
@@ -59,6 +65,7 @@
    (t nil)))
 
 (defun mcp-emacs--find-imenu-position (target entries)
+  "Find TARGET in imenu ENTRIES and return its position."
   (catch 'mcp-emacs--found
     (dolist (entry entries nil)
       (cond
@@ -76,6 +83,7 @@
           (when pos (throw 'mcp-emacs--found pos))))))))
 
 (defun mcp-emacs--goto-function (name)
+  "Jump to imenu entry NAME and return non-nil when found."
   (when (and (stringp name)
              (not (string-empty-p name))
              (require 'imenu nil t))
@@ -185,7 +193,41 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
                 (format "No selection active; inserted %d chars at point" inserted-length)
               (format "Inserted %d chars at point" inserted-length))))))))
 
+(defun mcp-emacs-save-buffer ()
+  "Save the current buffer if it is visiting a file."
+  (with-current-buffer (mcp-emacs--current-buffer)
+    (if (buffer-file-name)
+        (progn
+          (save-buffer)
+          (format "Saved buffer: %s" (buffer-name)))
+      "Current buffer is not visiting a file")))
+
+(defun mcp-emacs-close-buffer (save)
+  "Close the current buffer, saving when SAVE is non-nil."
+  (with-current-buffer (mcp-emacs--current-buffer)
+    (let ((name (buffer-name)))
+      (cond
+       ((and save (not (buffer-file-name)))
+        "Current buffer is not visiting a file")
+       ((and (buffer-modified-p) (not save))
+        "Buffer has unsaved changes")
+       (t
+        (when save
+          (save-buffer))
+        (kill-buffer (current-buffer))
+        (format "Closed buffer: %s" name))))))
+
+(defun mcp-emacs-switch-buffer (name)
+  "Switch to the buffer named NAME."
+  (let ((buffer (get-buffer name)))
+    (if buffer
+        (progn
+          (switch-to-buffer buffer)
+          (format "Switched to buffer: %s" (buffer-name buffer)))
+      "Buffer not found")))
+
 (defun mcp-emacs-get-flycheck-info ()
+  "Return flycheck messages at point, or a status message."
   (with-current-buffer (mcp-emacs--current-buffer)
     (if (bound-and-true-p flycheck-mode)
         (let ((errors (flycheck-overlay-errors-at (point))))
@@ -202,6 +244,7 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
       "Flycheck mode not active")))
 
 (defun mcp-emacs-get-error-context ()
+  "Summarize recent error-related buffers."
   (let* ((max-chars 2000)
          (known-buffers '("*Backtrace*" "*Compile-Log*" "*compilation*" "*Messages*" "*Warnings*" "*Async-native-compile-log*"))
          (dynamic (let (matches)
@@ -231,6 +274,7 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
       "No error-related buffers were found.")))
 
 (defun mcp-emacs-get-buffer-text (name)
+  "Return the full text of buffer NAME."
   (let ((buf (get-buffer name)))
     (if (not buf)
         (format "[Buffer %s not found]" name)
@@ -242,6 +286,7 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
             raw))))))
 
 (defun mcp-emacs-get-org-tasks ()
+  "Return formatted org-mode tasks from agenda files."
   (let ((result '()))
     (org-map-entries
      (lambda ()
@@ -271,6 +316,7 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
       "No tasks found")))
 
 (defun mcp-emacs-get-env-vars ()
+  "Return Emacs environment variables as a newline-delimited string."
   (let* ((entries (copy-sequence process-environment))
          (sorted (sort entries #'string-lessp)))
     (if sorted
@@ -278,11 +324,13 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
       "Environment is empty")))
 
 (defun mcp-emacs--format-list (items)
+  "Format ITEMS as a bullet list."
   (if items
       (mapconcat (lambda (item) (format "  - %s" item)) items "\n")
     "  [none]"))
 
 (defun mcp-emacs--check-commands (commands)
+  "Return availability strings for COMMANDS."
   (mapcar
    (lambda (cmd)
      (format "%s: %s"
@@ -293,6 +341,7 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
    commands))
 
 (defun mcp-emacs--collect-lsp-workspaces ()
+  "Collect LSP workspaces from active lsp-mode buffers."
   (when (require 'lsp-mode nil t)
     (let ((seen (make-hash-table :test 'eq))
           (entries '()))
@@ -306,6 +355,7 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
       (nreverse entries))))
 
 (defun mcp-emacs--describe-workspace (workspace)
+  "Return a human-readable summary for WORKSPACE."
   (let* ((client (when (fboundp 'lsp--workspace-client)
                    (lsp--workspace-client workspace)))
          (server (when (and client (fboundp 'lsp--client-server-id))
@@ -320,6 +370,7 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
             (or status "unknown"))))
 
 (defun mcp-emacs-diagnose ()
+  "Return a diagnostic report about the current Emacs session."
   (let* ((basic (list
                  (format "Emacs version: %s" emacs-version)
                  (format "System type: %s" system-type)

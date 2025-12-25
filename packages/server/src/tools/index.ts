@@ -13,9 +13,11 @@ import { InsertAtPointTool } from "./insert-at-point.js"
 import { GotoLineTool } from "./goto-line.js"
 import { ToggleOrgTodoTool } from "./toggle-org-todo.js"
 import { EvalTool } from "./eval.js"
+import { SaveBufferTool } from "./save-buffer.js"
+import { CloseBufferTool } from "./close-buffer.js"
+import { SwitchBufferTool } from "./switch-buffer.js"
 
 export function registerTools(server: McpServer, emacs: EmacsClient): void {
-
   for (const ToolCtor of [
     GetBufferContentTool,
     GetBufferFilenameTool,
@@ -29,7 +31,9 @@ export function registerTools(server: McpServer, emacs: EmacsClient): void {
     GetErrorContextTool,
     GetEnvVarsTool,
     EvalTool,
-    DiagnoseEmacsTool
+    DiagnoseEmacsTool,
+    SaveBufferTool,
+    CloseBufferTool,
+    SwitchBufferTool
   ]) { new ToolCtor(emacs).register(server) }
-
 }

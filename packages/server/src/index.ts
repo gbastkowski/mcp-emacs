@@ -9,7 +9,7 @@ import { registerResources    } from "./resources/index.js"
 const server = new McpServer(
   {
     name: "mcp-emacs",
-    version: "0.2.0"
+    version: "0.3.0"
   },
   {
     capabilities: {
