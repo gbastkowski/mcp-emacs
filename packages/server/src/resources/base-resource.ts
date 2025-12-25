@@ -1,38 +1,31 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { McpServer   } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../emacs-client.js"
 
 export type ResourceReadResult = {
   contents: Array<{ uri: string; mimeType: string; text: string }>
 }
 
-type ResourceConfig = {
-  name: string
-  uri: string
-  description: string
-  mimeType: string
-}
-
 export abstract class EmacsResource {
-  private readonly config: ResourceConfig
+  abstract readonly name: string
+  abstract readonly uri: string
+  abstract readonly description: string
+  abstract readonly mimeType: string
 
-  constructor(
-    protected readonly server: McpServer,
-    protected readonly emacs: EmacsClient,
-    config: ResourceConfig
-  ) {
-    this.config = config
-    this.register()
+  protected readonly emacs: EmacsClient
+
+  protected constructor(emacs: EmacsClient) {
+    this.emacs = emacs
   }
 
-  protected abstract read(): Promise<ResourceReadResult> | ResourceReadResult
+  abstract read(): Promise<ResourceReadResult> | ResourceReadResult
 
-  private register(): void {
-    this.server.registerResource(
-      this.config.name,
-      this.config.uri,
+  register(server: McpServer): void {
+    server.registerResource(
+      this.name,
+      this.uri,
       {
-        description: this.config.description,
-        mimeType: this.config.mimeType
+        description: this.description,
+        mimeType: this.mimeType
       },
       () => this.read()
     )

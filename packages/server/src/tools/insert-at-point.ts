@@ -13,8 +13,8 @@ const insertSchema = z.object({
 type InsertArgs = z.infer<typeof insertSchema>
 
 export class InsertAtPointTool extends EmacsTool {
-  public readonly name = "insert_at_point"
-  public readonly metadata = {
+  readonly name = "insert_at_point"
+  readonly metadata = {
     description: "Insert text at point or replace the current selection in Emacs",
     inputSchema: insertSchema
   }
@@ -23,7 +23,7 @@ export class InsertAtPointTool extends EmacsTool {
     super(emacs)
   }
 
-  protected handle(args: unknown, _extra: unknown, _context: unknown) {
+  handle(args: unknown, _extra: unknown, _context: unknown) {
     const parsed: InsertArgs = insertSchema.parse(args)
     const result = this.callTextFunction("mcp-emacs-insert-at-point", [
       parsed.text,

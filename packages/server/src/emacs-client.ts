@@ -153,18 +153,10 @@ export class EmacsClient {
   }
 
   private formatElispArg(value: string | number | boolean | null): string {
-    if (typeof value === "string") {
-      return `"${this.escapeElispString(value)}"`
-    }
-    if (typeof value === "number") {
-      return value.toString()
-    }
-    if (typeof value === "boolean") {
-      return value ? "t" : "nil"
-    }
-    if (value === null) {
-      return "nil"
-    }
+    if (typeof value === "string")  { return `"${this.escapeElispString(value)}"` }
+    if (typeof value === "number")  { return value.toString() }
+    if (typeof value === "boolean") { return value ? "t" : "nil" }
+    if (value === null)             { return "nil" }
     throw new Error("Unsupported elisp argument type")
   }
 }

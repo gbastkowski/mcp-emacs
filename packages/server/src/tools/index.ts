@@ -15,7 +15,8 @@ import { ToggleOrgTodoTool } from "./toggle-org-todo.js"
 import { EvalTool } from "./eval.js"
 
 export function registerTools(server: McpServer, emacs: EmacsClient): void {
-  const tools = [
+
+  for (const ToolCtor of [
     GetBufferContentTool,
     GetBufferFilenameTool,
     GetSelectionTool,
@@ -29,7 +30,6 @@ export function registerTools(server: McpServer, emacs: EmacsClient): void {
     GetEnvVarsTool,
     EvalTool,
     DiagnoseEmacsTool
-  ]
+  ]) { new ToolCtor(emacs).register(server) }
 
-  for (const ToolCtor of tools) { new ToolCtor(emacs).register(server) }
 }

@@ -9,7 +9,8 @@ describe("OrgTasksResource", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-org-tasks": '"Task list"'
     })
-    new OrgTasksResource(server, emacs)
+    const resource = new OrgTasksResource(emacs)
+    resource.register(server)
     const result = await server.readResource("org-tasks")
     assert.equal(result.contents[0].text, "Task list")
   })

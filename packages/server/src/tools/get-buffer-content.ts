@@ -2,8 +2,8 @@ import type { EmacsClient } from "../emacs-client.js"
 import { EmacsTool } from "./base-tool.js"
 
 export class GetBufferContentTool extends EmacsTool {
-  public readonly name = "get_buffer_content"
-  public readonly metadata = {
+  readonly name = "get_buffer_content"
+  readonly metadata = {
     description: "Get the content of the current Emacs buffer"
   }
 
@@ -11,7 +11,7 @@ export class GetBufferContentTool extends EmacsTool {
     super(emacs)
   }
 
-  protected handle(_args: unknown, _extra: unknown, _context: unknown): Record<string, unknown> {
+  handle(_args: unknown, _extra: unknown, _context: unknown): Record<string, unknown> {
     return {
       content: [
         {

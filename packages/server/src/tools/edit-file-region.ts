@@ -18,8 +18,8 @@ const editSchema = z.object({
 type EditArgs = z.infer<typeof editSchema>
 
 export class EditFileRegionTool extends EmacsTool {
-  public readonly name = "edit_file_region"
-  public readonly metadata = {
+  readonly name = "edit_file_region"
+  readonly metadata = {
     description: "Edit a specific region in an Emacs buffer using line/column coordinates",
     inputSchema: editSchema
   }
@@ -28,7 +28,7 @@ export class EditFileRegionTool extends EmacsTool {
     super(emacs)
   }
 
-  protected handle(args: unknown, _extra: unknown, _context: unknown): Record<string, unknown> {
+  handle(args: unknown, _extra: unknown, _context: unknown): Record<string, unknown> {
     const parsed: EditArgs = editSchema.parse(args)
     this.ensureValidRange(parsed)
     const result = this.callTextFunction("mcp-emacs-edit-file-region", [

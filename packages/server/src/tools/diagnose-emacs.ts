@@ -2,8 +2,8 @@ import type { EmacsClient } from "../emacs-client.js"
 import { EmacsTool } from "./base-tool.js"
 
 export class DiagnoseEmacsTool extends EmacsTool {
-  public readonly name = "diagnose_emacs"
-  public readonly metadata = {
+  readonly name = "diagnose_emacs"
+  readonly metadata = {
     description: "Collect diagnostic information about the running Emacs, including exec-path and LSP clients"
   }
 
@@ -11,7 +11,7 @@ export class DiagnoseEmacsTool extends EmacsTool {
     super(emacs)
   }
 
-  protected handle(_args: unknown, _extra: unknown, _context: unknown) {
+  handle(_args: unknown, _extra: unknown, _context: unknown) {
     return {
       content: [
         {

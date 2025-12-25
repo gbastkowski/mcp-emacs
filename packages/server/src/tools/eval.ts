@@ -12,8 +12,8 @@ const evalSchema = z.object({
 type EvalArgs = z.infer<typeof evalSchema>
 
 export class EvalTool extends EmacsTool {
-  public readonly name = "eval"
-  public readonly metadata = {
+  readonly name = "eval"
+  readonly metadata = {
     description: "Evaluate an arbitrary Elisp expression through emacsclient",
     inputSchema: evalSchema
   }
@@ -22,7 +22,7 @@ export class EvalTool extends EmacsTool {
     super(emacs)
   }
 
-  protected handle(args: unknown, _extra: unknown, _context: unknown) {
+  handle(args: unknown, _extra: unknown, _context: unknown) {
     const { expression }: EvalArgs = evalSchema.parse(args)
     const raw = this.emacs.evalInEmacs(expression)
     const text = this.emacs.parseElispString(raw)

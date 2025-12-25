@@ -20,8 +20,8 @@ const gotoSchema = z
 type GotoArgs = z.infer<typeof gotoSchema>
 
 export class GotoLineTool extends EmacsTool {
-  public readonly name = "goto_line"
-  public readonly metadata = {
+  readonly name = "goto_line"
+  readonly metadata = {
     description: "Jump to a specific line/column or function name in the current buffer",
     inputSchema: gotoSchema
   }
@@ -30,7 +30,7 @@ export class GotoLineTool extends EmacsTool {
     super(emacs)
   }
 
-  protected handle(args: unknown, _extra: unknown, _context: unknown) {
+  handle(args: unknown, _extra: unknown, _context: unknown) {
     const parsed: GotoArgs = gotoSchema.parse(args)
     const result = this.callTextFunction("mcp-emacs-goto-location", [
       parsed.line ?? null,

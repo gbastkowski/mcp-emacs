@@ -9,7 +9,8 @@ describe("MessagesResource", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-buffer-text": (args) => `"Messages:${args[0]}"`
     })
-    new MessagesResource(server, emacs)
+    const resource = new MessagesResource(emacs)
+    resource.register(server)
     const result = await server.readResource("messages-buffer")
     assert.equal(result.contents[0].text, "Messages:*Messages*")
   })

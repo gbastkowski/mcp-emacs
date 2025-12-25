@@ -5,8 +5,11 @@ import { WarningsResource } from "./warnings-resource.js"
 import { OrgTasksResource } from "./org-tasks-resource.js"
 
 export function registerResources(server: McpServer, emacs: EmacsClient): void {
-  const resources = [OrgTasksResource, MessagesResource, WarningsResource]
-  for (const ResourceCtor of resources) {
-    new ResourceCtor(server, emacs)
-  }
+
+  for (const ResourceCtor of [
+    OrgTasksResource,
+    MessagesResource,
+    WarningsResource
+  ]) { new ResourceCtor(emacs).register(server) }
+
 }

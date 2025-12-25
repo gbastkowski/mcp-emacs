@@ -2,8 +2,8 @@ import type { EmacsClient } from "../emacs-client.js"
 import { EmacsTool } from "./base-tool.js"
 
 export class GetBufferFilenameTool extends EmacsTool {
-  public readonly name = "get_buffer_filename"
-  public readonly metadata = {
+  readonly name = "get_buffer_filename"
+  readonly metadata = {
     description: "Get the filename associated with the current Emacs buffer"
   }
 
@@ -11,7 +11,7 @@ export class GetBufferFilenameTool extends EmacsTool {
     super(emacs)
   }
 
-  protected handle(_args: unknown, _extra: unknown, _context: unknown) {
+  handle(_args: unknown, _extra: unknown, _context: unknown) {
     const raw = this.emacs.callElispFunction("mcp-emacs-get-buffer-filename")
     if (raw === "nil") { return { content: [ { type: "text", text: "Current buffer is not visiting a file" } ] } }
 

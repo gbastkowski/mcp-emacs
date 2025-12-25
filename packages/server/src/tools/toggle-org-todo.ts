@@ -9,8 +9,8 @@ const toggleSchema = z.object({
 type ToggleArgs = z.infer<typeof toggleSchema>
 
 export class ToggleOrgTodoTool extends EmacsTool {
-  public readonly name = "toggle_org_todo"
-  public readonly metadata = {
+  readonly name = "toggle_org_todo"
+  readonly metadata = {
     description: "Toggle or set the TODO keyword at point in the current org heading",
     inputSchema: toggleSchema
   }
@@ -19,7 +19,7 @@ export class ToggleOrgTodoTool extends EmacsTool {
     super(emacs)
   }
 
-  protected handle(args: unknown, _extra: unknown, _context: unknown) {
+  handle(args: unknown, _extra: unknown, _context: unknown) {
     const parsed: ToggleArgs = toggleSchema.parse(args ?? {})
     const result = this.callTextFunction("mcp-emacs-toggle-org-todo", [parsed.state ?? null])
     return { content: [ { type: "text", text: result } ] }

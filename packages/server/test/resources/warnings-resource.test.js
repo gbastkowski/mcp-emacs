@@ -9,7 +9,8 @@ describe("WarningsResource", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-buffer-text": (args) => `"Warnings:${args[0]}"`
     })
-    new WarningsResource(server, emacs)
+    const resource = new WarningsResource(emacs)
+    resource.register(server)
     const result = await server.readResource("warnings-buffer")
     assert.equal(result.contents[0].text, "Warnings:*Warnings*")
   })

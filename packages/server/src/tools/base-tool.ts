@@ -5,15 +5,15 @@ type ToolMetadata = Record<string, unknown>
 type ElispArg     = string | number | boolean | null
 
 export abstract class EmacsTool {
-  public abstract readonly name: string
-  public abstract readonly metadata: ToolMetadata
+  abstract readonly name: string
+  abstract readonly metadata: ToolMetadata
   protected readonly emacs: EmacsClient
 
   protected constructor(emacs: EmacsClient) {
     this.emacs = emacs
   }
 
-  public register(server: McpServer): void {
+  register(server: McpServer): void {
     server.registerTool(
       this.name,
       this.metadata as never,
@@ -22,7 +22,7 @@ export abstract class EmacsTool {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  protected abstract handle(args: unknown, extra: unknown, context: unknown): Promise<any> | any
+  abstract handle(args: unknown, extra: unknown, context: unknown): Promise<any> | any
 
   protected callTextFunction(functionName: string, args: ElispArg[] = []): string {
     const raw = this.emacs.callElispFunction(functionName, args)

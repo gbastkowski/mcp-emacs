@@ -1,25 +1,23 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../emacs-client.js"
 import { EmacsResource } from "./base-resource.js"
 
 export class OrgTasksResource extends EmacsResource {
-  constructor(server: McpServer, emacs: EmacsClient) {
-    super(server, emacs, {
-      name: "org-tasks",
-      uri: "org-tasks://all",
-      description: "All TODO items from org-mode agenda files",
-      mimeType: "text/plain"
-    })
+  readonly name         = "org-tasks"
+  readonly uri          = "org-tasks://all"
+  readonly description  = "All TODO items from org-mode agenda files"
+  readonly mimeType     = "text/plain"
+
+  constructor(emacs: EmacsClient) {
+    super(emacs)
   }
 
-  protected read() {
-    const tasks = this.emacs.callElispStringFunction("mcp-emacs-get-org-tasks")
+  read() {
     return {
       contents: [
         {
-          uri: "org-tasks://all",
+          uri: this.uri,
           mimeType: "text/plain",
-          text: tasks
+          text: this.emacs.callElispStringFunction("mcp-emacs-get-org-tasks")
         }
       ]
     }
