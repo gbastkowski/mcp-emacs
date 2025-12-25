@@ -1,4 +1,3 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../emacs-client.js"
 import { z } from "zod"
 import { EmacsTool } from "./base-tool.js"
@@ -21,14 +20,14 @@ const gotoSchema = z
 type GotoArgs = z.infer<typeof gotoSchema>
 
 export class GotoLineTool extends EmacsTool {
-  constructor(server: McpServer, emacs: EmacsClient) {
-    super(server, emacs, {
-      name: "goto_line",
-      metadata: {
-        description: "Jump to a specific line/column or function name in the current buffer",
-        inputSchema: gotoSchema,
-      },
-    })
+  public readonly name = "goto_line"
+  public readonly metadata = {
+    description: "Jump to a specific line/column or function name in the current buffer",
+    inputSchema: gotoSchema
+  }
+
+  constructor(emacs: EmacsClient) {
+    super(emacs)
   }
 
   protected handle(args: unknown, _extra: unknown, _context: unknown) {

@@ -1,4 +1,3 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../emacs-client.js"
 import { z } from "zod"
 import { EmacsTool } from "./base-tool.js"
@@ -10,14 +9,14 @@ const toggleSchema = z.object({
 type ToggleArgs = z.infer<typeof toggleSchema>
 
 export class ToggleOrgTodoTool extends EmacsTool {
-  constructor(server: McpServer, emacs: EmacsClient) {
-    super(server, emacs, {
-      name: "toggle_org_todo",
-      metadata: {
-        description: "Toggle or set the TODO keyword at point in the current org heading",
-        inputSchema: toggleSchema,
-      },
-    })
+  public readonly name = "toggle_org_todo"
+  public readonly metadata = {
+    description: "Toggle or set the TODO keyword at point in the current org heading",
+    inputSchema: toggleSchema
+  }
+
+  constructor(emacs: EmacsClient) {
+    super(emacs)
   }
 
   protected handle(args: unknown, _extra: unknown, _context: unknown) {

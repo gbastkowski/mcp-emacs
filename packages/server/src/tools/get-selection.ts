@@ -1,15 +1,14 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../emacs-client.js"
 import { EmacsTool } from "./base-tool.js"
 
 export class GetSelectionTool extends EmacsTool {
-  constructor(server: McpServer, emacs: EmacsClient) {
-    super(server, emacs, {
-      name: "get_selection",
-      metadata: {
-        description: "Get the current selection (region) in Emacs",
-      },
-    })
+  public readonly name = "get_selection"
+  public readonly metadata = {
+    description: "Get the current selection (region) in Emacs"
+  }
+
+  constructor(emacs: EmacsClient) {
+    super(emacs)
   }
 
   protected handle(_args: unknown, _extra: unknown, _context: unknown) {

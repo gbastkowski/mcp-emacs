@@ -1,4 +1,3 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../emacs-client.js"
 import { z } from "zod"
 import { EmacsTool } from "./base-tool.js"
@@ -13,14 +12,14 @@ const evalSchema = z.object({
 type EvalArgs = z.infer<typeof evalSchema>
 
 export class EvalTool extends EmacsTool {
-  constructor(server: McpServer, emacs: EmacsClient) {
-    super(server, emacs, {
-      name: "eval",
-      metadata: {
-        description: "Evaluate an arbitrary Elisp expression through emacsclient",
-        inputSchema: evalSchema,
-      },
-    })
+  public readonly name = "eval"
+  public readonly metadata = {
+    description: "Evaluate an arbitrary Elisp expression through emacsclient",
+    inputSchema: evalSchema
+  }
+
+  constructor(emacs: EmacsClient) {
+    super(emacs)
   }
 
   protected handle(args: unknown, _extra: unknown, _context: unknown) {

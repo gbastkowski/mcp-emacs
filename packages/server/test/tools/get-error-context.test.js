@@ -9,7 +9,8 @@ describe("GetErrorContextTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-error-context": '"Warnings buffer"'
     })
-    new GetErrorContextTool(server, emacs)
+    const tool = new GetErrorContextTool(emacs)
+    tool.register(server)
     const response = server.callTool("get_error_context")
     assert.equal(response.content[0].text, "Warnings buffer")
     assert.equal(emacs.calls[0].name, "mcp-emacs-get-error-context")

@@ -31,5 +31,5 @@ export function registerTools(server: McpServer, emacs: EmacsClient): void {
     DiagnoseEmacsTool
   ]
 
-  for (const ToolCtor of tools) new ToolCtor(server, emacs)
+  for (const ToolCtor of tools) { new ToolCtor(emacs).register(server) }
 }

@@ -9,7 +9,8 @@ describe("DescribeFlycheckInfoTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-flycheck-info": '"Flycheck info"'
     })
-    new DescribeFlycheckInfoTool(server, emacs)
+    const tool = new DescribeFlycheckInfoTool(emacs)
+    tool.register(server)
     const response = server.callTool("describe_flycheck_info_at_point")
     assert.equal(response.content[0].text, "Flycheck info")
     assert.equal(emacs.calls[0].name, "mcp-emacs-get-flycheck-info")

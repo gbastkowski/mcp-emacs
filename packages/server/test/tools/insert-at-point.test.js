@@ -10,7 +10,8 @@ describe("InsertAtPointTool", () => {
       "mcp-emacs-insert-at-point": '"Replaced selection"'
     })
 
-    new InsertAtPointTool(server, emacs)
+    const tool = new InsertAtPointTool(emacs)
+    tool.register(server)
 
     const response = server.callTool("insert_at_point", {
       text: "updated",
@@ -30,7 +31,8 @@ describe("InsertAtPointTool", () => {
       "mcp-emacs-insert-at-point": '"Inserted text"'
     })
 
-    new InsertAtPointTool(server, emacs)
+    const tool = new InsertAtPointTool(emacs)
+    tool.register(server)
 
     const response = server.callTool("insert_at_point", {
       text: "hello"

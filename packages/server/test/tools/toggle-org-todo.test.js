@@ -10,7 +10,8 @@ describe("ToggleOrgTodoTool", () => {
       "mcp-emacs-toggle-org-todo": '"Set TODO state to DONE"'
     })
 
-    new ToggleOrgTodoTool(server, emacs)
+    const tool = new ToggleOrgTodoTool(emacs)
+    tool.register(server)
     const response = server.callTool("toggle_org_todo", { state: "DONE" })
 
     assert.equal(response.content[0].text, "Set TODO state to DONE")
@@ -26,7 +27,8 @@ describe("ToggleOrgTodoTool", () => {
       "mcp-emacs-toggle-org-todo": '"Advanced TODO state"'
     })
 
-    new ToggleOrgTodoTool(server, emacs)
+    const tool = new ToggleOrgTodoTool(emacs)
+    tool.register(server)
     const response = server.callTool("toggle_org_todo", {})
 
     assert.equal(response.content[0].text, "Advanced TODO state")

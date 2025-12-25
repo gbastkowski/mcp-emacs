@@ -9,7 +9,8 @@ describe("OpenFileTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-open-file": '"Opened"'
     })
-    new OpenFileTool(server, emacs)
+    const tool = new OpenFileTool(emacs)
+    tool.register(server)
     const path = "/tmp/weird path"
     const response = server.callTool("open_file", { path })
     assert.equal(response.content[0].text, `Opened file: ${path}`)

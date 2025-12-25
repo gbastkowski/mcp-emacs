@@ -1,15 +1,14 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../emacs-client.js"
 import { EmacsTool } from "./base-tool.js"
 
 export class GetBufferFilenameTool extends EmacsTool {
-  constructor(server: McpServer, emacs: EmacsClient) {
-    super(server, emacs, {
-      name: "get_buffer_filename",
-      metadata: {
-        description: "Get the filename associated with the current Emacs buffer",
-      },
-    })
+  public readonly name = "get_buffer_filename"
+  public readonly metadata = {
+    description: "Get the filename associated with the current Emacs buffer"
+  }
+
+  constructor(emacs: EmacsClient) {
+    super(emacs)
   }
 
   protected handle(_args: unknown, _extra: unknown, _context: unknown) {

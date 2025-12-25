@@ -9,7 +9,8 @@ describe("GetSelectionTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-selection": "nil"
     })
-    new GetSelectionTool(server, emacs)
+    const tool = new GetSelectionTool(emacs)
+    tool.register(server)
     const response = server.callTool("get_selection")
     assert.equal(response.content[0].text, "No active selection")
   })
@@ -19,7 +20,8 @@ describe("GetSelectionTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-selection": '"Highlighted text"'
     })
-    new GetSelectionTool(server, emacs)
+    const tool = new GetSelectionTool(emacs)
+    tool.register(server)
     const response = server.callTool("get_selection")
     assert.equal(response.content[0].text, "Highlighted text")
   })

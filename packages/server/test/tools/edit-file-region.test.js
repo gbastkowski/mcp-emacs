@@ -10,7 +10,8 @@ describe("EditFileRegionTool", () => {
       "mcp-emacs-edit-file-region": '"Edited /tmp/test at 1:1-1:1"'
     })
 
-    new EditFileRegionTool(server, emacs)
+    const tool = new EditFileRegionTool(emacs)
+    tool.register(server)
 
     const response = server.callTool("edit_file_region", {
       path: "/tmp/test",
@@ -33,7 +34,8 @@ describe("EditFileRegionTool", () => {
       "mcp-emacs-edit-file-region": '"no-op"'
     })
 
-    new EditFileRegionTool(server, emacs)
+    const tool = new EditFileRegionTool(emacs)
+    tool.register(server)
 
     assert.throws(() => {
       server.callTool("edit_file_region", {

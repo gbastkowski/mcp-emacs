@@ -9,7 +9,8 @@ describe("GetBufferFilenameTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-buffer-filename": "nil"
     })
-    new GetBufferFilenameTool(server, emacs)
+    const tool = new GetBufferFilenameTool(emacs)
+    tool.register(server)
     const response = server.callTool("get_buffer_filename")
     assert.equal(response.content[0].text, "Current buffer is not visiting a file")
   })
@@ -19,7 +20,8 @@ describe("GetBufferFilenameTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-buffer-filename": '"/tmp/sample.txt"'
     })
-    new GetBufferFilenameTool(server, emacs)
+    const tool = new GetBufferFilenameTool(emacs)
+    tool.register(server)
     const response = server.callTool("get_buffer_filename")
     assert.equal(response.content[0].text, "/tmp/sample.txt")
   })

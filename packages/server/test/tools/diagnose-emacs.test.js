@@ -9,7 +9,8 @@ describe("DiagnoseEmacsTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-diagnose": '"Diagnostics"'
     })
-    new DiagnoseEmacsTool(server, emacs)
+    const tool = new DiagnoseEmacsTool(emacs)
+    tool.register(server)
     const response = server.callTool("diagnose_emacs")
     assert.equal(response.content[0].text, "Diagnostics")
     assert.equal(emacs.calls[0].name, "mcp-emacs-diagnose")

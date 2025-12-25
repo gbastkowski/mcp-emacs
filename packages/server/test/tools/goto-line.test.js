@@ -10,7 +10,8 @@ describe("GotoLineTool", () => {
       "mcp-emacs-goto-location": '"Moved to line 10, column 5"'
     })
 
-    new GotoLineTool(server, emacs)
+    const tool = new GotoLineTool(emacs)
+    tool.register(server)
 
     const response = server.callTool("goto_line", {
       line: 10,
@@ -30,7 +31,8 @@ describe("GotoLineTool", () => {
       "mcp-emacs-goto-location": '"Moved to function foo"'
     })
 
-    new GotoLineTool(server, emacs)
+    const tool = new GotoLineTool(emacs)
+    tool.register(server)
 
     const response = server.callTool("goto_line", {
       functionName: "foo"
@@ -47,7 +49,8 @@ describe("GotoLineTool", () => {
     const server = createFakeServer()
     const emacs = createStubEmacs()
 
-    new GotoLineTool(server, emacs)
+    const tool = new GotoLineTool(emacs)
+    tool.register(server)
 
     assert.throws(() => {
       server.callTool("goto_line", {})

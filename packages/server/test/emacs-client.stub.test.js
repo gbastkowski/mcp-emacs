@@ -6,6 +6,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { EmacsClient } from "../dist/emacs-client.js"
 import { GetSelectionTool } from "../dist/tools/get-selection.js"
+import { createFakeServer } from "./support/tool-fixtures.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -61,11 +62,10 @@ describe(
 
     it("returns user-friendly text when selection is inactive", () => {
       const client = new EmacsClient(1000)
-      const fakeServer = { registerTool() {} }
-      assert.equal(
-        new GetSelectionTool(fakeServer, client).handle(undefined, undefined, undefined).content[0].text,
-        "No active selection"
-      )
+      const fakeServer = createFakeServer()
+      const tool = new GetSelectionTool(client)
+      tool.register(fakeServer)
+      assert.equal(fakeServer.callTool("get_selection").content[0].text, "No active selection")
     })
 
     it("escapes complex file paths when opening files", () => {

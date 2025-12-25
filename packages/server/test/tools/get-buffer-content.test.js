@@ -9,7 +9,8 @@ describe("GetBufferContentTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-buffer-content": '"Hello from buffer"'
     })
-    new GetBufferContentTool(server, emacs)
+    const tool = new GetBufferContentTool(emacs)
+    tool.register(server)
     const response = server.callTool("get_buffer_content")
     assert.equal(response.content[0].text, "Hello from buffer")
   })

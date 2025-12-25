@@ -9,7 +9,8 @@ describe("GetEnvVarsTool", () => {
     const emacs = createStubEmacs({
       "mcp-emacs-get-env-vars": '"FOO=bar"'
     })
-    new GetEnvVarsTool(server, emacs)
+    const tool = new GetEnvVarsTool(emacs)
+    tool.register(server)
     const response = server.callTool("get_env_vars")
     assert.equal(response.content[0].text, "FOO=bar")
     assert.equal(emacs.calls[0].name, "mcp-emacs-get-env-vars")

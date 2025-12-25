@@ -5,14 +5,18 @@ type ToolMetadata = Record<string, unknown>
 type ElispArg     = string | number | boolean | null
 
 export abstract class EmacsTool {
-  constructor(
-    protected readonly server: McpServer,
-    protected readonly emacs: EmacsClient,
-    config: { name: string; metadata: ToolMetadata }
-  ) {
-    this.server.registerTool(
-      config.name,
-      config.metadata as never,
+  public abstract readonly name: string
+  public abstract readonly metadata: ToolMetadata
+  protected readonly emacs: EmacsClient
+
+  protected constructor(emacs: EmacsClient) {
+    this.emacs = emacs
+  }
+
+  public register(server: McpServer): void {
+    server.registerTool(
+      this.name,
+      this.metadata as never,
       ((args: unknown, extra: unknown, context: unknown) => this.handle(args, extra, context)) as never
     )
   }
