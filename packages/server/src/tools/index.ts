@@ -28,10 +28,8 @@ export function registerTools(server: McpServer, emacs: EmacsClient): void {
     GetErrorContextTool,
     GetEnvVarsTool,
     EvalTool,
-    DiagnoseEmacsTool,
+    DiagnoseEmacsTool
   ]
 
-  for (const ToolCtor of tools) {
-    new ToolCtor(server, emacs)
-  }
+  for (const ToolCtor of tools) new ToolCtor(server, emacs)
 }

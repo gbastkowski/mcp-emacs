@@ -1,4 +1,5 @@
 @startuml
+skinparam backgroundColor white
 actor Client
 participant "MCP Server (Node)" as Server
 participant "emacsclient" as Bridge

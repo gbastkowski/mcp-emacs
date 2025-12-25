@@ -1,19 +1,21 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+
+
+import type { McpServer   } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../emacs-client.js"
-import { z } from "zod"
-import { EmacsTool } from "./base-tool.js"
+import      { z           } from "zod"
+import      { EmacsTool   } from "./base-tool.js"
 
 const positionSchema = z.object({
-  line: z.number().int().min(1).describe("1-based line number"),
+  line:   z.number().int().min(1).describe("1-based line number"),
   column: z.number().int().min(1).describe("1-based column number"),
 })
 
 const editSchema = z.object({
-  path: z.string().min(1).describe("Absolute path to the file being edited"),
-  start: positionSchema.describe("Start of the replacement region"),
-  end: positionSchema.describe("End of the replacement region"),
-  text: z.string().describe("Replacement text to insert within the range"),
-  save: z.boolean().default(false).describe("Save the buffer after applying the edit"),
+  path:   z.string().min(1).describe("Absolute path to the file being edited"),
+  start:  positionSchema.describe("Start of the replacement region"),
+  end:    positionSchema.describe("End of the replacement region"),
+  text:   z.string().describe("Replacement text to insert within the range"),
+  save:   z.boolean().default(false).describe("Save the buffer after applying the edit"),
 })
 
 type EditArgs = z.infer<typeof editSchema>

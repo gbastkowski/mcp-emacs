@@ -1,6 +1,6 @@
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { McpServer   } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../emacs-client.js"
-import { EmacsTool } from "./base-tool.js"
+import      { EmacsTool   } from "./base-tool.js"
 
 export class DescribeFlycheckInfoTool extends EmacsTool {
   constructor(server: McpServer, emacs: EmacsClient) {

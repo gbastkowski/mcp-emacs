@@ -7,9 +7,8 @@ export class DiagnoseEmacsTool extends EmacsTool {
     super(server, emacs, {
       name: "diagnose_emacs",
       metadata: {
-        description:
-          "Collect diagnostic information about the running Emacs, including exec-path and LSP clients",
-      },
+        description: "Collect diagnostic information about the running Emacs, including exec-path and LSP clients"
+      }
     })
   }
 

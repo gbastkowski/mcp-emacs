@@ -15,8 +15,7 @@ export class EmacsClient {
    */
   callElispFunction(functionName: string, args: Array<string | number | boolean | null> = []): string {
     const formattedArgs = args.map((arg) => this.formatElispArg(arg)).join(" ")
-    const form = `(${functionName}${formattedArgs ? " " + formattedArgs : ""})`
-    return this.evalInEmacs(form)
+    return this.evalInEmacs(`(${functionName}${formattedArgs ? " " + formattedArgs : ""})`)
   }
 
   /**
