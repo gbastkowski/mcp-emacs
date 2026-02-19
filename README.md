@@ -5,7 +5,8 @@ Model Context Protocol (MCP) tooling for Emacs, now split into two dedicated mod
 - `packages/server`: the Node.js MCP server (`mcp-emacs-server` npm package)
 - `packages/emacs`: the Emacs Lisp package (`mcp-emacs`) that exposes editor-side commands
 
-Install the Emacs package inside your editor, then run the MCP server to make those operations available to Claude Desktop/Code.
+Run the MCP server to make the operations available to Claude Desktop/Code.
+You can install the Emacs package in your editor, or let the server bootstrap the Elisp automatically.
 
 ## Features
 
@@ -37,11 +38,11 @@ Install the Emacs package inside your editor, then run the MCP server to make th
 - Node.js 20+
 - Emacs with server mode running (`M-x server-start` or via your init file)
 - `emacsclient` available in PATH
-- The `mcp-emacs` Emacs package loaded (see below)
+- Optional: the `mcp-emacs` Emacs package loaded (see below)
 
 ## Installation
 
-### 1. Install the Emacs package
+### 1. Install the Emacs package (optional)
 
 At minimum you can drop the package onto your load-path:
 
@@ -64,7 +65,8 @@ Prefer to keep things managed? A few options:
 
 - **package-install-file**: run `M-x package-install-file`, choose `packages/emacs/mcp-emacs-pkg.el`, and Emacs will register it like any other package.
 
-Whatever route you pick, make sure `(require 'mcp-emacs)` succeeds before starting the MCP server.
+The server can bootstrap the required Elisp without this package.
+Install it if you want the Elisp to live in your Emacs config and update separately.
 
 ### 2. Install/build the Node MCP server
 

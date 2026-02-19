@@ -12,8 +12,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc --watch",
+    "build": "node scripts/extract-elisp.js && tsc",
+    "watch": "node scripts/extract-elisp.js && tsc --watch",
     "prepare": "npm run build",
     "test": "npm run build && node --test --test-concurrency 1 test/**/*.test.js"
   },

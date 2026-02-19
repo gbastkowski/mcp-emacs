@@ -1,4 +1,5 @@
 import { execFileSync } from "child_process"
+import { bootstrapElisp } from "./bootstrap-elisp.js"
 
 export class EmacsClient {
   private timeout: number
@@ -117,11 +118,11 @@ export class EmacsClient {
   private ensureInitialized(): void {
     if (this.initialized) return
     try {
-      this.runEval("(require 'mcp-emacs)")
+      this.runEval(bootstrapElisp)
       this.initialized = true
     } catch (error) {
       throw new Error(
-        "Failed to load the mcp-emacs Emacs package. Add it to your Emacs load-path and ensure it can be required. " +
+        "Failed to load the mcp-emacs bootstrap payload. Ensure Emacs server mode is running. " +
           `Original error: ${error}`
       )
     }

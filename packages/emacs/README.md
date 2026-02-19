@@ -1,8 +1,9 @@
 # mcp-emacs (Emacs package)
 
 Helper utilities that expose the Emacs-side commands expected by the `mcp-emacs-server` Node MCP server.
+The server can bootstrap these functions automatically, so installing this package is optional.
 
-## Installation
+## Installation (optional)
 
 1. Clone this repository or fetch the `packages/emacs` directory somewhere on your disk.
 2. Choose an install method:
@@ -23,7 +24,7 @@ Helper utilities that expose the Emacs-side commands expected by the `mcp-emacs-
 
    - **package-install-file**: run `M-x package-install-file` and select `packages/emacs/mcp-emacs-pkg.el`
 
-Whichever path you pick, make sure `(require 'mcp-emacs)` happens before the Node server tries to talk to Emacs.
+If you install the package, make sure `(require 'mcp-emacs)` happens before the Node server tries to talk to Emacs.
 
 ## Provided features
 
