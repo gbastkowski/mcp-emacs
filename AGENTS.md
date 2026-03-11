@@ -6,8 +6,7 @@ MCP server that enables AI agents to interact with Emacs.
 Uses `emacsclient` for communication.
 
 Repository layout:
-- `packages/server`: Node.js MCP server module
-- `packages/emacs`: Emacs Lisp package that must be installed separately
+- `.` (repo root): Node.js MCP server module with embedded Emacs Lisp helpers
 
 ## Tech Stack
 
@@ -36,7 +35,10 @@ Repository layout:
 - Keep public members at the top of classes, with private helpers grouped below
 - Keep short parameter lists on a single line when they fit and avoid trailing commas on the last element/argument
 - For simple `switch` branches prefer single-line `case` statements (`case "x": doWork(); break`)
-- Git commits should follow the tbaggery guidelines: short imperative subject (~50 chars), wrap additional context at ~72 chars, and keep messages brief unless extra detail is essential.
+- Git commits should follow the tbaggery guidelines:
+  - short imperative subject (~50 chars),
+  - wrap additional context at ~72 chars,
+  - and keep messages brief unless extra detail is essential.
 
 ## Tools & Resources Implementation
 
@@ -52,7 +54,7 @@ Resources follow the same pattern using the `src/resources` base class. Prefer d
 
 Manual testing workflow:
 1. Start Emacs with server-start
-2. Build the MCP server (run `npm run build` inside `packages/server`)
+2. Build the MCP server (run `npm run build` from the repo root)
 3. Test with MCP client
 4. Check emacsclient behavior directly when debugging
 

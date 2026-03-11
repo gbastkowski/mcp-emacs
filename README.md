@@ -1,74 +1,45 @@
 # MCP Emacs
 
-Model Context Protocol (MCP) tooling for Emacs, now split into two dedicated modules:
-
-- `packages/server`: the Node.js MCP server (`mcp-emacs-server` npm package)
-- `packages/emacs`: the Emacs Lisp package (`mcp-emacs`) that exposes editor-side commands
+Model Context Protocol (MCP) tooling for Emacs delivered as a single Node.js MCP server package.
 
 Run the MCP server to make the operations available to Claude Desktop/Code.
-You can install the Emacs package in your editor, or let the server bootstrap the Elisp automatically.
+The server bootstraps the Emacs Lisp payload automatically.
 
 ## Features
 
 ### Tools
 
-| Tool | Description |
-| --- | --- |
-| `get_buffer_content` | Get the content of the current Emacs buffer |
-| `get_buffer_filename` | Get the filename associated with the current Emacs buffer |
-| `get_selection` | Get the current selection (region) in Emacs |
-| `open_file` | Open a file in the current Emacs window |
-| `edit_file_region` | Replace text in a file by specifying start/end line & column coordinates (optionally save) |
-| `insert_at_point` | Insert text at point or replace the current selection in the active buffer |
-| `goto_line` | Jump to a specific line/column or navigate directly to a named function via imenu |
-| `toggle_org_todo` | Toggle the TODO keyword (or set a specific state) on the current Org heading |
-| `describe_flycheck_info_at_point` | Get flycheck diagnostics at cursor |
-| `get_error_context` | Summarize contents of error-related buffers (*Messages*, *Warnings*, compilation logs) |
+| Tool                              | Description                                                                                |
+|-----------------------------------|--------------------------------------------------------------------------------------------|
+| `get_buffer_content`              | Get the content of the current Emacs buffer                                                |
+| `get_buffer_filename`             | Get the filename associated with the current Emacs buffer                                  |
+| `get_selection`                   | Get the current selection (region) in Emacs                                                |
+| `open_file`                       | Open a file in the current Emacs window                                                    |
+| `edit_file_region`                | Replace text in a file by specifying start/end line & column coordinates (optionally save) |
+| `insert_at_point`                 | Insert text at point or replace the current selection in the active buffer                 |
+| `goto_line`                       | Jump to a specific line/column or navigate directly to a named function via imenu          |
+| `toggle_org_todo`                 | Toggle the TODO keyword (or set a specific state) on the current Org heading               |
+| `describe_flycheck_info_at_point` | Get flycheck diagnostics at cursor                                                         |
+| `get_error_context`               | Summarize contents of error-related buffers (*Messages*, *Warnings*, compilation logs)     |
 
 ### Resources
 
-| Resource | Description |
-| --- | --- |
-| `org-tasks://all` | All TODO items from org-mode agenda files with status, priority, scheduled/deadline dates |
-| `buffer://messages` | Live contents of the Emacs `*Messages*` buffer |
-| `buffer://warnings` | Live contents of the Emacs `*Warnings*` buffer |
+| Resource            | Description                                                                               |
+|---------------------|-------------------------------------------------------------------------------------------|
+| `org-tasks://all`   | All TODO items from org-mode agenda files with status, priority, scheduled/deadline dates |
+| `buffer://messages` | Live contents of the Emacs `*Messages*` buffer                                            |
+| `buffer://warnings` | Live contents of the Emacs `*Warnings*` buffer                                            |
 
 ## Prerequisites
 
 - Node.js 20+
 - Emacs with server mode running (`M-x server-start` or via your init file)
 - `emacsclient` available in PATH
-- Optional: the `mcp-emacs` Emacs package loaded (see below)
+- The server bootstraps the Emacs Lisp helpers automatically
 
 ## Installation
 
-### 1. Install the Emacs package (optional)
-
-At minimum you can drop the package onto your load-path:
-
-```elisp
-(add-to-list 'load-path "/path/to/mcp-emacs/packages/emacs/lisp")
-(require 'mcp-emacs)
-(server-start)
-```
-
-Prefer to keep things managed? A few options:
-
-- **Straight / use-package**
-
-  ```elisp
-  (use-package mcp-emacs
-    :straight (mcp-emacs :type git :host github :repo "gbastkowski/mcp-emacs" :files ("packages/emacs/lisp/*.el"))
-    :config
-    (server-start))
-  ```
-
-- **package-install-file**: run `M-x package-install-file`, choose `packages/emacs/mcp-emacs-pkg.el`, and Emacs will register it like any other package.
-
-The server can bootstrap the required Elisp without this package.
-Install it if you want the Elisp to live in your Emacs config and update separately.
-
-### 2. Install/build the Node MCP server
+### 1. Install/build the Node MCP server
 
 You can consume the server straight from npm or build from this repo:
 
@@ -83,7 +54,6 @@ You can consume the server straight from npm or build from this repo:
 - **Build from source**
 
   ```bash
-  cd packages/server
   npm install
   npm run build
   ```
@@ -100,28 +70,13 @@ npx --yes mcp-emacs-server
 
 The CLI entrypoint remains `mcp-emacs`; `npx` downloads the `mcp-emacs-server` package and runs that binary.
 
-## Usage with Claude Desktop
-
-Update `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS example):
-
-```json
-{
-  "mcpServers": {
-    "emacs": {
-      "command": "node",
-      "args": ["/path/to/mcp-emacs/packages/server/dist/index.js"]
-    }
-  }
-}
-```
-
 ## Usage with Claude Code
 
 ```json
 {
   "emacs": {
     "command": "node",
-    "args": ["/path/to/mcp-emacs/packages/server/dist/index.js"]
+    "args": ["/path/to/mcp-emacs/dist/index.js"]
   }
 }
 ```
@@ -129,18 +84,18 @@ Update `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS 
 ## Development
 
 ```bash
-cd packages/server
 npm run build      # Single build
 npm run watch      # Rebuild on change
 npm test           # TypeScript unit tests
 ```
 
-The Emacs package is plain Elisp; edit files under `packages/emacs/lisp` and load them into your Emacs session as usual.
+The Emacs Lisp helpers live in `elisp/mcp-emacs.el`.
+The build step embeds that file into the server bootstrap payload.
 
 ## Architecture
 
 - **TypeScript/Node.js**: MCP server implementation (`mcp-emacs-server`)
-- **Emacs Lisp**: `mcp-emacs` package that implements the editor-side helpers
+- **Emacs Lisp**: embedded bootstrap helpers (generated from `elisp/mcp-emacs.el`)
 - **emacsclient**: Communication bridge (always via `--eval`)
 - **STDIO transport**: Standard MCP communication channel
 
@@ -152,7 +107,8 @@ The source PlantUML definition lives in `docs/architecture.puml` if you need to 
 
 ## Requirements
 
-The server still requires Emacs to already be running with server mode enabled. Add this to your init file if needed:
+The server still requires Emacs to already be running with server mode enabled.
+Add this to your init file if needed:
 
 ```elisp
 (server-start)
