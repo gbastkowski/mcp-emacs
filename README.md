@@ -37,6 +37,12 @@ The server bootstraps the Emacs Lisp payload automatically.
 - `emacsclient` available in PATH
 - The server bootstraps the Emacs Lisp helpers automatically
 
+### Configuring the `emacsclient` binary
+
+If your MCP host process does not inherit the same `PATH` as your shell, point the server at a specific binary with the `MCP_EMACSCLIENT_PATH` environment variable (or by passing `{ executable: "/full/path/to/emacsclient" }` when instantiating `EmacsClient`).
+For ad-hoc overrides when running the CLI directly, supply `--emacsclient-executable /full/path/to/emacsclient` and the server will pass that value through to the client.
+These options avoid “Failed to load the mcp-emacs bootstrap payload” errors when the binary exists but is not discoverable.
+
 ## Installation
 
 ### 1. Install/build the Node MCP server
