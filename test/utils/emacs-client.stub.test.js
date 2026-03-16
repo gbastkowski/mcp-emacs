@@ -11,6 +11,7 @@ import { createFakeServer }                                 from "../support/too
 const __filename      = fileURLToPath(import.meta.url)
 const __dirname       = path.dirname(__filename)
 const originalPath    = process.env.PATH ?? ""
+const nodeDir         = path.dirname(process.execPath)
 const binDir          = path.join(__dirname, "..", "bin")
 const COMPLEX_BUFFER  = `Hello from "buffer"\\path
 Next line with tab	and bell`
@@ -36,11 +37,13 @@ describe(
       writeFileSync(logFile, "", "utf8")
       process.env.PATH = `${binDir}${path.delimiter}${originalPath}`
       process.env.MCP_TEST_LOG = logFile
+      delete process.env.MCP_EMACSCLIENT_PATH
     })
 
     afterEach(() => {
       process.env.PATH = originalPath
       delete process.env.MCP_TEST_LOG
+      delete process.env.MCP_EMACSCLIENT_PATH
       if (logDir) rmSync(logDir, { recursive: true, force: true })
     })
 
@@ -84,6 +87,19 @@ describe(
       const client = new EmacsClient(1000)
       assert.equal(client.callElispStringFunction("mcp-emacs-diagnose"), "Diagnostics stub")
       assert.ok(readLog().some((line) => line.startsWith("(mcp-emacs-diagnose")))
+    })
+
+    it("honors MCP_EMACSCLIENT_PATH env override", () => {
+      process.env.PATH = nodeDir
+      process.env.MCP_EMACSCLIENT_PATH = path.join(binDir, "emacsclient")
+      const client = new EmacsClient({ timeout: 1000 })
+      assert.equal(client.callElispStringFunction("mcp-emacs-diagnose"), "Diagnostics stub")
+    })
+
+    it("accepts executable override via constructor options", () => {
+      process.env.PATH = nodeDir
+      const client = new EmacsClient({ timeout: 1000, executable: path.join(binDir, "emacsclient") })
+      assert.equal(client.callElispStringFunction("mcp-emacs-diagnose"), "Diagnostics stub")
     })
   }
 )

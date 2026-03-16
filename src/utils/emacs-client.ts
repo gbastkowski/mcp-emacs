@@ -1,12 +1,24 @@
 import { execFileSync }   from "child_process"
 import { bootstrapElisp } from "./bootstrap-elisp.js"
 
+export interface EmacsClientOptions {
+  timeout?: number
+  executable?: string
+}
+
 export class EmacsClient {
   private timeout: number
   private initialized: boolean
+  private executable: string
 
-  constructor(timeout: number = 5000) {
-    this.timeout = timeout
+  constructor(timeoutOrOptions: number | EmacsClientOptions = 5000) {
+    if (typeof timeoutOrOptions === "number") {
+      this.timeout = timeoutOrOptions
+      this.executable = this.resolveExecutable()
+    } else {
+      this.timeout = timeoutOrOptions.timeout ?? 5000
+      this.executable = this.resolveExecutable(timeoutOrOptions.executable)
+    }
     this.initialized = false
   }
 
@@ -115,6 +127,16 @@ export class EmacsClient {
     return this.runEval(elisp)
   }
 
+  public evalInEmacsNoWait(elisp: string): void {
+    this.ensureInitialized()
+    this.runEval(elisp, true)
+  }
+
+  callElispFunctionNoWait(functionName: string, args: Array<string | number | boolean | null> = []): void {
+    const formattedArgs = args.map((arg) => this.formatElispArg(arg)).join(" ")
+    this.evalInEmacsNoWait(`(${functionName}${formattedArgs ? " " + formattedArgs : ""})`)
+  }
+
   private ensureInitialized(): void {
     if (this.initialized) return
     try {
@@ -128,11 +150,12 @@ export class EmacsClient {
     }
   }
 
-  private runEval(elisp: string): string {
+  private runEval(elisp: string, noWait = false): string {
     try {
+      const args = noWait ? ["--no-wait", "--eval", elisp] : ["--eval", elisp]
       const result = execFileSync(
-        "emacsclient",
-        ["--eval", elisp],
+        this.executable,
+        args,
         {
           encoding: "utf-8",
           timeout: this.timeout
@@ -142,6 +165,15 @@ export class EmacsClient {
     } catch (error) {
       throw new Error(`Failed to communicate with Emacs: ${error}`)
     }
+  }
+
+  private resolveExecutable(override?: string): string {
+    const envOverride = process.env.MCP_EMACSCLIENT_PATH ?? process.env.EMACSCLIENT
+    const candidate = override ?? envOverride ?? "emacsclient"
+    if (!candidate.trim()) {
+      throw new Error("emacsclient executable path must not be empty")
+    }
+    return candidate
   }
 
   private escapeElispString(value: string): string {
