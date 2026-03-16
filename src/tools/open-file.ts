@@ -17,7 +17,7 @@ export class OpenFileTool extends EmacsTool {
 
   handle(args: unknown, _extra: unknown, _context: unknown) {
     const { path } = args as { path: string }
-    this.emacs.callElispFunction("mcp-emacs-open-file", [path])
+    this.emacs.callElispFunctionNoWait("mcp-emacs-open-file", [path])
     return { content: [ { type: "text", text: `Opened file: ${path}` } ] }
   }
 }
