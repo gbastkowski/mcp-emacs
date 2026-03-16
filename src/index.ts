@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { EmacsClient          } from "./utils/emacs-client.js"
 import { registerTools        } from "./tools/index.js"
 import { registerResources    } from "./resources/index.js"
+import { parseCliOptions      } from "./utils/cli-options.js"
 
 const server = new McpServer(
   {
@@ -19,7 +20,15 @@ const server = new McpServer(
   }
 )
 
-const emacs = new EmacsClient()
+let cliOptions
+try {
+  cliOptions = parseCliOptions(process.argv.slice(2))
+} catch (error) {
+  console.error(String(error))
+  process.exit(1)
+}
+
+const emacs = new EmacsClient({ executable: cliOptions.emacsclientExecutable })
 
 registerTools(server, emacs)
 registerResources(server, emacs)
