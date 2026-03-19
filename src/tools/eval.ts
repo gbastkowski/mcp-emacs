@@ -24,7 +24,8 @@ export class EvalTool extends EmacsTool {
 
   handle(args: unknown, _extra: unknown, _context: unknown) {
     const { expression }: EvalArgs = evalSchema.parse(args)
-    const raw = this.emacs.evalInEmacs(expression)
+    const wrappedExpression = `(with-current-buffer (mcp-emacs--current-buffer) (progn ${expression}))`
+    const raw = this.emacs.evalInEmacs(wrappedExpression)
     const text = this.emacs.parseElispString(raw)
     return { content: [ { type: "text", text } ] }
   }

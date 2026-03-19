@@ -45,6 +45,27 @@ describe("GotoLineTool", () => {
     })
   })
 
+  it("coerces numeric strings for line and column", () => {
+    const server = createFakeServer()
+    const emacs = createStubEmacs({
+      "mcp-emacs-goto-location": '"Moved"'
+    })
+
+    const tool = new GotoLineTool(emacs)
+    tool.register(server)
+
+    const response = server.callTool("goto_line", {
+      line: "12",
+      column: "3"
+    })
+
+    assert.equal(response.content[0].text, "Moved")
+    assert.deepEqual(emacs.calls[0], {
+      name: "mcp-emacs-goto-location",
+      args: [12, 3, null]
+    })
+  })
+
   it("requires either a line or function name", () => {
     const server = createFakeServer()
     const emacs = createStubEmacs()

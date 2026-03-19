@@ -33,6 +33,9 @@ export function createStubEmacs(responses = {}) {
       if (typeof response === "function") return response(args)
       return response
     },
+    callElispFunctionNoWait(name, args = []) {
+      this.callElispFunction(name, args)
+    },
     parseElispString(str) {
       if (str.startsWith('"') && str.endsWith('"')) return str.slice(1, -1)
       return str

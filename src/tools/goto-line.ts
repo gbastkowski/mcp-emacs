@@ -4,8 +4,8 @@ import { EmacsTool } from "./base-tool.js"
 
 const gotoSchema = z
   .object({
-    line:   z.number().int().min(1).describe("1-based line number to jump to").optional(),
-    column: z.number().int().min(1).describe("1-based column to position the cursor at").optional(),
+    line:   z.coerce.number().int().min(1).describe("1-based line number to jump to").optional(),
+    column: z.coerce.number().int().min(1).describe("1-based column to position the cursor at").optional(),
     functionName: z
       .string()
       .min(1)
