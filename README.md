@@ -13,6 +13,7 @@ The server bootstraps the Emacs Lisp payload automatically.
 |-----------------------------------|--------------------------------------------------------------------------------------------|
 | `get_buffer_content`              | Get the content of the current Emacs buffer                                                |
 | `get_current_clocked_task`        | Get the Org task currently clocked in                                                      |
+| `get_current_task_at_point`       | Get the current Org task at point                                                          |
 | `get_buffer_filename`             | Get the filename associated with the current Emacs buffer                                  |
 | `get_selection`                   | Get the current selection (region) in Emacs                                                |
 | `open_file`                       | Open a file in the current Emacs window                                                    |
