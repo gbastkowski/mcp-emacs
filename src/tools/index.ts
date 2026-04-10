@@ -4,6 +4,7 @@ import { DiagnoseEmacsTool } from "./diagnose-emacs.js"
 import { DescribeFlycheckInfoTool } from "./describe-flycheck.js"
 import { GetBufferContentTool } from "./get-buffer-content.js"
 import { GetCurrentClockedTaskTool } from "./get-current-clocked-task.js"
+import { GetCurrentTaskAtPointTool } from "./get-current-task-at-point.js"
 import { GetBufferFilenameTool } from "./get-buffer-filename.js"
 import { GetEnvVarsTool } from "./get-env-vars.js"
 import { GetErrorContextTool } from "./get-error-context.js"
@@ -22,6 +23,7 @@ export function registerTools(server: McpServer, emacs: EmacsClient): void {
   for (const ToolCtor of [
     GetBufferContentTool,
     GetCurrentClockedTaskTool,
+    GetCurrentTaskAtPointTool,
     GetBufferFilenameTool,
     GetSelectionTool,
     OpenFileTool,

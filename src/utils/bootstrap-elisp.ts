@@ -149,9 +149,18 @@ export const bootstrapElisp = String.raw`(progn
       (when (and marker (marker-buffer marker))
         (with-current-buffer (marker-buffer marker)
           (save-excursion
-            (goto-char marker)
-            (org-back-to-heading t)
-            (org-get-heading t t t t)))))))
+           (goto-char marker)
+           (org-back-to-heading t)
+           (org-get-heading t t t t)))))))
+
+(defun mcp-emacs-get-current-task-at-point ()
+  "Return the heading of the Org task at point, or nil when point is not in a task context."
+  (with-current-buffer (mcp-emacs--current-buffer)
+    (when (derived-mode-p 'org-mode)
+      (save-excursion
+        (org-back-to-heading t)
+        (when (org-get-todo-state)
+          (org-get-heading t t t t))))))
 
 (defun mcp-emacs-edit-file-region (path start-line start-column end-line end-column replacement save)
   "Replace the text in PATH between START and END with REPLACEMENT.
