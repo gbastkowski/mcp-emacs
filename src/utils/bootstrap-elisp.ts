@@ -142,6 +142,17 @@ export const bootstrapElisp = String.raw`(progn
         (format "Advanced TODO state%s"
                 (if current (format " (now %s)" (org-get-todo-state)) ""))))))
 
+(defun mcp-emacs-get-current-clocked-task ()
+  "Return the heading of the currently clocked Org task, or nil when no clock is active."
+  (when (org-clocking-p)
+    (let ((marker (and (boundp 'org-clock-marker) org-clock-marker)))
+      (when (and marker (marker-buffer marker))
+        (with-current-buffer (marker-buffer marker)
+          (save-excursion
+            (goto-char marker)
+            (org-back-to-heading t)
+            (org-get-heading t t t t)))))))
+
 (defun mcp-emacs-edit-file-region (path start-line start-column end-line end-column replacement save)
   "Replace the text in PATH between START and END with REPLACEMENT.
 START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."

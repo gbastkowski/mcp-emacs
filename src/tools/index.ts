@@ -3,6 +3,7 @@ import type { EmacsClient } from "../utils/emacs-client.js"
 import { DiagnoseEmacsTool } from "./diagnose-emacs.js"
 import { DescribeFlycheckInfoTool } from "./describe-flycheck.js"
 import { GetBufferContentTool } from "./get-buffer-content.js"
+import { GetCurrentClockedTaskTool } from "./get-current-clocked-task.js"
 import { GetBufferFilenameTool } from "./get-buffer-filename.js"
 import { GetEnvVarsTool } from "./get-env-vars.js"
 import { GetErrorContextTool } from "./get-error-context.js"
@@ -20,6 +21,7 @@ import { SwitchBufferTool } from "./switch-buffer.js"
 export function registerTools(server: McpServer, emacs: EmacsClient): void {
   for (const ToolCtor of [
     GetBufferContentTool,
+    GetCurrentClockedTaskTool,
     GetBufferFilenameTool,
     GetSelectionTool,
     OpenFileTool,
