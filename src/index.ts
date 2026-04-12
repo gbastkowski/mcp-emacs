@@ -10,7 +10,7 @@ import { parseCliOptions      } from "./utils/cli-options.js"
 const server = new McpServer(
   {
     name: "mcp-emacs",
-    version: "0.3.0"
+    version: "0.4.0"
   },
   {
     capabilities: {
