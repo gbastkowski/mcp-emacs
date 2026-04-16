@@ -1,0 +1,8 @@
+#!/bin/bash
+# MCP Emacs server launch script
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load the working comprehensive test server using batch mode with correct syntax
+exec emacs --batch --load="${SCRIPT_DIR}/../elisp/mcp-comprehensive-test.el"

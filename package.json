@@ -3,9 +3,10 @@
   "version": "0.4.0",
   "description": "MCP server for Emacs integration",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "elisp/new-server/mcp-server.el",
   "bin": {
-    "mcp-emacs": "bin/mcp-emacs.js"
+    "mcp-emacs": "bin/mcp-emacs-elisp",
+    "mcp-emacs-node": "bin/mcp-emacs.js"
   },
   "files": [
     "bin",
