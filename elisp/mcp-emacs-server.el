@@ -380,10 +380,15 @@ Returns nil for notifications, which require no response."
 ;;;; Lifecycle
 
 ;;;###autoload
+(defun mcp-emacs-server-running-p ()
+  "Return non-nil when the MCP HTTP server is running."
+  (and mcp-emacs-server--process t))
+
+;;;###autoload
 (defun mcp-emacs-server-start ()
   "Start the MCP HTTP server on `mcp-emacs-server-port'."
   (interactive)
-  (when mcp-emacs-server--process
+  (when (mcp-emacs-server-running-p)
     (mcp-emacs-server-stop))
   (setq mcp-emacs-server--process
         (ws-start
@@ -399,7 +404,7 @@ Returns nil for notifications, which require no response."
 Idempotent: safe to call repeatedly, e.g. from `config.el' on startup
 or from a launcher script via `emacsclient --eval'."
   (interactive)
-  (unless mcp-emacs-server--process
+  (unless (mcp-emacs-server-running-p)
     (mcp-emacs-server-start))
   (format "http://localhost:%d/mcp" mcp-emacs-server-port))
 
@@ -407,7 +412,7 @@ or from a launcher script via `emacsclient --eval'."
 (defun mcp-emacs-server-stop ()
   "Stop the MCP HTTP server if running."
   (interactive)
-  (when mcp-emacs-server--process
+  (when (mcp-emacs-server-running-p)
     (ws-stop mcp-emacs-server--process)
     (setq mcp-emacs-server--process nil)
     (message "mcp-emacs server stopped")))
