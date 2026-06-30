@@ -1,9 +1,18 @@
 # MCP Emacs
 
-Model Context Protocol (MCP) tooling for Emacs delivered as a single Node.js MCP server package.
+Model Context Protocol (MCP) tooling for Emacs.
 
-Run the MCP server to make the operations available to Claude Desktop/Code.
-The server bootstraps the Emacs Lisp payload automatically.
+Two server implementations are available:
+
+- **Emacs Lisp server (recommended)** — runs inside your live Emacs session and
+  speaks MCP over HTTP.
+  No Node.js, no `emacsclient` round-trip per call; tool calls are dispatched
+  directly to the helper functions, so they observe the real buffers, windows,
+  and Org state of the running session.
+- **Node.js server (fallback)** — a standalone Node MCP server that bridges to
+  Emacs via `emacsclient --eval` over the stdio transport.
+
+Run either server to make the operations available to Claude Desktop/Code.
 
 ## Features
 
@@ -80,6 +89,41 @@ The CLI entrypoint remains `mcp-emacs`; `npx` downloads the `mcp-emacs-server` p
 
 ## Usage with Claude Code
 
+### Emacs Lisp server (HTTP, recommended)
+
+Start the server inside your running Emacs, then point the client at the URL.
+
+Auto-start on Emacs startup (e.g. in `~/.doom.d/config.el`):
+
+```elisp
+(add-to-list 'load-path "/path/to/mcp-emacs/elisp")
+(require 'mcp-emacs)
+(require 'mcp-emacs-server)
+(add-hook 'emacs-startup-hook #'mcp-emacs-server-ensure)
+```
+
+Or start/ensure it on demand from a shell (requires a running Emacs server):
+
+```bash
+/path/to/mcp-emacs/bin/mcp-emacs-http   # prints the endpoint URL
+```
+
+Client configuration:
+
+```json
+{
+  "emacs": {
+    "type": "http",
+    "url": "http://localhost:8765/mcp"
+  }
+}
+```
+
+The listening port is configurable via `M-x customize` (`mcp-emacs-server-port`)
+or `(setq mcp-emacs-server-port ...)`.
+
+### Node.js server (stdio, fallback)
+
 ```json
 {
   "emacs": {
@@ -102,16 +146,45 @@ The build step embeds that file into the server bootstrap payload.
 
 ## Architecture
 
-- **TypeScript/Node.js**: MCP server implementation (`mcp-emacs-server`)
-- **Emacs Lisp**: embedded bootstrap helpers (generated from `elisp/mcp-emacs.el`)
-- **emacsclient**: Communication bridge (always via `--eval`)
-- **STDIO transport**: Standard MCP communication channel
+The two servers share one body of tool logic — the `mcp-emacs-*` helper
+functions in `elisp/mcp-emacs.el` — but reach it differently.
 
-### Flow Diagram
+### Emacs Lisp server (HTTP)
 
-![Architecture flow diagram](docs/architecture.png)
+- **`elisp/mcp-emacs-server.el`**: MCP server that runs inside the live Emacs
+  session. It uses `web-server` to listen on an HTTP port, parses each JSON-RPC
+  request, and dispatches directly to the `mcp-emacs-*` helpers.
+- **`bin/mcp-emacs-http`**: thin launcher that loads the server and calls
+  `mcp-emacs-server-ensure` via `emacsclient --eval`. `emacsclient` is used only
+  to *start* the server, not on the request path.
+- **HTTP transport**: requests are dispatched event-driven in the daemon, so the
+  editor is never blocked and tools see real session state.
 
-The source PlantUML definition lives in `docs/architecture.puml` if you need to edit or re-render the diagram.
+Tool registry, dispatch, and lifecycle (`mcp-emacs-server-start`,
+`mcp-emacs-server-ensure`, `mcp-emacs-server-stop`) live in
+`mcp-emacs-server.el`.
+
+### Node.js server (stdio)
+
+- **TypeScript/Node.js**: standalone MCP server (`mcp-emacs-server`).
+- **Emacs Lisp**: bootstrap helpers, embedded at build time from
+  `elisp/mcp-emacs.el`.
+- **emacsclient**: communication bridge (always via `--eval`).
+- **STDIO transport**: standard MCP communication channel.
+
+### Flow Diagrams
+
+Emacs Lisp server (HTTP transport):
+
+![Emacs Lisp HTTP server flow](docs/elisp-http.png)
+
+Node.js server (stdio transport):
+
+![Node.js stdio server flow](docs/node-stdio.png)
+
+The source PlantUML definitions live in `docs/architecture.puml`. Re-render with
+`plantuml -tpng docs/architecture.puml`, which produces `docs/elisp-http.png`
+and `docs/node-stdio.png`.
 
 ## Requirements
 

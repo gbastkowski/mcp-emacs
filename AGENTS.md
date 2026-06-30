@@ -2,22 +2,45 @@
 
 ## Project Overview
 
-MCP server that enables AI agents to interact with Emacs.
-Uses `emacsclient` for communication.
+MCP tooling that enables AI agents to interact with Emacs.
+Two server implementations share the same `mcp-emacs-*` helper functions:
+
+- **Emacs Lisp server (recommended)**: runs inside the live Emacs session and
+  speaks MCP over HTTP via `web-server`. No Node.js, no per-request
+  `emacsclient` round-trip; helpers see the real running session state.
+- **Node.js server (fallback)**: standalone Node MCP server bridging to Emacs
+  via `emacsclient --eval` over the stdio transport.
 
 Repository layout:
 - `.` (repo root): Node.js MCP server module with embedded Emacs Lisp helpers
+- `elisp/mcp-emacs.el`: shared tool helper functions (`mcp-emacs-*`)
+- `elisp/mcp-emacs-server.el`: in-Emacs HTTP MCP server (registry, dispatch, lifecycle)
+- `bin/mcp-emacs-http`: launcher that starts the HTTP server via `emacsclient --eval`
 
 ## Tech Stack
 
-- TypeScript with @modelcontextprotocol/sdk
+- Emacs Lisp with `web-server` (HTTP MCP server)
+- TypeScript with @modelcontextprotocol/sdk (Node fallback)
 - Node.js (ES modules)
-- emacsclient for Emacs communication
-- STDIO transport
+- emacsclient for the Node bridge and for launching the HTTP server
+- HTTP transport (Elisp server) / STDIO transport (Node server)
 
 ## Architecture Decisions
 
-### Emacs Communication
+### Emacs Lisp server (HTTP)
+- Runs inside the live daemon; dispatches JSON-RPC directly to `mcp-emacs-*`
+  helpers, so tools observe real buffers/windows/Org state.
+- Event-driven via `web-server`, so the editor is never blocked.
+- `emacsclient` is used only to *start* the server (`mcp-emacs-server-ensure`),
+  never on the request path.
+- `mcp-emacs-server-ensure` is idempotent: safe from `config.el` startup hook
+  and from the launcher script.
+- web-server gotcha: the request HTTP verb is the *key* of the headers alist
+  (e.g. `(:POST . "/mcp")`), not a `:method` entry.
+- JSON gotcha: empty objects must be an empty hash table so `json-encode`
+  emits `{}` rather than `null` (an empty alist encodes to `null`).
+
+### Node Emacs communication (fallback)
 - Use `emacsclient --eval` for all Emacs interactions
 - Timeout set to 5 seconds for safety
 - Requires Emacs server mode to be running
@@ -25,6 +48,8 @@ Repository layout:
 ### Error Handling
 - Catch and wrap emacsclient errors with descriptive messages
 - Return "No active selection" for empty regions (not an error)
+- HTTP server wraps `tools/call` errors as JSON-RPC error -32603, unknown
+  methods as -32601
 
 ## Code Style
 
@@ -50,9 +75,23 @@ Each tool should:
 
 Resources follow the same pattern using the `src/resources` base class. Prefer dedicated resource classes over ad-hoc registrations so metadata, URIs, and read callbacks live together.
 
+For the Elisp HTTP server, each tool is a plist entry in the
+`mcp-emacs-server--tools` registry: `:name`, `:description`, `:schema` (JSON
+input schema), and `:handler` (a function of the parsed `arguments` alist that
+returns the text result). Add a tool by appending a registry entry that calls
+the relevant `mcp-emacs-*` helper.
+
 ## Testing
 
-Manual testing workflow:
+### Emacs Lisp server
+1. Ensure the Emacs server is running, then start the MCP server:
+   `bin/mcp-emacs-http` (prints the endpoint URL).
+2. Exercise it with `curl`, e.g.
+   `curl -s -X POST http://localhost:8765/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`.
+3. Reload after edits via `emacsclient --eval` `load-file` +
+   `mcp-emacs-server-stop`/`-start`.
+
+### Node.js server
 1. Start Emacs with server-start
 2. Build the MCP server (run `npm run build` from the repo root)
 3. Test with MCP client
@@ -61,8 +100,6 @@ Manual testing workflow:
 ## Future Enhancements
 
 Potential additions (not yet implemented):
-- More buffer operations (save, close, switch)
-- Region manipulation (insert, replace text)
-- Navigation commands (goto line, search)
+- MCP HTTP niceties: SSE responses (`Accept: text/event-stream`), session-id header, `notifications/initialized`
 - Emacs Lisp evaluation with variable capture
 - File system operations via dired

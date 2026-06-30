@@ -1,4 +1,5 @@
-@startuml
+@startuml node-stdio
+title Node.js server (stdio transport)
 skinparam backgroundColor white
 actor Client
 participant "MCP Server (Node)" as Server
@@ -13,4 +14,22 @@ Bridge -> Emacs: emacsclient --eval (helper call)
 Emacs -> Bridge: serialized string response
 Bridge -> Server: parsed content (text, resource)
 Server -> Client: MCP-compliant response
+@enduml
+
+@startuml elisp-http
+title Emacs Lisp server (HTTP transport)
+skinparam backgroundColor white
+actor Client
+participant "emacsclient" as Launcher
+participant "Emacs daemon" as Emacs
+participant "MCP HTTP server\n(web-server in Emacs)" as Server
+
+note over Launcher, Server: One-time launch (not on request path)
+Launcher -> Emacs: --eval (mcp-emacs-server-ensure)
+Emacs -> Server: ws-start on localhost:PORT
+
+note over Client, Server: Per-request (direct HTTP, no round-trip)
+Client -> Server: HTTP POST JSON-RPC request
+Server -> Server: dispatch to mcp-emacs-* helper (live session)
+Server -> Client: MCP-compliant HTTP response
 @enduml

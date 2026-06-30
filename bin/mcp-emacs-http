@@ -1,0 +1,17 @@
+#!/bin/bash
+# Ensure the in-Emacs MCP HTTP server is running, and print its URL.
+#
+# Requires a running Emacs server (M-x server-start / Doom daemon).
+# Loads elisp/mcp-emacs-server.el into the live session if needed,
+# starts the HTTP listener idempotently, and echoes the endpoint URL.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SERVER_EL="${SCRIPT_DIR}/../elisp/mcp-emacs-server.el"
+EMACSCLIENT="${EMACSCLIENT:-emacsclient}"
+
+"${EMACSCLIENT}" --eval "(progn
+  (unless (fboundp 'mcp-emacs-server-ensure)
+    (load-file \"${SERVER_EL}\"))
+  (mcp-emacs-server-ensure))" | tr -d '"'
