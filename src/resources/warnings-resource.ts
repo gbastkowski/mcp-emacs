@@ -4,10 +4,10 @@ import { EmacsResource } from "./base-resource.js"
 const WARNINGS_URI = "buffer://warnings"
 
 export class WarningsResource extends EmacsResource {
-  readonly name         = "warnings-buffer"
-  readonly uri          = WARNINGS_URI
-  readonly description  = "Live contents of the *Warnings* buffer"
-  readonly mimeType     = "text/plain"
+  readonly name = "warnings-buffer"
+  readonly uri = WARNINGS_URI
+  readonly description = "Live contents of the *Warnings* buffer"
+  readonly mimeType = "text/plain"
 
   constructor(emacs: EmacsClient) {
     super(emacs)

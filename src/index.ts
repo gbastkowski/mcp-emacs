@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-import { McpServer            } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
-import { EmacsClient          } from "./utils/emacs-client.js"
-import { registerTools        } from "./tools/index.js"
-import { registerResources    } from "./resources/index.js"
-import { parseCliOptions      } from "./utils/cli-options.js"
+import { EmacsClient } from "./utils/emacs-client.js"
+import { registerTools } from "./tools/index.js"
+import { registerResources } from "./resources/index.js"
+import { parseCliOptions } from "./utils/cli-options.js"
 
 const server = new McpServer(
   {

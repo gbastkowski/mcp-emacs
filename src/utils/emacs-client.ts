@@ -1,4 +1,4 @@
-import { execFileSync }   from "child_process"
+import { execFileSync } from "child_process"
 import { bootstrapElisp } from "./bootstrap-elisp.js"
 
 export interface EmacsClientOptions {
@@ -45,7 +45,7 @@ export class EmacsClient {
 
     const body = str.slice(1, -1)
     let result = ""
-    for (let i = 0; i < body.length; ) {
+    for (let i = 0; i < body.length;) {
       const char = body[i]
       if (char !== "\\") {
         result += char
@@ -61,14 +61,30 @@ export class EmacsClient {
       const next = body[i + 1]
       i += 2
       switch (next) {
-        case "\\": result += "\\"; break
-        case '"':  result += '"';  break
-        case "n":  result += "\n"; break
-        case "r":  result += "\r"; break
-        case "t":  result += "\t"; break
-        case "b":  result += "\b"; break
-        case "f":  result += "\f"; break
-        case "v":  result += "\v"; break
+        case "\\":
+          result += "\\"
+          break
+        case '"':
+          result += '"'
+          break
+        case "n":
+          result += "\n"
+          break
+        case "r":
+          result += "\r"
+          break
+        case "t":
+          result += "\t"
+          break
+        case "b":
+          result += "\b"
+          break
+        case "f":
+          result += "\f"
+          break
+        case "v":
+          result += "\v"
+          break
         case "x": {
           const hexMatch = body.slice(i).match(/^[0-9a-fA-F]{1,2}/)
           if (hexMatch) {
@@ -89,11 +105,7 @@ export class EmacsClient {
           if (/[0-7]/.test(next)) {
             let octalDigits = next
             let consumed = 1
-            while (
-              consumed < 3 &&
-              i < body.length &&
-              /[0-7]/.test(body[i])
-            ) {
+            while (consumed < 3 && i < body.length && /[0-7]/.test(body[i])) {
               octalDigits += body[i]
               i += 1
               consumed++
@@ -153,14 +165,10 @@ export class EmacsClient {
   private runEval(elisp: string, noWait = false): string {
     try {
       const args = noWait ? ["--no-wait", "--eval", elisp] : ["--eval", elisp]
-      const result = execFileSync(
-        this.executable,
-        args,
-        {
-          encoding: "utf-8",
-          timeout: this.timeout
-        }
-      )
+      const result = execFileSync(this.executable, args, {
+        encoding: "utf-8",
+        timeout: this.timeout
+      })
       return result.trim()
     } catch (error) {
       throw new Error(`Failed to communicate with Emacs: ${error}`)
@@ -186,10 +194,18 @@ export class EmacsClient {
   }
 
   private formatElispArg(value: string | number | boolean | null): string {
-    if (typeof value === "string")  { return `"${this.escapeElispString(value)}"` }
-    if (typeof value === "number")  { return value.toString() }
-    if (typeof value === "boolean") { return value ? "t" : "nil" }
-    if (value === null)             { return "nil" }
+    if (typeof value === "string") {
+      return `"${this.escapeElispString(value)}"`
+    }
+    if (typeof value === "number") {
+      return value.toString()
+    }
+    if (typeof value === "boolean") {
+      return value ? "t" : "nil"
+    }
+    if (value === null) {
+      return "nil"
+    }
     throw new Error("Unsupported elisp argument type")
   }
 }

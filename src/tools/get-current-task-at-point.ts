@@ -13,9 +13,11 @@ export class GetCurrentTaskAtPointTool extends EmacsTool {
 
   handle(_args: unknown, _extra: unknown, _context: unknown) {
     const raw = this.emacs.callElispFunction("mcp-emacs-get-current-task-at-point")
-    if (raw === "nil") { return { content: [ { type: "text", text: "No current task at point" } ] } }
+    if (raw === "nil") {
+      return { content: [{ type: "text", text: "No current task at point" }] }
+    }
 
     const task = this.emacs.parseElispString(raw)
-    return { content: [ { type: "text", text: task } ] }
+    return { content: [{ type: "text", text: task }] }
   }
 }

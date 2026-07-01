@@ -4,10 +4,10 @@ import { EmacsResource } from "./base-resource.js"
 const MESSAGES_URI = "buffer://messages"
 
 export class MessagesResource extends EmacsResource {
-  readonly name         = "messages-buffer"
-  readonly uri          = MESSAGES_URI
-  readonly description  = "Live contents of the *Messages* buffer"
-  readonly mimeType     = "text/plain"
+  readonly name = "messages-buffer"
+  readonly uri = MESSAGES_URI
+  readonly description = "Live contents of the *Messages* buffer"
+  readonly mimeType = "text/plain"
 
   constructor(emacs: EmacsClient) {
     super(emacs)

@@ -1,5 +1,5 @@
 import type { EmacsClient } from "../utils/emacs-client.js"
-import      { EmacsTool   } from "./base-tool.js"
+import { EmacsTool } from "./base-tool.js"
 
 export class DescribeFlycheckInfoTool extends EmacsTool {
   readonly name = "describe_flycheck_info_at_point"

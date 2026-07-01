@@ -1,18 +1,18 @@
 import type { EmacsClient } from "../utils/emacs-client.js"
-import      { z           } from "zod"
-import      { EmacsTool   } from "./base-tool.js"
+import { z } from "zod"
+import { EmacsTool } from "./base-tool.js"
 
 const positionSchema = z.object({
-  line:   z.number().int().min(1).describe("1-based line number"),
-  column: z.number().int().min(1).describe("1-based column number"),
+  line: z.number().int().min(1).describe("1-based line number"),
+  column: z.number().int().min(1).describe("1-based column number")
 })
 
 const editSchema = z.object({
-  path:   z.string().min(1).describe("Absolute path to the file being edited"),
-  start:  positionSchema.describe("Start of the replacement region"),
-  end:    positionSchema.describe("End of the replacement region"),
-  text:   z.string().describe("Replacement text to insert within the range"),
-  save:   z.boolean().default(false).describe("Save the buffer after applying the edit"),
+  path: z.string().min(1).describe("Absolute path to the file being edited"),
+  start: positionSchema.describe("Start of the replacement region"),
+  end: positionSchema.describe("End of the replacement region"),
+  text: z.string().describe("Replacement text to insert within the range"),
+  save: z.boolean().default(false).describe("Save the buffer after applying the edit")
 })
 
 type EditArgs = z.infer<typeof editSchema>
@@ -41,11 +41,15 @@ export class EditFileRegionTool extends EmacsTool {
       parsed.save
     ])
 
-    return { content: [ { type: "text", text: result } ] }
+    return { content: [{ type: "text", text: result }] }
   }
 
   private ensureValidRange({ start, end }: EditArgs): void {
-    if (start.line > end.line) { throw new Error("Start line must be before or equal to end line") }
-    if (start.line === end.line && start.column > end.column) { throw new Error("Start column must be before or equal to end column") }
+    if (start.line > end.line) {
+      throw new Error("Start line must be before or equal to end line")
+    }
+    if (start.line === end.line && start.column > end.column) {
+      throw new Error("Start column must be before or equal to end column")
+    }
   }
 }

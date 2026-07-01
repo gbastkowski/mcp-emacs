@@ -4,10 +4,7 @@ import { EmacsTool } from "./base-tool.js"
 
 const insertSchema = z.object({
   text: z.string().describe("Text to insert at the current point"),
-  replaceSelection: z
-    .boolean()
-    .default(false)
-    .describe("Replace the active selection if one exists"),
+  replaceSelection: z.boolean().default(false).describe("Replace the active selection if one exists")
 })
 
 type InsertArgs = z.infer<typeof insertSchema>
@@ -25,11 +22,8 @@ export class InsertAtPointTool extends EmacsTool {
 
   handle(args: unknown, _extra: unknown, _context: unknown) {
     const parsed: InsertArgs = insertSchema.parse(args)
-    const result = this.callTextFunction("mcp-emacs-insert-at-point", [
-      parsed.text,
-      parsed.replaceSelection,
-    ])
+    const result = this.callTextFunction("mcp-emacs-insert-at-point", [parsed.text, parsed.replaceSelection])
 
-    return { content: [ { type: "text", text: result } ] }
+    return { content: [{ type: "text", text: result }] }
   }
 }

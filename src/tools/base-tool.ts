@@ -1,8 +1,8 @@
-import type { McpServer   } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { EmacsClient } from "../utils/emacs-client.js"
 
 type ToolMetadata = Record<string, unknown>
-type ElispArg     = string | number | boolean | null
+type ElispArg = string | number | boolean | null
 
 export abstract class EmacsTool {
   abstract readonly name: string

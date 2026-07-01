@@ -1,12 +1,9 @@
 import type { EmacsClient } from "../utils/emacs-client.js"
-import { z         } from "zod"
+import { z } from "zod"
 import { EmacsTool } from "./base-tool.js"
 
 const evalSchema = z.object({
-  expression: z
-    .string()
-    .min(1)
-    .describe("Elisp expression to evaluate via emacsclient"),
+  expression: z.string().min(1).describe("Elisp expression to evaluate via emacsclient")
 })
 
 type EvalArgs = z.infer<typeof evalSchema>
@@ -27,6 +24,6 @@ export class EvalTool extends EmacsTool {
     const wrappedExpression = `(with-current-buffer (mcp-emacs--current-buffer) (progn ${expression}))`
     const raw = this.emacs.evalInEmacs(wrappedExpression)
     const text = this.emacs.parseElispString(raw)
-    return { content: [ { type: "text", text } ] }
+    return { content: [{ type: "text", text }] }
   }
 }

@@ -4,17 +4,13 @@ import { EmacsTool } from "./base-tool.js"
 
 const gotoSchema = z
   .object({
-    line:   z.coerce.number().int().min(1).describe("1-based line number to jump to").optional(),
+    line: z.coerce.number().int().min(1).describe("1-based line number to jump to").optional(),
     column: z.coerce.number().int().min(1).describe("1-based column to position the cursor at").optional(),
-    functionName: z
-      .string()
-      .min(1)
-      .describe("Function or symbol name to jump to (via imenu)")
-      .optional(),
+    functionName: z.string().min(1).describe("Function or symbol name to jump to (via imenu)").optional()
   })
   .refine((data) => data.line !== undefined || data.functionName !== undefined, {
     message: "Provide either line or functionName",
-    path: ["line"],
+    path: ["line"]
   })
 
 type GotoArgs = z.infer<typeof gotoSchema>
@@ -35,9 +31,9 @@ export class GotoLineTool extends EmacsTool {
     const result = this.callTextFunction("mcp-emacs-goto-location", [
       parsed.line ?? null,
       parsed.column ?? null,
-      parsed.functionName ?? null,
+      parsed.functionName ?? null
     ])
 
-    return { content: [ { type: "text", text: result } ] }
+    return { content: [{ type: "text", text: result }] }
   }
 }

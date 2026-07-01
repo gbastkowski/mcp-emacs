@@ -39,5 +39,7 @@ export function registerTools(server: McpServer, emacs: EmacsClient): void {
     SaveBufferTool,
     CloseBufferTool,
     SwitchBufferTool
-  ]) { new ToolCtor(emacs).register(server) }
+  ]) {
+    new ToolCtor(emacs).register(server)
+  }
 }
