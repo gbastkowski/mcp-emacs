@@ -2,43 +2,21 @@
 
 ## Project Overview
 
-MCP tooling that enables AI agents to interact with Emacs.
-Two server implementations share the same `mcp-emacs-*` helper functions:
-
-- **Emacs Lisp server (recommended)**: runs inside the live Emacs session and
-  speaks MCP over HTTP via `web-server`. No Node.js, no per-request
-  `emacsclient` round-trip; helpers see the real running session state.
-- **Node.js server (fallback)**: standalone Node MCP server bridging to Emacs
-  via `emacsclient --eval` over the stdio transport.
-
-Repository layout:
-- `.` (repo root): Node.js MCP server module with embedded Emacs Lisp helpers
-- `elisp/mcp-emacs.el`: shared tool helper functions (`mcp-emacs-*`)
-- `elisp/mcp-emacs-server.el`: in-Emacs HTTP MCP server (registry, dispatch, lifecycle)
-- `bin/mcp-emacs-http`: launcher that starts the HTTP server via `emacsclient --eval`
-
-## Tech Stack
-
-- Emacs Lisp with `web-server` (HTTP MCP server)
-- TypeScript with @modelcontextprotocol/sdk (Node fallback)
-- Node.js (ES modules)
-- emacsclient for the Node bridge and for launching the HTTP server
-- HTTP transport (Elisp server) / STDIO transport (Node server)
+**Read `README.md` first** for the project overview, the two server
+implementations (Emacs Lisp HTTP + Node.js stdio), repository layout, tech
+stack, and architecture diagrams. This file only covers conventions and
+gotchas that matter when changing the code.
 
 ## Architecture Decisions
 
 ### Emacs Lisp server (HTTP)
-- Runs inside the live daemon; dispatches JSON-RPC directly to `mcp-emacs-*`
-  helpers, so tools observe real buffers/windows/Org state.
-- Event-driven via `web-server`, so the editor is never blocked.
-- `emacsclient` is used only to *start* the server (`mcp-emacs-server-ensure`),
-  never on the request path.
-- `mcp-emacs-server-ensure` is idempotent: safe from `config.el` startup hook
-  and from the launcher script.
 - web-server gotcha: the request HTTP verb is the *key* of the headers alist
   (e.g. `(:POST . "/mcp")`), not a `:method` entry.
 - JSON gotcha: empty objects must be an empty hash table so `json-encode`
   emits `{}` rather than `null` (an empty alist encodes to `null`).
+- `mcp-emacs-server-ensure` is idempotent: safe from `config.el` startup hook
+  and from the launcher script. `emacsclient` starts the server, never on the
+  request path.
 
 ### Node Emacs communication (fallback)
 - Use `emacsclient --eval` for all Emacs interactions
@@ -53,17 +31,22 @@ Repository layout:
 
 ## Code Style
 
-- Use ES modules (type: "module" in package.json)
-- Strict TypeScript configuration
-- Prefer explicit types over inference where it improves clarity
-- Two-space indentation, LF endings, and final newlines are enforced via `.editorconfig`
-- Keep public members at the top of classes, with private helpers grouped below
-- Keep short parameter lists on a single line when they fit and avoid trailing commas on the last element/argument
-- For simple `switch` branches prefer single-line `case` statements (`case "x": doWork(); break`)
-- Git commits should follow the tbaggery guidelines:
-  - short imperative subject (~50 chars),
-  - wrap additional context at ~72 chars,
-  - and keep messages brief unless extra detail is essential.
+Formatting and linting are enforced by tooling, not this file:
+
+- `.editorconfig` — indentation, line endings, charset, final newline, line length.
+- Prettier (`.prettierrc.json`) — run `npm run format` (or `format:check`).
+- ESLint (`eslint.config.mjs`, typescript-eslint) — run `npm run lint`. Includes
+  member-ordering (public members before private) and honours `_`-prefixed
+  unused args.
+
+Conventions not covered by tooling:
+
+- Prefer explicit types over inference where it improves clarity.
+- For simple `switch` branches prefer single-line `case` statements
+  (`case "x": doWork(); break`).
+- Git commits follow the tbaggery guidelines: short imperative subject
+  (~50 chars), body wrapped at ~72 chars explaining *why*, brief unless detail
+  is essential.
 
 ## Tools & Resources Implementation
 
@@ -101,5 +84,4 @@ the relevant `mcp-emacs-*` helper.
 
 Potential additions (not yet implemented):
 - MCP HTTP niceties: SSE responses (`Accept: text/event-stream`), session-id header, `notifications/initialized`
-- Emacs Lisp evaluation with variable capture
 - File system operations via dired
