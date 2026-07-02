@@ -489,6 +489,11 @@ Returns nil for notifications, which require no response."
          '(((:GET . ".*") . mcp-emacs-server--handler)
            ((:POST . ".*") . mcp-emacs-server--handler))
          mcp-emacs-server-port))
+  ;; The listening socket is a normal process; without this Emacs asks
+  ;; "Active processes exist; kill them?" on quit.
+  (let ((proc (ws-process mcp-emacs-server--process)))
+    (when (processp proc)
+      (set-process-query-on-exit-flag proc nil)))
   (message "mcp-emacs server listening on http://localhost:%d" mcp-emacs-server-port)
   mcp-emacs-server--process)
 
