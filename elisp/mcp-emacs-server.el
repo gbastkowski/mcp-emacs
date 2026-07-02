@@ -248,7 +248,68 @@ rather than `null' (an empty alist would)."
    (list :name "treesit_info"
          :description "Tree-sitter node info at point: node type, range, and ancestor chain"
          :schema (mcp-emacs-server--no-args)
-         :handler (lambda (_args) (mcp-emacs-treesit-info))))
+         :handler (lambda (_args) (mcp-emacs-treesit-info)))
+   (list :name "org_task_session"
+         :description "Read a session task Org file: task heading, session id, status, and TODO checklist"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "path" (mcp-emacs-server--prop "string" "Absolute path to the session task Org file"))
+                  "required" (vector "path"))
+         :handler (lambda (args)
+                    (mcp-emacs-org-task-read (alist-get 'path args))))
+   (list :name "org_task_set_session_status"
+         :description "Set the session status (Org keyword) of a session task file"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "path" (mcp-emacs-server--prop "string" "Absolute path to the session task Org file")
+                                "status" (mcp-emacs-server--prop "string" "Org TODO keyword to set as the session status"))
+                  "required" (vector "path" "status"))
+         :handler (lambda (args)
+                    (mcp-emacs-org-task-set-session-status
+                     (alist-get 'path args)
+                     (alist-get 'status args))))
+   (list :name "org_task_set_item_status"
+         :description "Set the Org keyword of a TODO item, identified by id property or heading text"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "path" (mcp-emacs-server--prop "string" "Absolute path to the session task Org file")
+                                "item" (mcp-emacs-server--prop "string" "Item reference: its ID/CUSTOM_ID property, else its heading text")
+                                "status" (mcp-emacs-server--prop "string" "Org TODO keyword to set on the item"))
+                  "required" (vector "path" "item" "status"))
+         :handler (lambda (args)
+                    (mcp-emacs-org-task-set-item-status
+                     (alist-get 'path args)
+                     (alist-get 'item args)
+                     (alist-get 'status args))))
+   (list :name "org_task_append_note"
+         :description "Append a progress note to the task body without altering existing content"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "path" (mcp-emacs-server--prop "string" "Absolute path to the session task Org file")
+                                "note" (mcp-emacs-server--prop "string" "Progress note text to append"))
+                  "required" (vector "path" "note"))
+         :handler (lambda (args)
+                    (mcp-emacs-org-task-append-note
+                     (alist-get 'path args)
+                     (alist-get 'note args))))
+   (list :name "org_task_append_item"
+         :description "Append a new TODO item as a child under the task heading"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "path" (mcp-emacs-server--prop "string" "Absolute path to the session task Org file")
+                                "text" (mcp-emacs-server--prop "string" "Heading text for the new TODO item")
+                                "keyword" (mcp-emacs-server--prop "string" "Optional Org TODO keyword; defaults to the first configured keyword"))
+                  "required" (vector "path" "text"))
+         :handler (lambda (args)
+                    (mcp-emacs-org-task-append-item
+                     (alist-get 'path args)
+                     (alist-get 'text args)
+                     (alist-get 'keyword args)))))
   "List of tool descriptors.  Each is a plist with :name :description :schema :handler.")
 
 (defun mcp-emacs-server--find-tool (name)

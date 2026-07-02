@@ -37,6 +37,21 @@ observe the real buffers, windows, and Org state of the running session.
 | `diagnose_emacs`                  | Collect diagnostic info about the running Emacs (exec-path, LSP clients, …)                 |
 | `get_env_vars`                    | List environment variables visible to Emacs                                                |
 | `eval`                            | Evaluate an arbitrary Elisp expression in the current buffer context                       |
+| `org_task_session`                | Read a session task Org file: task heading, session id, status, and TODO checklist         |
+| `org_task_set_session_status`     | Set the session status (Org keyword) of a session task file                                |
+| `org_task_set_item_status`        | Set a TODO item's Org keyword, identified by ID/CUSTOM_ID property or heading text          |
+| `org_task_append_note`            | Append a progress note to the task body without altering existing content                  |
+| `org_task_append_item`            | Append a new TODO item as a child under the task heading                                   |
+
+### Org task session sync
+
+An AI coding harness and the human share one Org file as a live workspace: the
+harness reports status into it (via the `org_task_*` tools) while the human
+edits the same file in Emacs. The file's first heading is the task — its TODO
+keyword is the session status, its `SESSION` property is the session id, and its
+child headings are the checklist. All writes go through the live buffer and are
+never saved automatically; the AI only updates items it can identify and never
+reorders, deletes, or rewrites human-authored items.
 
 ### Resources
 

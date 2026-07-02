@@ -583,6 +583,213 @@ Detects which backend is active; returns a status message when neither is."
                                (nreverse chain)
                                "\n")))))))))
 
+;;;; Org task session sync
+;;
+;; A "session task file" is an Org file whose first top-level heading is
+;; the task.  Its TODO keyword is the *session status*; its `SESSION'
+;; property holds the session id (a plain label).  Child headings of the
+;; task are the TODO checklist items.  Progress notes are appended to the
+;; task's body; new items are appended as children under the task
+;; heading.  The AI mutates only items it can identify (by `ID'/
+;; `CUSTOM_ID' property, else heading text) and never reorders, deletes,
+;; or rewrites human-authored items.  All edits go through the live
+;; buffer; nothing saves to disk unless a tool is defined to save.
+
+(defun mcp-emacs-org-task--buffer-for-path (path)
+  "Return the live Org buffer for PATH, opening it if needed.
+Signal a `user-error' with a friendly message when PATH is not a
+readable file so callers can surface plain text instead of a raw error."
+  (unless (and (stringp path) (not (string-empty-p path)))
+    (user-error "No task file path was provided"))
+  (let ((expanded (expand-file-name path)))
+    (or (get-file-buffer expanded)
+        (if (file-readable-p expanded)
+            (find-file-noselect expanded)
+          (user-error "Task file is not readable: %s" path)))))
+
+(defun mcp-emacs-org-task--goto-task ()
+  "Move point to the first task heading in the current buffer.
+Return non-nil on success, nil when the buffer has no heading."
+  (goto-char (point-min))
+  (or (org-at-heading-p)
+      (outline-next-heading)))
+
+(defun mcp-emacs-org-task--item-id ()
+  "Return the ID or CUSTOM_ID property of the heading at point, or nil."
+  (or (org-entry-get (point) "ID")
+      (org-entry-get (point) "CUSTOM_ID")))
+
+(defun mcp-emacs-org-task--item-headings ()
+  "Return the direct child headings of the task as (id . heading) pairs."
+  (save-excursion
+    (when (mcp-emacs-org-task--goto-task)
+      (let ((items '())
+            (task-level (org-current-level)))
+        (org-map-entries
+         (lambda ()
+           (when (= (org-current-level) (1+ task-level))
+             (push (cons (mcp-emacs-org-task--item-id)
+                         (org-get-heading t t t t))
+                   items)))
+         nil 'tree)
+        (nreverse items)))))
+
+(defun mcp-emacs-org-task--find-item (ref)
+  "Move point to the child item identified by REF, or return nil.
+REF matches an item's ID/CUSTOM_ID property when present, otherwise
+its heading text.  Point is left on the matching heading on success."
+  (when (and (stringp ref) (not (string-empty-p ref))
+             (mcp-emacs-org-task--goto-task))
+    (let ((task-level (org-current-level))
+          (found nil))
+      (save-restriction
+        (org-narrow-to-subtree)
+        (goto-char (point-min))
+        (org-map-entries
+         (lambda ()
+           (when (and (not found)
+                      (= (org-current-level) (1+ task-level))
+                      (or (equal ref (mcp-emacs-org-task--item-id))
+                          (equal ref (org-get-heading t t t t))))
+             (setq found (point))))
+         nil 'tree))
+      (when found
+        (goto-char found)
+        t))))
+
+(defun mcp-emacs-org-task-read (path)
+  "Return a structured, readable summary of the session task file at PATH.
+Reflects live buffer state, including unsaved edits.  Returns friendly
+plain text for a missing/invalid path or a file with no task heading."
+  (condition-case err
+      (with-current-buffer (mcp-emacs-org-task--buffer-for-path path)
+        (unless (derived-mode-p 'org-mode)
+          (user-error "Not an Org file: %s" path))
+        (save-excursion
+          (if (not (mcp-emacs-org-task--goto-task))
+              "No task heading found in file"
+            (let* ((heading (org-get-heading t t t t))
+                   (status (or (org-get-todo-state) "(no status)"))
+                   (session (or (org-entry-get (point) "SESSION") "(no session id)"))
+                   (items (mcp-emacs-org-task--item-headings))
+                   (lines
+                    (list (format "Task: %s" heading)
+                          (format "Session: %s" session)
+                          (format "Status: %s" status)
+                          "TODO:")))
+              (if (null items)
+                  (setq lines (append lines (list "  [empty checklist]")))
+                (save-excursion
+                  (mcp-emacs-org-task--goto-task)
+                  (let ((task-level (org-current-level)))
+                    (org-map-entries
+                     (lambda ()
+                       (when (= (org-current-level) (1+ task-level))
+                         (setq lines
+                               (append lines
+                                       (list (format "  - [%s] %s"
+                                                     (or (org-get-todo-state) " ")
+                                                     (org-get-heading t t t t)))))))
+                     nil 'tree))))
+              (mapconcat #'identity lines "\n")))))
+    (user-error (error-message-string err))))
+
+(defun mcp-emacs-org-task-set-session-status (path status)
+  "Set the session STATUS (an Org keyword) of the task file at PATH.
+Reject a keyword not in `org-todo-keywords-1', leaving the status
+unchanged.  Edits the live buffer only; does not save."
+  (condition-case err
+      (with-current-buffer (mcp-emacs-org-task--buffer-for-path path)
+        (unless (derived-mode-p 'org-mode)
+          (user-error "Not an Org file: %s" path))
+        (unless (and (stringp status) (not (string-empty-p status)))
+          (user-error "No status keyword was provided"))
+        (unless (member status org-todo-keywords-1)
+          (user-error "Unrecognized status keyword: %s" status))
+        (save-excursion
+          (if (not (mcp-emacs-org-task--goto-task))
+              "No task heading found in file"
+            (org-todo status)
+            (format "Set session status to %s" status))))
+    (user-error (error-message-string err))))
+
+(defun mcp-emacs-org-task-set-item-status (path ref status)
+  "Set the Org keyword of the item identified by REF in PATH to STATUS.
+No change is made when the item cannot be identified.  Only the matched
+item is touched.  Edits the live buffer only; does not save."
+  (condition-case err
+      (with-current-buffer (mcp-emacs-org-task--buffer-for-path path)
+        (unless (derived-mode-p 'org-mode)
+          (user-error "Not an Org file: %s" path))
+        (unless (and (stringp status) (not (string-empty-p status)))
+          (user-error "No status keyword was provided"))
+        (unless (member status org-todo-keywords-1)
+          (user-error "Unrecognized status keyword: %s" status))
+        (save-excursion
+          (if (mcp-emacs-org-task--find-item ref)
+              (progn
+                (org-todo status)
+                (format "Set item %S to %s" ref status))
+            (format "TODO item not found: %s" ref))))
+    (user-error (error-message-string err))))
+
+(defun mcp-emacs-org-task-append-note (path note)
+  "Append NOTE to the body of the task in PATH, after existing content.
+Existing human content is left untouched.  Edits the live buffer only;
+does not save."
+  (condition-case err
+      (with-current-buffer (mcp-emacs-org-task--buffer-for-path path)
+        (unless (derived-mode-p 'org-mode)
+          (user-error "Not an Org file: %s" path))
+        (unless (and (stringp note) (not (string-empty-p note)))
+          (user-error "No note text was provided"))
+        (save-excursion
+          (if (not (mcp-emacs-org-task--goto-task))
+              "No task heading found in file"
+            ;; Insert after the task's own body but before the first
+            ;; child heading, leaving existing body content in place.
+            (let ((task-level (org-current-level))
+                  (limit (save-excursion (org-end-of-subtree t t) (point))))
+              (org-end-of-meta-data t)
+              (if (re-search-forward org-heading-regexp limit t)
+                  (goto-char (match-beginning 0))
+                (goto-char limit))
+              (let ((inhibit-read-only t))
+                (unless (bolp) (insert "\n"))
+                (insert note "\n")))
+            "Appended progress note")))
+    (user-error (error-message-string err))))
+
+(defun mcp-emacs-org-task-append-item (path text keyword)
+  "Append a new child TODO item TEXT under the task heading in PATH.
+KEYWORD, when non-nil, sets the item's Org keyword; it defaults to the
+first configured TODO keyword.  Existing items keep their order and
+content.  Edits the live buffer only; does not save."
+  (condition-case err
+      (with-current-buffer (mcp-emacs-org-task--buffer-for-path path)
+        (unless (derived-mode-p 'org-mode)
+          (user-error "Not an Org file: %s" path))
+        (unless (and (stringp text) (not (string-empty-p text)))
+          (user-error "No item text was provided"))
+        (let ((kw (cond
+                   ((and (stringp keyword) (not (string-empty-p keyword)))
+                    (unless (member keyword org-todo-keywords-1)
+                      (user-error "Unrecognized status keyword: %s" keyword))
+                    keyword)
+                   (t (car org-todo-keywords-1)))))
+          (save-excursion
+            (if (not (mcp-emacs-org-task--goto-task))
+                "No task heading found in file"
+              (let ((task-level (org-current-level))
+                    (inhibit-read-only t))
+                ;; Move to the end of the task subtree and insert a new
+                ;; child heading, leaving existing children in place.
+                (org-end-of-subtree t t)
+                (unless (bolp) (insert "\n"))
+                (insert (make-string (1+ task-level) ?*) " " kw " " text "\n")
+                (format "Appended TODO item: %s %s" kw text))))))
+    (user-error (error-message-string err))))
+
 (provide 'mcp-emacs)
 
 ;;; mcp-emacs.el ends here
