@@ -67,8 +67,8 @@ the relevant `mcp-emacs-*` helper.
 ## Testing
 
 ### Emacs Lisp server
-1. Ensure the Emacs server is running, then start the MCP server:
-   `bin/mcp-emacs-http` (prints the endpoint URL).
+1. Start the MCP server in the running Emacs: `M-x mcp-emacs-server-start`, or
+   `emacsclient --eval '(mcp-emacs-server-ensure)'` (returns the endpoint URL).
 2. Exercise it with `curl`, e.g.
    `curl -s -X POST http://localhost:8765/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`.
 3. Reload after edits via `emacsclient --eval` `load-file` +

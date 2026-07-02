@@ -102,10 +102,11 @@ Auto-start on Emacs startup (e.g. in `~/.doom.d/config.el`):
 (add-hook 'emacs-startup-hook #'mcp-emacs-server-ensure)
 ```
 
-Or start/ensure it on demand from a shell (requires a running Emacs server):
+Or start it on demand — interactively with `M-x mcp-emacs-server-start`, or
+from a shell against a running Emacs server:
 
 ```bash
-/path/to/mcp-emacs/bin/mcp-emacs-http   # prints the endpoint URL
+emacsclient --eval '(mcp-emacs-server-ensure)'   # returns the endpoint URL
 ```
 
 Client configuration:
@@ -154,11 +155,12 @@ functions in `elisp/mcp-emacs.el` — but reach it differently.
 - **`elisp/mcp-emacs-server.el`**: MCP server that runs inside the live Emacs
   session. It uses `web-server` to listen on an HTTP port, parses each JSON-RPC
   request, and dispatches directly to the `mcp-emacs-*` helpers.
-- **`bin/mcp-emacs-http`**: thin launcher that loads the server and calls
-  `mcp-emacs-server-ensure` via `emacsclient --eval`. `emacsclient` is used only
-  to *start* the server, not on the request path.
-- **HTTP transport**: requests are dispatched event-driven in the daemon, so the
-  editor is never blocked and tools see real session state.
+- **HTTP transport**: the MCP client connects to the URL directly; nothing is
+  spawned. Requests are dispatched event-driven in the daemon, so the editor is
+  never blocked and tools see real session state.
+- **Startup**: the server is started in-process — from a Doom module / init
+  hook (`mcp-emacs-server-ensure`), `M-x mcp-emacs-server-start`, or
+  `emacsclient --eval`. There is no separate launcher process.
 
 Tool registry, dispatch, and lifecycle (`mcp-emacs-server-start`,
 `mcp-emacs-server-ensure`, `mcp-emacs-server-stop`) live in
