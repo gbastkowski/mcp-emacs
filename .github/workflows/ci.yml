@@ -7,21 +7,31 @@ on:
   pull_request:
 
 jobs:
-  test:
+  byte-compile:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Emacs
+        uses: purcell/setup-emacs@master
         with:
-          node-version: 20
-          cache: npm
+          version: '29.4'
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install web-server dependency
+        run: |
+          emacs --batch \
+            --eval "(require 'package)" \
+            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\"))" \
+            --eval "(package-initialize)" \
+            --eval "(package-refresh-contents)" \
+            --eval "(package-install 'web-server)"
 
-      - name: Run tests
-        run: npm test
+      - name: Byte-compile
+        run: |
+          emacs --batch \
+            --eval "(require 'package)" \
+            --eval "(package-initialize)" \
+            -L elisp \
+            -f batch-byte-compile elisp/mcp-emacs.el elisp/mcp-emacs-server.el

@@ -1,21 +1,3 @@
-@startuml node-stdio
-title Node.js server (stdio transport)
-skinparam backgroundColor white
-actor Client
-participant "MCP Server (Node)" as Server
-participant "emacsclient" as Bridge
-participant "Emacs" as Emacs
-
-Client -> Server: run (stdin/stdout MCP transport)
-Server -> Bridge: register tools/resources
-Client -> Server: JSON-RPC tool/resource request
-Server -> Bridge: callElispFunction(...)
-Bridge -> Emacs: emacsclient --eval (helper call)
-Emacs -> Bridge: serialized string response
-Bridge -> Server: parsed content (text, resource)
-Server -> Client: MCP-compliant response
-@enduml
-
 @startuml elisp-http
 title Emacs Lisp server (HTTP transport)
 skinparam backgroundColor white

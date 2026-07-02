@@ -8,7 +8,5 @@ trim_trailing_whitespace = true
 indent_style = space
 indent_size = 2
 
-[*.{ts,tsx,js,jsx}]
-max_line_length = 120
-ij_typescript_trailing_comma = remove
-ij_typescript_align_multiline_parameters = false
+[*.el]
+indent_style = space
