@@ -261,7 +261,52 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
                errors
                "\n")
             "No flycheck messages at point"))
-      "Flycheck mode not active")))
+      (or (let ((msgs (mcp-emacs--flymake-diagnostics-at (point))))
+            (when msgs (mapconcat #'identity msgs "\n")))
+          "Flycheck mode not active"))))
+
+(defun mcp-emacs--flymake-diagnostics-at (pos)
+  "Return flymake diagnostic strings at POS, or nil."
+  (when (and (fboundp 'flymake-diagnostics) (bound-and-true-p flymake-mode))
+    (mapcar
+     (lambda (d)
+       (format "%s: %s"
+               (flymake-diagnostic-type d)
+               (flymake-diagnostic-text d)))
+     (flymake-diagnostics pos))))
+
+(defun mcp-emacs-get-diagnostics ()
+  "Return all diagnostics for the current buffer via Flycheck or Flymake.
+Detects which backend is active; returns a status message when neither is."
+  (with-current-buffer (mcp-emacs--current-buffer)
+    (cond
+     ((bound-and-true-p flycheck-mode)
+      (let ((errors (flycheck-current-errors)))
+        (if errors
+            (mapconcat
+             (lambda (err)
+               (format "%s:%s: %s: %s [%s]"
+                       (or (flycheck-error-line err) "?")
+                       (or (flycheck-error-column err) "?")
+                       (flycheck-error-level err)
+                       (flycheck-error-message err)
+                       (flycheck-error-checker err)))
+             errors
+             "\n")
+          "No diagnostics in buffer")))
+     ((bound-and-true-p flymake-mode)
+      (let ((diags (flymake-diagnostics)))
+        (if diags
+            (mapconcat
+             (lambda (d)
+               (format "%s: %s: %s"
+                       (line-number-at-pos (flymake-diagnostic-beg d))
+                       (flymake-diagnostic-type d)
+                       (flymake-diagnostic-text d)))
+             diags
+             "\n")
+          "No diagnostics in buffer")))
+     (t "Neither Flycheck nor Flymake is active"))))
 
 (defun mcp-emacs-get-error-context ()
   "Summarize recent error-related buffers."
@@ -415,6 +460,128 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
                                 (mcp-emacs--format-list workspaces)
                               "  [none detected or lsp-mode not active]")))))
     (mapconcat #'identity sections "\n\n")))
+
+(defun mcp-emacs--flatten-imenu (entries prefix)
+  "Flatten imenu ENTRIES into (name . position) pairs, prefixing nested names with PREFIX."
+  (let (result)
+    (dolist (entry entries (nreverse result))
+      (cond
+       ((null entry) nil)
+       ((and (stringp (car entry)) (string-prefix-p "*" (car entry))) nil)
+       ((and (consp entry) (imenu--subalist-p entry))
+        (setq result
+              (nconc (nreverse (mcp-emacs--flatten-imenu
+                                (cdr entry)
+                                (concat prefix (car entry) "/")))
+                     result)))
+       ((and (consp entry) (stringp (car entry)))
+        (let ((pos (mcp-emacs--normalize-position (cdr entry))))
+          (when pos
+            (push (cons (concat prefix (car entry)) pos) result))))))))
+
+(defun mcp-emacs-imenu-list-symbols ()
+  "List the current buffer's symbols (functions, classes, variables) with line numbers."
+  (with-current-buffer (mcp-emacs--current-buffer)
+    (if (not (require 'imenu nil t))
+        "imenu is not available"
+      (let* ((index (ignore-errors (imenu--make-index-alist t)))
+             (flat (and index (mcp-emacs--flatten-imenu index ""))))
+        (if flat
+            (mapconcat
+             (lambda (pair)
+               (format "%d: %s"
+                       (line-number-at-pos (cdr pair))
+                       (car pair)))
+             (sort flat (lambda (a b) (< (cdr a) (cdr b))))
+             "\n")
+          "No symbols found in buffer")))))
+
+(defun mcp-emacs--xref-format (items)
+  "Format xref ITEMS as file:line: summary lines."
+  (if (not items)
+      "No matches found"
+    (mapconcat
+     (lambda (item)
+       (let* ((summary (substring-no-properties (xref-item-summary item)))
+              (loc (xref-item-location item))
+              (file (ignore-errors (xref-location-group loc)))
+              (line (ignore-errors (xref-location-line loc))))
+         (format "%s:%s: %s"
+                 (or file "?")
+                 (or line "?")
+                 summary)))
+     items
+     "\n")))
+
+(defun mcp-emacs-xref-find-references (identifier)
+  "Find references to IDENTIFIER (or the symbol at point) via xref."
+  (with-current-buffer (mcp-emacs--current-buffer)
+    (unless (require 'xref nil t)
+      (error "xref is not available"))
+    (let* ((backend (xref-find-backend))
+           (id (if (and (stringp identifier) (not (string-empty-p identifier)))
+                   identifier
+                 (xref-backend-identifier-at-point backend))))
+      (unless id
+        (error "No identifier given or found at point"))
+      (mcp-emacs--xref-format
+       (xref-backend-references backend id)))))
+
+(defun mcp-emacs-xref-find-apropos (pattern)
+  "Find symbols matching PATTERN across the project via xref apropos."
+  (with-current-buffer (mcp-emacs--current-buffer)
+    (unless (require 'xref nil t)
+      (error "xref is not available"))
+    (unless (and (stringp pattern) (not (string-empty-p pattern)))
+      (error "A non-empty pattern is required"))
+    (mcp-emacs--xref-format
+     (xref-backend-apropos (xref-find-backend) pattern))))
+
+(defun mcp-emacs-project-info ()
+  "Return an overview of the current project: root, active file, and size."
+  (with-current-buffer (mcp-emacs--current-buffer)
+    (if (not (require 'project nil t))
+        "project.el is not available"
+      (let ((proj (project-current)))
+        (if (not proj)
+            "Not inside a project"
+          (let* ((root (project-root proj))
+                 (file (buffer-file-name))
+                 (files (ignore-errors (project-files proj)))
+                 (count (length files)))
+            (string-join
+             (delq nil
+                   (list (format "Project root: %s" root)
+                         (when file (format "Active file: %s" file))
+                         (format "Tracked files: %d" count)))
+             "\n")))))))
+
+(defun mcp-emacs-treesit-info ()
+  "Return tree-sitter node info at point: node type, range, and ancestor chain."
+  (with-current-buffer (mcp-emacs--current-buffer)
+    (cond
+     ((not (and (fboundp 'treesit-available-p) (treesit-available-p)))
+      "Tree-sitter is not available in this Emacs")
+     ((not (treesit-parser-list))
+      "No tree-sitter parser active in this buffer")
+     (t
+      (let ((node (treesit-node-at (point))))
+        (if (not node)
+            "No tree-sitter node at point"
+          (let (chain)
+            (let ((n node))
+              (while n
+                (push (format "%s [%d-%d]"
+                              (treesit-node-type n)
+                              (treesit-node-start n)
+                              (treesit-node-end n))
+                      chain)
+                (setq n (treesit-node-parent n))))
+            (format "Node at point: %s\nAncestors (leaf -> root):\n%s"
+                    (treesit-node-type node)
+                    (mapconcat (lambda (s) (concat "  " s))
+                               (nreverse chain)
+                               "\n")))))))))
 
 (provide 'mcp-emacs)
 

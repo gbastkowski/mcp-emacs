@@ -23,11 +23,17 @@ observe the real buffers, windows, and Org state of the running session.
 | `insert_at_point`                 | Insert text at point or replace the current selection in the active buffer                 |
 | `goto_line`                       | Jump to a specific line/column or navigate directly to a named function via imenu          |
 | `toggle_org_todo`                 | Toggle the TODO keyword (or set a specific state) on the current Org heading               |
-| `describe_flycheck_info_at_point` | Get flycheck diagnostics at cursor                                                         |
+| `describe_flycheck_info_at_point` | Get diagnostics at cursor (Flycheck, falling back to Flymake)                              |
+| `get_diagnostics`                 | Get all diagnostics for the current buffer (Flycheck or Flymake, auto-detected)            |
 | `get_error_context`               | Summarize contents of error-related buffers (*Messages*, *Warnings*, compilation logs)     |
 | `save_buffer`                     | Save the current buffer if it is visiting a file                                           |
 | `close_buffer`                    | Close the current buffer, optionally saving first                                          |
 | `switch_buffer`                   | Switch to a named buffer                                                                    |
+| `imenu_list_symbols`              | List the current buffer's symbols (functions, classes, variables) with line numbers        |
+| `xref_find_references`            | Find references to an identifier (or the symbol at point) via xref                         |
+| `xref_find_apropos`               | Find symbols matching a pattern across the project via xref apropos                        |
+| `treesit_info`                    | Tree-sitter node info at point: node type, range, and ancestor chain                       |
+| `project_info`                    | Project root, active file, and tracked file count                                          |
 | `diagnose_emacs`                  | Collect diagnostic info about the running Emacs (exec-path, LSP clients, …)                 |
 | `get_env_vars`                    | List environment variables visible to Emacs                                                |
 | `eval`                            | Evaluate an arbitrary Elisp expression in the current buffer context                       |

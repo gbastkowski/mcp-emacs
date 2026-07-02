@@ -215,7 +215,40 @@ rather than `null' (an empty alist would)."
                     (let* ((expr (alist-get 'expression args))
                            (form (car (read-from-string
                                        (format "(with-current-buffer (mcp-emacs--current-buffer) (progn %s))" expr)))))
-                      (format "%s" (eval form t))))))
+                      (format "%s" (eval form t)))))
+   (list :name "get_diagnostics"
+         :description "Get all diagnostics for the current buffer (Flycheck or Flymake)"
+         :schema (mcp-emacs-server--no-args)
+         :handler (lambda (_args) (mcp-emacs-get-diagnostics)))
+   (list :name "imenu_list_symbols"
+         :description "List the current buffer's symbols (functions, classes, variables) with line numbers"
+         :schema (mcp-emacs-server--no-args)
+         :handler (lambda (_args) (mcp-emacs-imenu-list-symbols)))
+   (list :name "project_info"
+         :description "Overview of the current project: root, active file, and tracked file count"
+         :schema (mcp-emacs-server--no-args)
+         :handler (lambda (_args) (mcp-emacs-project-info)))
+   (list :name "xref_find_references"
+         :description "Find references to an identifier (or the symbol at point) via xref"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "identifier" (mcp-emacs-server--prop "string" "Identifier to search for; defaults to the symbol at point")))
+         :handler (lambda (args)
+                    (mcp-emacs-xref-find-references (alist-get 'identifier args))))
+   (list :name "xref_find_apropos"
+         :description "Find symbols matching a pattern across the project via xref apropos"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "pattern" (mcp-emacs-server--prop "string" "Name pattern to match symbols against"))
+                  "required" (vector "pattern"))
+         :handler (lambda (args)
+                    (mcp-emacs-xref-find-apropos (alist-get 'pattern args))))
+   (list :name "treesit_info"
+         :description "Tree-sitter node info at point: node type, range, and ancestor chain"
+         :schema (mcp-emacs-server--no-args)
+         :handler (lambda (_args) (mcp-emacs-treesit-info))))
   "List of tool descriptors.  Each is a plist with :name :description :schema :handler.")
 
 (defun mcp-emacs-server--find-tool (name)
