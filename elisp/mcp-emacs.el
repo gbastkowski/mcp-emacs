@@ -607,6 +607,12 @@ readable file so callers can surface plain text instead of a raw error."
             (find-file-noselect expanded)
           (user-error "Task file is not readable: %s" path)))))
 
+(defun mcp-emacs-org-task--token ()
+  "Return the change token for the current buffer.
+The token is the buffer's `buffer-chars-modified-tick', which advances
+on every edit, so a caller can detect subsequent changes."
+  (buffer-chars-modified-tick))
+
 (defun mcp-emacs-org-task--goto-task ()
   "Move point to the first task heading in the current buffer.
 Return non-nil on success, nil when the buffer has no heading."
@@ -691,6 +697,9 @@ plain text for a missing/invalid path or a file with no task heading."
                                                      (or (org-get-todo-state) " ")
                                                      (org-get-heading t t t t)))))))
                      nil 'tree))))
+              (setq lines (append lines
+                                  (list (format "Token: %d"
+                                                (mcp-emacs-org-task--token)))))
               (mapconcat #'identity lines "\n")))))
     (user-error (error-message-string err))))
 
@@ -788,6 +797,54 @@ content.  Edits the live buffer only; does not save."
                 (unless (bolp) (insert "\n"))
                 (insert (make-string (1+ task-level) ?*) " " kw " " text "\n")
                 (format "Appended TODO item: %s %s" kw text))))))
+    (user-error (error-message-string err))))
+
+(defcustom mcp-emacs-org-task-wait-default-timeout 30
+  "Default timeout, in seconds, for `mcp-emacs-org-task-wait-for-change'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defcustom mcp-emacs-org-task-wait-max-timeout 300
+  "Maximum timeout, in seconds, for `mcp-emacs-org-task-wait-for-change'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defconst mcp-emacs-org-task-wait-poll-interval 0.2
+  "Seconds between change checks while waiting, yielding to the event loop.")
+
+(defun mcp-emacs-org-task-wait-for-change (path token timeout)
+  "Wait until the session file at PATH changes past TOKEN, or TIMEOUT elapses.
+TOKEN is a baseline change token from a prior read; when nil or already
+stale, return immediately.  TIMEOUT is in seconds, defaulting to
+`mcp-emacs-org-task-wait-default-timeout' and capped at
+`mcp-emacs-org-task-wait-max-timeout'.  Waiting yields to the Emacs event
+loop so edits and other tool calls keep processing.  Returns plain text:
+a change indication, the new token, and the current session view."
+  (condition-case err
+      (with-current-buffer (mcp-emacs-org-task--buffer-for-path path)
+        (unless (derived-mode-p 'org-mode)
+          (user-error "Not an Org file: %s" path))
+        (let* ((baseline (cond
+                          ((integerp token) token)
+                          ((and (stringp token) (not (string-empty-p token)))
+                           (string-to-number token))
+                          (t nil)))
+               (secs (min mcp-emacs-org-task-wait-max-timeout
+                          (if (and (numberp timeout) (> timeout 0))
+                              timeout
+                            mcp-emacs-org-task-wait-default-timeout)))
+               (deadline (+ (float-time) secs)))
+          ;; Wait only while the tick still matches the baseline.  A nil
+          ;; baseline or an already-advanced tick returns immediately.
+          (while (and baseline
+                      (= (mcp-emacs-org-task--token) baseline)
+                      (< (float-time) deadline))
+            (accept-process-output nil mcp-emacs-org-task-wait-poll-interval))
+          (let ((changed (or (null baseline)
+                             (/= (mcp-emacs-org-task--token) baseline))))
+            (format "Changed: %s\n%s"
+                    (if changed "yes" "no")
+                    (mcp-emacs-org-task-read path)))))
     (user-error (error-message-string err))))
 
 (provide 'mcp-emacs)

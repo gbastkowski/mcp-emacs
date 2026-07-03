@@ -309,7 +309,21 @@ rather than `null' (an empty alist would)."
                     (mcp-emacs-org-task-append-item
                      (alist-get 'path args)
                      (alist-get 'text args)
-                     (alist-get 'keyword args)))))
+                     (alist-get 'keyword args))))
+   (list :name "org_task_wait_for_change"
+         :description "Block until the session task file changes past a baseline token or a timeout elapses, then return the change flag and current session view"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "path" (mcp-emacs-server--prop "string" "Absolute path to the session task Org file")
+                                "token" (mcp-emacs-server--prop "integer" "Baseline change token from a prior read; omit to return immediately")
+                                "timeout" (mcp-emacs-server--prop "integer" "Timeout in seconds (default 30, capped at 300)"))
+                  "required" (vector "path"))
+         :handler (lambda (args)
+                    (mcp-emacs-org-task-wait-for-change
+                     (alist-get 'path args)
+                     (alist-get 'token args)
+                     (alist-get 'timeout args)))))
   "List of tool descriptors.  Each is a plist with :name :description :schema :handler.")
 
 (defun mcp-emacs-server--find-tool (name)

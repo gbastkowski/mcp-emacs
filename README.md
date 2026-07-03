@@ -42,6 +42,7 @@ observe the real buffers, windows, and Org state of the running session.
 | `org_task_set_item_status`        | Set a TODO item's Org keyword, identified by ID/CUSTOM_ID property or heading text          |
 | `org_task_append_note`            | Append a progress note to the task body without altering existing content                  |
 | `org_task_append_item`            | Append a new TODO item as a child under the task heading                                   |
+| `org_task_wait_for_change`        | Block until the task file changes past a baseline token (or a timeout), then return it     |
 
 ### Org task session sync
 
@@ -52,6 +53,12 @@ keyword is the session status, its `SESSION` property is the session id, and its
 child headings are the checklist. All writes go through the live buffer and are
 never saved automatically; the AI only updates items it can identify and never
 reorders, deletes, or rewrites human-authored items.
+
+For a cooperative loop, `org_task_session` returns a change token and
+`org_task_wait_for_change` blocks (up to a timeout, without freezing Emacs)
+until the human edits the file, then wakes with the change and the current
+session view. The harness works, then waits for the human's next direction —
+instead of only seeing edits when it happens to re-read.
 
 ### Resources
 
