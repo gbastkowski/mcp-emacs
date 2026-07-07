@@ -1,0 +1,13 @@
+{
+  "name": "mcp-emacs",
+  "owner": {
+    "name": "Gunnar Bastkowski"
+  },
+  "plugins": [
+    {
+      "name": "mcp-emacs",
+      "source": "./",
+      "description": "Live Emacs integration for Claude Code over the in-Emacs MCP HTTP server."
+    }
+  ]
+}
