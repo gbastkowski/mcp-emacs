@@ -142,3 +142,16 @@ Lifecycle commands: `mcp-emacs-server-start`, `mcp-emacs-server-ensure`
 
 The source PlantUML definition lives in `docs/architecture.puml`. Re-render with
 `plantuml -tpng docs/architecture.puml`.
+
+## Contributing
+
+Issues and pull requests are welcome.
+By contributing you agree that your contributions are licensed under the
+project's GPL-3.0-or-later license.
+
+## License
+
+Copyright (C) 2025 Gunnar Bastkowski.
+
+Licensed under the GNU General Public License v3.0 or later
+([GPL-3.0-or-later](LICENSE)).
