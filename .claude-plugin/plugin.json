@@ -1,7 +1,7 @@
 {
   "name": "mcp-emacs",
   "description": "Live Emacs integration for Claude Code: buffers, Org, xref, diagnostics, and a cooperative human/AI Org-task session loop, over the in-Emacs MCP HTTP server.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": {
     "name": "Gunnar Bastkowski"
   },

@@ -1,7 +1,7 @@
 ;;; mcp-emacs-server.el --- HTTP MCP server running inside Emacs -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 0.5.0
+;; Version: 1.0.0
 ;; Package-Requires: ((emacs "28.1") (web-server "0.1.2"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
@@ -426,7 +426,7 @@ Returns nil for notifications, which require no response."
                            "tools" (mcp-emacs-server--obj)
                            "resources" (mcp-emacs-server--obj))
            "serverInfo" (mcp-emacs-server--obj
-                         "name" "mcp-emacs" "version" "0.5.0"))))
+                         "name" "mcp-emacs" "version" "1.0.0"))))
      ((string= method "tools/list")
       (mcp-emacs-server--result id (mcp-emacs-server--tools-list)))
      ((string= method "tools/call")
