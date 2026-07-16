@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "emacs": {
+      "type": "remote",
+      "url": "http://localhost:8765/mcp",
+      "enabled": true
+    }
+  },
+  "command": {
+    "emacs-loop": {
+      "description": "Start the cooperative Org-task session loop against a session Org file open in Emacs.",
+      "template": "Start the cooperative human/AI Org-task session loop for the session file: $ARGUMENTS\n\nIf no path was given, use the Org file currently open in Emacs (get_buffer_filename).\n\nFollow the org-task-loop skill: read the session with org_task_session, work the first actionable TODO item, report status back into the file via the org_task_* tools, then block on org_task_wait_for_change and react to the human's next edit. The human is the driver — never reorder, delete, rewrite, or save their content."
+    }
+  }
+}

@@ -41,3 +41,15 @@ claude --plugin-dir /path/to/mcp-emacs
   - `edit-at-point` — edit the buffer/selection the user is actually looking at.
   - `review-diagnostics` — fix code problems the checker reports.
   - `diagnose-emacs` — troubleshoot the Emacs/tooling setup itself.
+
+## opencode
+
+The same MCP server, skills, and command also work in
+[opencode](https://opencode.ai). `opencode.json` in the repo root registers the
+`emacs` MCP server (`type: remote`) and the `/emacs-loop` command; opencode
+loads the `SKILL.md` files under `skills/` (and `.claude/skills/`) directly, so
+no separate skill copies are needed.
+
+Run opencode from the repo root, or merge the `mcp` and `command` blocks from
+`opencode.json` into your `~/.config/opencode/opencode.json`. Same prerequisite:
+the in-Emacs server must be listening on the configured `url`.
