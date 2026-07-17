@@ -30,6 +30,11 @@ instead of asking for a path or guessing.
   character in the file is line 1, column 0.
 - `goto_line` — move point to a line/column, or jump to a named function via
   imenu, before an insert.
+- `apply_diff` — for a larger, whole-file rewrite, propose the new content and
+  let the user review it in an `ediff` session; it returns `applied` (with the
+  final, possibly human-edited content), `rejected`, or `timeout`. Prefer this
+  over a blind `edit_file_region` when the change is big enough that the user
+  should see it before it lands.
 
 ## After editing
 
