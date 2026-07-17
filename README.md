@@ -33,6 +33,9 @@ observe the real buffers, windows, and Org state of the running session.
 | `xref_find_references`            | Find references to an identifier (or the symbol at point) via xref                         |
 | `xref_find_apropos`               | Find symbols matching a pattern across the project via xref apropos                        |
 | `treesit_info`                    | Tree-sitter node info at point: node type, range, and ancestor chain                       |
+| `apply_diff`                      | Propose new file content via an interactive ediff session; returns applied/rejected/timeout |
+| `list_open_editors`               | List file-visiting buffers with their path, buffer name, and dirty flag                    |
+| `check_document_dirty`            | Report whether the buffer visiting a file has unsaved changes                              |
 | `project_info`                    | Project root, active file, and tracked file count                                          |
 | `diagnose_emacs`                  | Collect diagnostic info about the running Emacs (exec-path, LSP clients, …)                 |
 | `get_env_vars`                    | List environment variables visible to Emacs                                                |

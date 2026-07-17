@@ -263,6 +263,33 @@ rather than `null' (an empty alist would)."
          :description "Tree-sitter node info at point: node type, range, and ancestor chain"
          :schema (mcp-emacs-server--no-args)
          :handler (lambda (_args) (mcp-emacs-treesit-info)))
+   (list :name "list_open_editors"
+         :description "List file-visiting buffers with their path, buffer name, and dirty flag"
+         :schema (mcp-emacs-server--no-args)
+         :handler (lambda (_args) (mcp-emacs-list-open-editors)))
+   (list :name "check_document_dirty"
+         :description "Report whether the buffer visiting a file has unsaved changes"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "path" (mcp-emacs-server--prop "string" "Absolute path to the file"))
+                  "required" (vector "path"))
+         :handler (lambda (args)
+                    (mcp-emacs-check-document-dirty (alist-get 'path args))))
+   (list :name "apply_diff"
+         :description "Propose new content for a file via an interactive ediff session; the human edits/accepts/rejects and the tool returns applied (with final content), rejected, or timeout"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "path" (mcp-emacs-server--prop "string" "Absolute path to the file to change")
+                                "new_content" (mcp-emacs-server--prop "string" "Proposed new content for the file")
+                                "timeout" (mcp-emacs-server--prop "integer" "Timeout in seconds (default 120, capped at 600)"))
+                  "required" (vector "path" "new_content"))
+         :handler (lambda (args)
+                    (mcp-emacs-apply-diff
+                     (alist-get 'path args)
+                     (alist-get 'new_content args)
+                     (alist-get 'timeout args))))
    (list :name "org_task_session"
          :description "Read a session task Org file: task heading, session id, status, and TODO checklist"
          :schema (mcp-emacs-server--obj

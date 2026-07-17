@@ -28,7 +28,8 @@ skill.
 2. For each one you intend to fix, open/goto the location (`goto_line`,
    `open_file`) and inspect with `get_buffer_content` / `treesit_info`.
 3. Apply the fix via `edit_file_region` or `insert_at_point`
-   (Emacs coords: lines 1-based, columns 0-based).
+   (Emacs coords: lines 1-based, columns 0-based). For a larger rewrite, use
+   `apply_diff` so the user reviews the change in `ediff` before it lands.
 4. Re-run `get_diagnostics` to confirm the diagnostic cleared before moving on.
 
 ## Rules

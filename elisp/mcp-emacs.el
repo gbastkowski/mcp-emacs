@@ -30,6 +30,12 @@
 (require 'subr-x nil t)
 (require 'org nil t)
 (require 'org-agenda nil t)
+(require 'ediff nil t)
+
+(defvar ediff-control-buffer)
+(defvar ediff-quit-hook)
+(declare-function ediff-buffers "ediff" (buffer-a buffer-b &optional startup-hooks job-name))
+(declare-function ediff-really-quit "ediff-util" (reverse-default-keep-variants))
 
 (defun mcp-emacs--current-buffer ()
   "Return the buffer associated with the currently selected window."
@@ -860,6 +866,130 @@ a change indication, the new token, and the current session view."
                     (if changed "yes" "no")
                     (mcp-emacs-org-task-read path)))))
     (user-error (error-message-string err))))
+
+;;; Editor-state tools
+
+(defun mcp-emacs-list-open-editors ()
+  "Return a text listing of file-visiting buffers.
+Each line is PATH\\tBUFFER-NAME\\tdirty|clean.  Returns a header line
+noting no open editors when none exist."
+  (let ((entries
+         (delq nil
+               (mapcar
+                (lambda (buf)
+                  (with-current-buffer buf
+                    (when buffer-file-name
+                      (format "%s\t%s\t%s"
+                              buffer-file-name
+                              (buffer-name)
+                              (if (buffer-modified-p) "dirty" "clean")))))
+                (buffer-list)))))
+    (if entries
+        (mapconcat #'identity entries "\n")
+      "No open editors.")))
+
+(defun mcp-emacs-check-document-dirty (path)
+  "Report whether the buffer visiting PATH has unsaved changes.
+When no live buffer visits PATH, report that the document is not open."
+  (condition-case err
+      (let* ((file (expand-file-name path))
+             (buf (find-buffer-visiting file)))
+        (cond
+         ((null buf) (format "Not open: %s" file))
+         ((buffer-modified-p buf) (format "Dirty: %s" file))
+         (t (format "Clean: %s" file))))
+    (error (error-message-string err))))
+
+;;; Interactive diff/apply
+
+(defcustom mcp-emacs-apply-diff-default-timeout 120
+  "Default timeout, in seconds, for `mcp-emacs-apply-diff'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defcustom mcp-emacs-apply-diff-max-timeout 600
+  "Maximum timeout, in seconds, for `mcp-emacs-apply-diff'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defun mcp-emacs-apply-diff (path new-content timeout)
+  "Present NEW-CONTENT as a proposed change to the file at PATH via ediff.
+Open an `ediff-buffers' session comparing the file's current content
+against NEW-CONTENT, block cooperatively until the human resolves it or
+TIMEOUT elapses, then return the outcome.  The buffer visiting PATH is
+Buffer A; the proposal is a temporary Buffer B.  On quit, if Buffer A's
+content changed from its entry state the outcome is applied (the final
+content is returned; saving is left to the human); otherwise rejected.
+On timeout the ediff session is abandoned and Buffer A left untouched.
+TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
+`mcp-emacs-apply-diff-default-timeout'."
+  (condition-case err
+      (let* ((file (expand-file-name path))
+             (buffer-a (find-file-noselect file))
+             (entry-content (with-current-buffer buffer-a
+                              (buffer-substring-no-properties
+                               (point-min) (point-max))))
+             (buffer-b (generate-new-buffer
+                        (format "*mcp-apply-diff: %s*"
+                                (file-name-nondirectory file))))
+             (winconf (current-window-configuration))
+             ;; Per-call result cell captured by the quit hook closure.
+             (result (list nil))
+             (secs (min mcp-emacs-apply-diff-max-timeout
+                        (if (and (numberp timeout) (> timeout 0))
+                            timeout
+                          mcp-emacs-apply-diff-default-timeout)))
+             control)
+        (with-current-buffer buffer-b
+          (insert new-content)
+          (let ((mode (assoc-default file auto-mode-alist 'string-match)))
+            (when (functionp mode) (ignore-errors (funcall mode)))))
+        (unwind-protect
+            (progn
+              (ediff-buffers
+               buffer-a buffer-b
+               (list (lambda ()
+                       (setq control ediff-control-buffer)
+                       (with-current-buffer ediff-control-buffer
+                         (setq-local
+                          ediff-quit-hook
+                          (list (lambda ()
+                                  (setcar
+                                   result
+                                   (if (buffer-live-p buffer-a)
+                                       (with-current-buffer buffer-a
+                                         (if (string=
+                                              (buffer-substring-no-properties
+                                               (point-min) (point-max))
+                                              entry-content)
+                                             'rejected
+                                           'applied))
+                                     'rejected)))))))))
+              ;; Cooperative wait: yield so ediff, edits, and other tool
+              ;; calls keep processing until the human quits or we time out.
+              (let ((deadline (+ (float-time) secs)))
+                (while (and (null (car result))
+                            (< (float-time) deadline))
+                  (accept-process-output
+                   nil mcp-emacs-org-task-wait-poll-interval)))
+              (cond
+               ((eq (car result) 'applied)
+                (format "Status: applied\n%s"
+                        (with-current-buffer buffer-a
+                          (buffer-substring-no-properties
+                           (point-min) (point-max)))))
+               ((eq (car result) 'rejected) "Status: rejected")
+               (t
+                ;; Timeout: force-quit any still-live ediff session.
+                (when (and control (buffer-live-p control))
+                  (with-current-buffer control
+                    (if (fboundp 'ediff-really-quit)
+                        (ignore-errors (ediff-really-quit nil))
+                      (kill-buffer control))))
+                "Status: timeout")))
+          (when (buffer-live-p buffer-b) (kill-buffer buffer-b))
+          (ignore-errors (set-window-configuration winconf))))
+    (error (error-message-string err))))
 
 (provide 'mcp-emacs)
 
