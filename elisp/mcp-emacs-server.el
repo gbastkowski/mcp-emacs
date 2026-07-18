@@ -230,10 +230,40 @@ rather than `null' (an empty alist would)."
                            (form (car (read-from-string
                                        (format "(with-current-buffer (mcp-emacs--current-buffer) (progn %s))" expr)))))
                       (format "%s" (eval form t)))))
-   (list :name "get_diagnostics"
-         :description "Get all diagnostics for the current buffer (Flycheck or Flymake)"
+   (list :name "get_buffer_diagnostics"
+         :description "Get code diagnostics for the current buffer (Flycheck or Flymake)"
          :schema (mcp-emacs-server--no-args)
-         :handler (lambda (_args) (mcp-emacs-get-diagnostics)))
+         :handler (lambda (_args) (mcp-emacs-get-buffer-diagnostics)))
+   (list :name "get_project_diagnostics"
+         :description "Aggregate code diagnostics across open project buffers (includes LSP via Flymake); unopened files are not covered"
+         :schema (mcp-emacs-server--no-args)
+         :handler (lambda (_args) (mcp-emacs-get-project-diagnostics)))
+   (list :name "get_workspace_folders"
+         :description "List the project/workspace roots Emacs knows about"
+         :schema (mcp-emacs-server--no-args)
+         :handler (lambda (_args) (mcp-emacs-get-workspace-folders)))
+   (list :name "list_project_files"
+         :description "List the files tracked in the current project"
+         :schema (mcp-emacs-server--no-args)
+         :handler (lambda (_args) (mcp-emacs-list-project-files)))
+   (list :name "switch_project"
+         :description "Switch Emacs's active project so later tools operate in that context"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "path" (mcp-emacs-server--prop "string" "Absolute path to the project root"))
+                  "required" (vector "path"))
+         :handler (lambda (args)
+                    (mcp-emacs-switch-project (alist-get 'path args))))
+   (list :name "find_file_in_project"
+         :description "Resolve a file by name within the current project and open it"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "name" (mcp-emacs-server--prop "string" "File name to find within the project"))
+                  "required" (vector "name"))
+         :handler (lambda (args)
+                    (mcp-emacs-find-file-in-project (alist-get 'name args))))
    (list :name "imenu_list_symbols"
          :description "List the current buffer's symbols (functions, classes, variables) with line numbers"
          :schema (mcp-emacs-server--no-args)

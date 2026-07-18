@@ -14,8 +14,11 @@ skill.
 
 ## Gather
 
-- `get_diagnostics` — all diagnostics for the current buffer (Flycheck or
-  Flymake, auto-detected).
+- `get_buffer_diagnostics` — code diagnostics for the current buffer (Flycheck
+  or Flymake, auto-detected).
+- `get_project_diagnostics` — code diagnostics aggregated across the project's
+  open buffers (includes LSP diagnostics via Flymake); unopened files are not
+  covered.
 - `describe_flycheck_info_at_point` — diagnostic(s) at the cursor, when the
   user is pointing at one specific squiggle.
 - `get_error_context` — summarizes `*Messages*`, `*Warnings*`, and compilation
@@ -30,7 +33,7 @@ skill.
 3. Apply the fix via `edit_file_region` or `insert_at_point`
    (Emacs coords: lines 1-based, columns 0-based). For a larger rewrite, use
    `apply_diff` so the user reviews the change in `ediff` before it lands.
-4. Re-run `get_diagnostics` to confirm the diagnostic cleared before moving on.
+4. Re-run `get_buffer_diagnostics` to confirm the diagnostic cleared before moving on.
 
 ## Rules
 
