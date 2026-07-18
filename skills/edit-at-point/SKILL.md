@@ -41,5 +41,5 @@ instead of asking for a path or guessing.
 - Leave saving to the user by default. Only call `save_buffer` if the user
   asks, or if a downstream tool (build, LSP) needs the file on disk — and say
   so when you do.
-- Check the result with `get_diagnostics` or `describe_flycheck_info_at_point`
+- Check the result with `get_buffer_diagnostics` or `describe_flycheck_info_at_point`
   before declaring the edit clean.

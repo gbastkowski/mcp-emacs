@@ -295,38 +295,81 @@ START-LINE/START-COLUMN and END-LINE/END-COLUMN are 1-based coordinates."
                (flymake-diagnostic-text d)))
      (flymake-diagnostics pos))))
 
-(defun mcp-emacs-get-diagnostics ()
-  "Return all diagnostics for the current buffer via Flycheck or Flymake.
-Detects which backend is active; returns a status message when neither is."
-  (with-current-buffer (mcp-emacs--current-buffer)
+(defun mcp-emacs--buffer-diagnostics (buffer)
+  "Return the code-diagnostics lines for BUFFER, or nil when none apply.
+Detects the active checker (Flycheck or Flymake).  Returns nil when
+neither is active or the buffer has no diagnostics, so callers can decide
+how to present an empty result."
+  (with-current-buffer buffer
     (cond
      ((bound-and-true-p flycheck-mode)
       (let ((errors (flycheck-current-errors)))
-        (if errors
-            (mapconcat
-             (lambda (err)
-               (format "%s:%s: %s: %s [%s]"
-                       (or (flycheck-error-line err) "?")
-                       (or (flycheck-error-column err) "?")
-                       (flycheck-error-level err)
-                       (flycheck-error-message err)
-                       (flycheck-error-checker err)))
-             errors
-             "\n")
-          "No diagnostics in buffer")))
+        (when errors
+          (mapconcat
+           (lambda (err)
+             (format "%s:%s: %s: %s [%s]"
+                     (or (flycheck-error-line err) "?")
+                     (or (flycheck-error-column err) "?")
+                     (flycheck-error-level err)
+                     (flycheck-error-message err)
+                     (flycheck-error-checker err)))
+           errors
+           "\n"))))
      ((bound-and-true-p flymake-mode)
       (let ((diags (flymake-diagnostics)))
-        (if diags
-            (mapconcat
-             (lambda (d)
-               (format "%s: %s: %s"
-                       (line-number-at-pos (flymake-diagnostic-beg d))
-                       (flymake-diagnostic-type d)
-                       (flymake-diagnostic-text d)))
-             diags
-             "\n")
-          "No diagnostics in buffer")))
-     (t "Neither Flycheck nor Flymake is active"))))
+        (when diags
+          (mapconcat
+           (lambda (d)
+             (format "%s: %s: %s"
+                     (line-number-at-pos (flymake-diagnostic-beg d))
+                     (flymake-diagnostic-type d)
+                     (flymake-diagnostic-text d)))
+           diags
+           "\n"))))
+     (t nil))))
+
+(defun mcp-emacs-get-buffer-diagnostics ()
+  "Return the code diagnostics for the current buffer via Flycheck or Flymake.
+Detects which backend is active; returns a status message when neither is
+active or there are no diagnostics."
+  (let ((buffer (mcp-emacs--current-buffer)))
+    (or (mcp-emacs--buffer-diagnostics buffer)
+        (with-current-buffer buffer
+          (if (or (bound-and-true-p flycheck-mode)
+                  (bound-and-true-p flymake-mode))
+              "No diagnostics in buffer"
+            "Neither Flycheck nor Flymake is active")))))
+
+(defun mcp-emacs-get-project-diagnostics ()
+  "Aggregate code diagnostics across the current project.
+Collects Flycheck/Flymake diagnostics from every live buffer whose file
+is under the project root; because eglot feeds diagnostics through
+Flymake, LSP diagnostics are included for managed open buffers.  Files
+that are not open in a buffer are not covered.  Returns a status message
+when not inside a project or when nothing is found."
+  (condition-case err
+      (if (not (require 'project nil t))
+          "project.el is not available"
+        (let ((proj (with-current-buffer (mcp-emacs--current-buffer)
+                      (project-current))))
+          (if (not proj)
+              "Not inside a project"
+            (let* ((root (expand-file-name (project-root proj)))
+                   (sections
+                    (delq nil
+                          (mapcar
+                           (lambda (buf)
+                             (with-current-buffer buf
+                               (when (and buffer-file-name
+                                          (string-prefix-p
+                                           root (expand-file-name buffer-file-name)))
+                                 (when-let ((lines (mcp-emacs--buffer-diagnostics buf)))
+                                   (format "%s:\n%s" buffer-file-name lines)))))
+                           (buffer-list)))))
+              (if sections
+                  (string-join sections "\n\n")
+                "No diagnostics in open project buffers")))))
+    (error (error-message-string err))))
 
 (defun mcp-emacs-get-error-context ()
   "Summarize recent error-related buffers."
@@ -989,6 +1032,91 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
                 "Status: timeout")))
           (when (buffer-live-p buffer-b) (kill-buffer buffer-b))
           (ignore-errors (set-window-configuration winconf))))
+    (error (error-message-string err))))
+
+;;; Project / workspace tools
+
+;; These use built-in project.el as the base and opportunistically use
+;; projectile when it is loaded; projectile symbols are referenced only
+;; behind a `featurep' guard so no hard dependency is introduced.
+(declare-function projectile-known-projects "projectile" ())
+(declare-function projectile-project-files "projectile" (project-dir))
+(declare-function projectile-project-root "projectile" (&optional dir))
+(declare-function project-remember-project "project" (pr &optional no-write))
+
+(defun mcp-emacs-get-workspace-folders ()
+  "Return the project/workspace roots Emacs knows about, one per line."
+  (condition-case err
+      (let ((roots
+             (if (featurep 'projectile)
+                 (projectile-known-projects)
+               (when (require 'project nil t)
+                 (project-known-project-roots)))))
+        (if roots
+            (string-join roots "\n")
+          "No known workspace folders"))
+    (error (error-message-string err))))
+
+(defun mcp-emacs-list-project-files ()
+  "Return the files tracked in the current project, one per line."
+  (condition-case err
+      (if (featurep 'projectile)
+          (let ((root (projectile-project-root)))
+            (if (not root)
+                "Not inside a project"
+              (let ((files (projectile-project-files root)))
+                (if files (string-join files "\n") "No files in project"))))
+        (if (not (require 'project nil t))
+            "project.el is not available"
+          (let ((proj (with-current-buffer (mcp-emacs--current-buffer)
+                        (project-current))))
+            (if (not proj)
+                "Not inside a project"
+              (let ((files (ignore-errors (project-files proj))))
+                (if files (string-join files "\n") "No files in project"))))))
+    (error (error-message-string err))))
+
+(defun mcp-emacs-switch-project (path)
+  "Switch Emacs's active project to PATH (a project root).
+Open the root in a `dired' buffer so subsequent tools that read the
+current buffer resolve to that project, and register it with project.el's
+known-projects list.  Programmatic (never prompts).  Return a status
+string; leave the active project unchanged when PATH is not a project."
+  (condition-case err
+      (let ((dir (and path (file-name-as-directory (expand-file-name path)))))
+        (cond
+         ((or (null dir) (not (file-directory-p dir)))
+          (format "Not a directory: %s" path))
+         ((not (require 'project nil t))
+          "project.el is not available")
+         ((not (project-current nil dir))
+          (format "Not a project: %s" dir))
+         (t
+          (when (fboundp 'project-remember-project)
+            (ignore-errors (project-remember-project (project-current nil dir))))
+          (dired dir)
+          (format "Switched project to %s" dir))))
+    (error (error-message-string err))))
+
+(defun mcp-emacs-find-file-in-project (name)
+  "Resolve NAME against the current project's files and open the match.
+Return the resolved path, or a status string when there is no match."
+  (condition-case err
+      (if (not (require 'project nil t))
+          "project.el is not available"
+        (let ((proj (with-current-buffer (mcp-emacs--current-buffer)
+                      (project-current))))
+          (if (not proj)
+              "Not inside a project"
+            (let* ((files (ignore-errors (project-files proj)))
+                   (match (seq-find
+                           (lambda (f)
+                             (or (string= (file-name-nondirectory f) name)
+                                 (string-suffix-p (concat "/" name) f)))
+                           files)))
+              (if match
+                  (progn (find-file match) match)
+                (format "No file matching %s in project" name))))))
     (error (error-message-string err))))
 
 (provide 'mcp-emacs)
