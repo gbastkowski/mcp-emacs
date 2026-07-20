@@ -89,3 +89,135 @@
           (check "send-delivers-string" (car sent) '(fake-term . "hello")))
       (kill-buffer buf)
       (clrhash mcp-emacs-run--sessions))))
+
+;;; Popup output window.
+
+(check "popup-buffer-name" (mcp-emacs-run--popup-buffer-name "explain") "*mcp-emacs:explain*")
+
+(check "markdown-guard-errors"
+       (cl-letf (((symbol-function 'gfm-view-mode) nil))
+         ;; fboundp is nil when the symbol has no function cell
+         (fmakunbound 'gfm-view-mode)
+         (condition-case _ (progn (mcp-emacs-run--ensure-markdown) 'no) (user-error 'yes)))
+       'yes)
+
+;; Popup render: stub gfm-view-mode and the display step so no real window
+;; machinery or markdown-mode is needed; assert content, read-only, fontify.
+(let (mode-ran displayed)
+  (cl-letf (((symbol-function 'gfm-view-mode)
+             (lambda () (setq mode-ran t) (setq buffer-read-only t)))
+            ((symbol-function 'mcp-emacs-run--display-popup)
+             (lambda (buf) (setq displayed buf))))
+    (when (get-buffer "*mcp-emacs:explain*") (kill-buffer "*mcp-emacs:explain*"))
+    (let ((buf (mcp-emacs-popup-show "# Title\n\nbody\n" "explain")))
+      (unwind-protect
+          (progn
+            (check "popup-returns-buffer" (bufferp buf) t)
+            (check "popup-buffer-named" (buffer-name buf) "*mcp-emacs:explain*")
+            (check "popup-mode-ran" mode-ran t)
+            (check "popup-displayed" (eq displayed buf) t)
+            (with-current-buffer buf
+              (check "popup-content" (buffer-string) "# Title\n\nbody\n")
+              (check "popup-read-only" buffer-read-only t)
+              (check "popup-fontify-local"
+                     (buffer-local-value 'markdown-fontify-code-blocks-natively buf) t)
+              (check "popup-point-at-top" (point) (point-min))))
+        (when (buffer-live-p buf) (kill-buffer buf))))))
+
+;; Reuse per kind: second render same kind -> same buffer, content replaced.
+(let (displayed)
+  (cl-letf (((symbol-function 'gfm-view-mode) #'ignore)
+            ((symbol-function 'mcp-emacs-run--display-popup)
+             (lambda (buf) (setq displayed buf))))
+    (when (get-buffer "*mcp-emacs:explain*") (kill-buffer "*mcp-emacs:explain*"))
+    (let ((first (mcp-emacs-popup-show "one" "explain")))
+      (let ((second (mcp-emacs-popup-show "two" "explain")))
+        (unwind-protect
+            (progn
+              (check "popup-reuse-same-buffer" (eq first second) t)
+              (check "popup-reuse-content"
+                     (with-current-buffer second (buffer-string)) "two"))
+          (when (buffer-live-p first) (kill-buffer first)))))))
+
+;; Distinct kinds -> distinct buffers.
+(let (displayed)
+  (cl-letf (((symbol-function 'gfm-view-mode) #'ignore)
+            ((symbol-function 'mcp-emacs-run--display-popup)
+             (lambda (buf) (setq displayed buf))))
+    (dolist (n '("*mcp-emacs:explain*" "*mcp-emacs:diag*"))
+      (when (get-buffer n) (kill-buffer n)))
+    (let ((a (mcp-emacs-popup-show "a" "explain"))
+          (b (mcp-emacs-popup-show "b" "diag")))
+      (unwind-protect
+          (check "popup-distinct-kinds" (not (eq a b)) t)
+        (when (buffer-live-p a) (kill-buffer a))
+        (when (buffer-live-p b) (kill-buffer b))))))
+
+;;; Headless query.
+
+;; Command line: claude -p PROMPT --output-format text, run from project root.
+(let (cmd dir sentinel-fn out-buf)
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/qproj/"))
+            ((symbol-function 'make-process)
+             (lambda (&rest args)
+               (setq cmd (plist-get args :command))
+               (setq dir default-directory)
+               (setq sentinel-fn (plist-get args :sentinel))
+               (setq out-buf (plist-get args :buffer))
+               'fake-proc)))
+    (let (result)
+      (mcp-emacs-run--query-headless "explain @x:1" (lambda (o) (setq result o)))
+      (check "query-command"
+             cmd (list mcp-emacs-run-executable "-p" "explain @x:1" "--output-format" "text"))
+      (check "query-runs-in-project-root" dir "/tmp/qproj/")
+      ;; Simulate a successful exit: fill stdout, drive the sentinel.
+      (cl-letf (((symbol-function 'process-status) (lambda (_) 'exit))
+                ((symbol-function 'process-exit-status) (lambda (_) 0)))
+        (with-current-buffer out-buf (insert "the answer"))
+        (funcall sentinel-fn 'fake-proc "finished\n")
+        (check "query-success-callback" result "the answer")))))
+
+;; Non-zero exit: callback is NOT invoked.
+(let (sentinel-fn out-buf err-buf called)
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/qproj/"))
+            ((symbol-function 'make-process)
+             (lambda (&rest args)
+               (setq sentinel-fn (plist-get args :sentinel))
+               (setq out-buf (plist-get args :buffer))
+               (setq err-buf (plist-get args :stderr))
+               'fake-proc)))
+    (mcp-emacs-run--query-headless "p" (lambda (_) (setq called t)))
+    (cl-letf (((symbol-function 'process-status) (lambda (_) 'exit))
+              ((symbol-function 'process-exit-status) (lambda (_) 1)))
+      (with-current-buffer err-buf (insert "boom"))
+      (funcall sentinel-fn 'fake-proc "exited abnormally\n")
+      (check "query-failure-no-callback" called nil))))
+
+;;; Explain routing by session visibility.
+
+(let* ((root "/tmp/explain-route/") fired)
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root))
+            ((symbol-function 'mcp-emacs-run--selection-reference) (lambda () "@x:1"))
+            ((symbol-function 'mcp-emacs-run-send-prompt) (lambda (&rest _) (push 'tui fired)))
+            ((symbol-function 'mcp-emacs-popup-show) (lambda (&rest _) (push 'popup fired)))
+            ((symbol-function 'mcp-emacs-run--query-headless) (lambda (&rest _) (push 'headless fired))))
+    ;; Visible session -> TUI only.
+    (cl-letf (((symbol-function 'mcp-emacs-run--live-buffer) (lambda (_) 'buf))
+              ((symbol-function 'mcp-emacs-run--session-visible-p) (lambda (_) t)))
+      (setq fired nil)
+      (mcp-emacs-explain-selection-in-current-session)
+      (check "explain-visible-routes-tui" (reverse fired) '(tui)))
+    ;; Hidden session -> popup placeholder + headless.
+    (cl-letf (((symbol-function 'mcp-emacs-run--live-buffer) (lambda (_) 'buf))
+              ((symbol-function 'mcp-emacs-run--session-visible-p) (lambda (_) nil)))
+      (setq fired nil)
+      (mcp-emacs-explain-selection-in-current-session)
+      (check "explain-hidden-routes-popup" (reverse fired) '(popup headless)))
+    ;; No session -> user-error, no sink fired.
+    (cl-letf (((symbol-function 'mcp-emacs-run--live-buffer) (lambda (_) nil)))
+      (setq fired nil)
+      (check "explain-no-session-errors"
+             (condition-case _ (progn (mcp-emacs-explain-selection-in-current-session) 'no)
+               (user-error 'yes))
+             'yes)
+      (check "explain-no-session-no-sink" fired nil))))
