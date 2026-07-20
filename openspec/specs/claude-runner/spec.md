@@ -2,7 +2,7 @@
 
 Define a terminal runner that launches and manages the Claude Code CLI inside
 Emacs: project-aware launch in an eat terminal, one primary session per project
-(list/switch/kill), a managed side window, and continue/resume — with editor
+(list/switch/kill), a managed directional window, and continue/resume — with editor
 integration provided to the CLI through the mcp-emacs MCP server rather than the
 IDE WebSocket protocol.
 
@@ -39,15 +39,15 @@ The system SHALL keep at most one primary runner session per project, name its b
 - **THEN** the runner terminates the CLI process and cleans up its buffer
 
 ### Requirement: Manage the runner window
-The system SHALL provide commands to show, hide, and toggle the runner window, using a side-window placement, with control over whether focus moves to the runner.
+The system SHALL provide commands to show, hide, and toggle the runner window, placing the buffer in an ordinary (non-dedicated) window in a configurable direction, with control over whether focus moves to the runner.
 
 #### Scenario: Toggling visibility
 - **WHEN** the user toggles the runner window while it is visible
 - **THEN** the window is hidden, and toggling again shows it
 
-#### Scenario: Side-window placement
+#### Scenario: Directional placement
 - **WHEN** the runner window is shown
-- **THEN** it appears in a side window rather than replacing the user's main window
+- **THEN** it appears in an ordinary window placed in the configured direction (default to the right), so it can be split, navigated, and closed like any other window rather than a dedicated side window
 
 ### Requirement: Start a session without displaying its window
 The system SHALL provide a command to start a project's runner session headless: the CLI runs in its eat buffer and is registered as the project's primary session, but no window is displayed and focus does not move to it. The headless buffer SHALL be revealable afterwards through the existing show/toggle/switch commands, and SHALL participate in the one-session-per-project reuse model.

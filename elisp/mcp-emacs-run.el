@@ -25,10 +25,11 @@
 ;; A terminal runner for the Claude Code CLI, hosted inside Emacs.  The
 ;; CLI is a full-screen ANSI TUI, so it runs in an eat terminal buffer
 ;; (eat is a soft dependency, loaded only when present).  The runner is
-;; project-aware, keeps one primary session per project, manages a side
-;; window, and supports continue/resume.  Editor-tool integration is
-;; provided to the CLI through the mcp-emacs MCP server (via the user's
-;; MCP configuration), not by this runner.
+;; project-aware, keeps one primary session per project, shows its
+;; terminal in an ordinary directional window, and supports
+;; continue/resume.  Editor-tool integration is provided to the CLI
+;; through the mcp-emacs MCP server (via the user's MCP configuration),
+;; not by this runner.
 ;;
 ;; This file is separate from the MCP server so the server stays pure.
 
@@ -63,14 +64,23 @@
   :type 'boolean
   :group 'mcp-emacs-run)
 
-(defcustom mcp-emacs-run-window-side 'right
-  "Side of the frame the runner window is displayed on."
-  :type '(choice (const left) (const right) (const top) (const bottom))
+(defcustom mcp-emacs-run-window-direction 'right
+  "Direction in which the runner window is placed.
+The runner uses an ordinary (non-dedicated) window in this direction, so
+it can be split, navigated, and closed like any other window."
+  :type '(choice (const right) (const left) (const above) (const below))
   :group 'mcp-emacs-run)
 
-;; TODO specify width in columns
+;; TODO specify size in columns/lines
 (defcustom mcp-emacs-run-window-width 0.4
-  "Width of the runner side window, as a fraction of the frame."
+  "Width hint for the runner window, as a fraction of the frame.
+Used when `mcp-emacs-run-window-direction' is `left' or `right'."
+  :type 'number
+  :group 'mcp-emacs-run)
+
+(defcustom mcp-emacs-run-window-height 0.4
+  "Height hint for the runner window, as a fraction of the frame.
+Used when `mcp-emacs-run-window-direction' is `above' or `below'."
   :type 'number
   :group 'mcp-emacs-run)
 
@@ -112,13 +122,20 @@
       nil)))
 
 (defun mcp-emacs-run--display (buffer)
-  "Display BUFFER in a side window, honouring the focus preference."
-  (let ((window
-         (display-buffer
-          buffer
-          `((display-buffer-in-side-window)
-            (side . ,mcp-emacs-run-window-side)
-            (window-width . ,mcp-emacs-run-window-width)))))
+  "Display BUFFER in an ordinary window, honouring the focus preference.
+The window is placed in `mcp-emacs-run-window-direction' via
+`display-buffer-in-direction', so it stays splittable and closable
+rather than a dedicated side window."
+  (let* ((horizontal (memq mcp-emacs-run-window-direction '(left right)))
+         (size (if horizontal
+                   `(window-width . ,mcp-emacs-run-window-width)
+                 `(window-height . ,mcp-emacs-run-window-height)))
+         (window
+          (display-buffer
+           buffer
+           `((display-buffer-in-direction)
+             (direction . ,mcp-emacs-run-window-direction)
+             ,size))))
     (when (and window mcp-emacs-run-focus-on-show)
       (select-window window))
     window))
