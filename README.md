@@ -92,6 +92,23 @@ Configure `opencode-client-host`, `-port`, and optional `-password`, then:
   turn), `C-c C-k` to interrupt. Permission and question requests are answered
   from Emacs.
 
+### Claude runner
+
+`elisp/mcp-emacs-run.el` runs the Claude Code CLI inside Emacs. The CLI is a
+full-screen TUI, so it runs in an [`eat`](https://codeberg.org/akib/emacs-eat)
+terminal buffer (eat is an optional dependency, loaded only when present). The
+runner is project-aware, keeps one primary session per project, and manages a
+side window. Editor-tool integration is provided to the CLI through the
+`mcp-emacs` MCP server via your own MCP configuration (e.g. `.mcp.json`); the
+runner only launches and places the terminal.
+
+Configure `mcp-emacs-run-executable` and `-flags`, then:
+
+- `M-x mcp-emacs-run` — start (or switch to) the runner for the current project.
+- `M-x mcp-emacs-run-continue` / `-resume` — pick up a prior conversation.
+- `M-x mcp-emacs-run-toggle` — show/hide the runner side window.
+- `M-x mcp-emacs-run-list` / `-switch` / `-kill` — manage sessions.
+
 ### Resources
 
 | Resource            | Description                                                                               |

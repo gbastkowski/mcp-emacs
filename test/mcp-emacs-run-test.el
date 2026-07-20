@@ -1,0 +1,15 @@
+(add-to-list 'load-path (expand-file-name "elisp"))
+(require 'mcp-emacs-run)
+(defun check (l g w) (princ (format "%s %s\n" (if (equal g w) "PASS" "FAIL") l)))
+;; project-root from a subdir resolves to the git repo root
+(let ((default-directory (expand-file-name "elisp/"))
+      (repo (expand-file-name "./")))
+  (check "project-root-is-repo" (mcp-emacs-run--project-root) repo))
+(check "buffer-name" (mcp-emacs-run--buffer-name "/tmp/foo/") "*claude:foo*")
+(let ((buf (generate-new-buffer "*claude:foo*")))
+  (puthash "/tmp/foo/" buf mcp-emacs-run--sessions)
+  (check "registry-live" (mcp-emacs-run--live-buffer "/tmp/foo/") buf)
+  (kill-buffer buf)
+  (check "registry-dead-cleared" (mcp-emacs-run--live-buffer "/tmp/foo/") nil))
+(check "eat-guard-errors"
+       (condition-case _ (progn (mcp-emacs-run--ensure-eat) 'no) (user-error 'yes)) 'yes)
