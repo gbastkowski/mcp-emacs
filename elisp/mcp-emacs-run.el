@@ -39,8 +39,11 @@
 (require 'eat nil t)
 
 (declare-function eat-make "eat" (name program &optional startfile &rest switches))
+(declare-function eat-term-send-string "eat" (terminal string))
 (declare-function project-current "project" (&optional maybe-prompt directory))
 (declare-function project-root "project" (project))
+
+(defvar eat-terminal)
 
 ;;;; Customization
 
@@ -154,6 +157,45 @@ EXTRA-SWITCHES are appended to the configured flags (e.g. continue/resume)."
       (mcp-emacs-run--display buffer))
     buffer))
 
+(defun mcp-emacs-run--send (root string)
+  "Send STRING to the live runner terminal for project ROOT.
+Signal a `user-error' when ROOT has no live session, or its buffer is
+not a live eat terminal."
+  (let ((buf (mcp-emacs-run--live-buffer root)))
+    (unless buf
+      (user-error "No live runner session for this project"))
+    (let ((term (buffer-local-value 'eat-terminal buf)))
+      (unless term
+        (user-error "Runner session for this project is not a live terminal"))
+      (eat-term-send-string term string))))
+
+(defun mcp-emacs-run--selection-reference ()
+  "Return a reference to the current selection for embedding in a prompt.
+In a file-visiting buffer, return an at-mention of the project-relative
+path with the active region's line span (or the single line at point
+when no region is active).  Otherwise return the selected text verbatim
+\(or the current line when no region is active)."
+  (let* ((beg (if (use-region-p) (region-beginning) (point)))
+         (end (if (use-region-p) (region-end) (point)))
+         (file (buffer-file-name)))
+    (if file
+        (let* ((root (mcp-emacs-run--project-root))
+               (rel (file-relative-name file root))
+               (start-line (line-number-at-pos beg))
+               ;; A region ending at column 0 covers up to the previous line.
+               (end-line (line-number-at-pos (if (and (use-region-p) (> end beg)
+                                                       (save-excursion
+                                                         (goto-char end) (bolp)))
+                                                  (1- end)
+                                                end))))
+          (if (and (use-region-p) (/= start-line end-line))
+              (format "@%s:%d-%d" rel start-line end-line)
+            (format "@%s:%d" rel start-line)))
+      (if (use-region-p)
+          (buffer-substring-no-properties beg end)
+        (buffer-substring-no-properties (line-beginning-position)
+                                        (line-end-position))))))
+
 ;;;; Commands
 
 ;;;###autoload
@@ -252,6 +294,36 @@ otherwise, starting the runner if there is no session yet."
      ((get-buffer-window buf)
       (delete-window (get-buffer-window buf)))
      (t (mcp-emacs-run--display buf)))))
+
+;;;###autoload
+(defun mcp-emacs-run-send-prompt (text)
+  "Send TEXT to the current project's runner session and submit it.
+Requires a live session; does not launch a new one."
+  (interactive "sPrompt: ")
+  (let ((root (mcp-emacs-run--project-root)))
+    (mcp-emacs-run--send root text)
+    (mcp-emacs-run--send root "\r")))
+
+;;;###autoload
+(defun mcp-emacs-run-send-escape ()
+  "Send an escape/interrupt to the current project's runner session."
+  (interactive)
+  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\e"))
+
+;;;###autoload
+(defun mcp-emacs-run-send-newline ()
+  "Insert a newline in the runner prompt without submitting it."
+  (interactive)
+  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\n"))
+
+;;;###autoload
+(defun mcp-emacs-explain-selection-in-current-session ()
+  "Ask the current project's runner session to explain the selection.
+Builds a reference for the active region (or point) and submits an
+explain request.  Requires a live session; does not launch a new one."
+  (interactive)
+  (mcp-emacs-run-send-prompt
+   (concat "explain " (mcp-emacs-run--selection-reference))))
 
 (provide 'mcp-emacs-run)
 

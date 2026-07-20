@@ -33,7 +33,7 @@ Rationale: mirrors claude-code-ide's structure, keeps backend detail (`eat-termi
 *Alternative considered:* a public MCP tool so the agent could self-prompt — rejected, this is a human-driven action and the runner is deliberately not an MCP surface.
 
 ### D2: Newline-without-submit
-The CLI treats `\r` as submit. A bare `\n` typically inserts a literal newline in the prompt editor. Use `"\n"` for `send-newline`; if the CLI's line editor needs the shift-enter escape instead, adjust during implementation (verified against the running CLI, not assumed).
+The CLI treats `\r` as submit and a bare `\n` as a literal newline in the prompt editor. `send-newline` sends `"\n"`; verified against the running CLI — it inserts a newline without submitting.
 
 ### D3: Reference builder — prefer @mention, fall back to inline
 `mcp-emacs-run--selection-reference` returns a string:
@@ -58,5 +58,4 @@ All commands resolve the project via the existing `mcp-emacs-run--project-root` 
 
 ## Open Questions
 
-- Exact newline-without-submit sequence for the current Claude CLI (`\n` vs a shift-enter escape) — resolve empirically in implementation.
 - Should `send-prompt` optionally *not* submit (leave the text in the prompt for the user to edit)? Deferred; `explain` wants immediate submit. Could add a prefix-arg later.

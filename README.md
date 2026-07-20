@@ -113,6 +113,12 @@ Configure `mcp-emacs-run-executable` and `-flags`, then:
 - `M-x mcp-emacs-run-toggle` — show/hide the runner window.
 - `M-x mcp-emacs-run-list` / `-switch` / `-kill` — manage sessions.
 
+Drive a running session from anywhere in Emacs (these require a live session and never launch one):
+
+- `M-x mcp-emacs-run-send-prompt` — send a prompt to the session and submit it.
+- `M-x mcp-emacs-run-send-escape` / `-send-newline` — send an interrupt, or a newline without submitting.
+- `M-x mcp-emacs-explain-selection-in-current-session` — ask the session to explain the region (or line at point); sends `explain @file:line` for file buffers, or the selected text otherwise.
+
 ### Resources
 
 | Resource            | Description                                                                               |
