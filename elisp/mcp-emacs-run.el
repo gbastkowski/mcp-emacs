@@ -68,6 +68,7 @@
   :type '(choice (const left) (const right) (const top) (const bottom))
   :group 'mcp-emacs-run)
 
+;; TODO specify width in columns
 (defcustom mcp-emacs-run-window-width 0.4
   "Width of the runner side window, as a fraction of the frame."
   :type 'number
@@ -80,11 +81,13 @@
 
 ;;;; Helpers
 
+;; TODO isn't this already covered by require further up?
 (defun mcp-emacs-run--ensure-eat ()
   "Signal a clear error unless eat is available."
   (unless (featurep 'eat)
     (user-error "mcp-emacs-run requires the `eat' package; please install it")))
 
+;; TODO maybe replace when-let with if-let as when-let looks almost deprecated?
 (defun mcp-emacs-run--project-root ()
   "Return the current project root, or the buffer's directory as a fallback."
   (or (when (and (featurep 'project) (fboundp 'project-current))
@@ -120,8 +123,9 @@
       (select-window window))
     window))
 
-(defun mcp-emacs-run--launch (root &rest extra-switches)
-  "Launch the CLI for project ROOT in an eat buffer, and display it.
+(defun mcp-emacs-run--launch (root no-display &rest extra-switches)
+  "Launch the CLI for project ROOT in an eat buffer.
+Unless NO-DISPLAY is non-nil, the buffer is shown in the runner window.
 EXTRA-SWITCHES are appended to the configured flags (e.g. continue/resume)."
   (mcp-emacs-run--ensure-eat)
   (let* ((default-directory (file-name-as-directory root))
@@ -129,7 +133,8 @@ EXTRA-SWITCHES are appended to the configured flags (e.g. continue/resume)."
          (switches (append mcp-emacs-run-flags extra-switches))
          (buffer (apply #'eat-make name mcp-emacs-run-executable nil switches)))
     (puthash root buffer mcp-emacs-run--sessions)
-    (mcp-emacs-run--display buffer)
+    (unless no-display
+      (mcp-emacs-run--display buffer))
     buffer))
 
 ;;;; Commands
@@ -145,19 +150,34 @@ EXTRA-SWITCHES, when given, are passed to a fresh launch."
          (existing (mcp-emacs-run--live-buffer root)))
     (if (and existing (null extra-switches))
         (progn (mcp-emacs-run--display existing) existing)
-      (apply #'mcp-emacs-run--launch root extra-switches))))
+      (apply #'mcp-emacs-run--launch root nil extra-switches))))
+
+;;;###autoload
+(defun mcp-emacs-run-start ()
+  "Start the Claude Code runner for the current project without showing it.
+Reuses a live session if one exists; otherwise launches the CLI in a
+registered eat buffer without displaying any window or moving focus.
+Reveal the session later with `mcp-emacs-run-toggle' or
+`mcp-emacs-run-switch'."
+  (interactive)
+  (mcp-emacs-run--ensure-eat)
+  (let* ((root (mcp-emacs-run--project-root))
+         (existing (mcp-emacs-run--live-buffer root)))
+    (prog1 (or existing (mcp-emacs-run--launch root t))
+      (message "Claude runner started (hidden) for %s"
+               (mcp-emacs-run--project-name root)))))
 
 ;;;###autoload
 (defun mcp-emacs-run-continue ()
   "Start the runner continuing the most recent conversation."
   (interactive)
-  (apply #'mcp-emacs-run--launch (mcp-emacs-run--project-root) '("--continue")))
+  (apply #'mcp-emacs-run--launch (mcp-emacs-run--project-root) nil '("--continue")))
 
 ;;;###autoload
 (defun mcp-emacs-run-resume ()
   "Start the runner resuming a prior conversation."
   (interactive)
-  (apply #'mcp-emacs-run--launch (mcp-emacs-run--project-root) '("--resume")))
+  (apply #'mcp-emacs-run--launch (mcp-emacs-run--project-root) nil '("--resume")))
 
 ;;;###autoload
 (defun mcp-emacs-run-list ()

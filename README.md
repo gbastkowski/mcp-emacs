@@ -105,6 +105,7 @@ runner only launches and places the terminal.
 Configure `mcp-emacs-run-executable` and `-flags`, then:
 
 - `M-x mcp-emacs-run` — start (or switch to) the runner for the current project.
+- `M-x mcp-emacs-run-start` — start the runner hidden (no window, no focus); reveal it later with `-toggle` or `-switch`.
 - `M-x mcp-emacs-run-continue` / `-resume` — pick up a prior conversation.
 - `M-x mcp-emacs-run-toggle` — show/hide the runner side window.
 - `M-x mcp-emacs-run-list` / `-switch` / `-kill` — manage sessions.
