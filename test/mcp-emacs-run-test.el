@@ -245,11 +245,9 @@
       (setq fired nil)
       (mcp-emacs-explain-selection-in-current-session)
       (check "explain-hidden-routes-popup" (reverse fired) '(popup headless)))
-    ;; No session -> user-error, no sink fired.
-    (cl-letf (((symbol-function 'mcp-emacs-run--live-buffer) (lambda (_) nil)))
+    ;; No session -> headless popup (no error, no TUI).
+    (cl-letf (((symbol-function 'mcp-emacs-run--live-buffer) (lambda (_) nil))
+              ((symbol-function 'mcp-emacs-run--session-visible-p) (lambda (_) nil)))
       (setq fired nil)
-      (check "explain-no-session-errors"
-             (condition-case _ (progn (mcp-emacs-explain-selection-in-current-session) 'no)
-               (user-error 'yes))
-             'yes)
-      (check "explain-no-session-no-sink" fired nil))))
+      (mcp-emacs-explain-selection-in-current-session)
+      (check "explain-no-session-routes-popup" (reverse fired) '(popup headless)))))
