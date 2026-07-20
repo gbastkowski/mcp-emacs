@@ -307,7 +307,7 @@ rather than `null' (an empty alist would)."
          :handler (lambda (args)
                     (mcp-emacs-check-document-dirty (alist-get 'path args))))
    (list :name "apply_diff"
-         :description "Propose new content for a file via an interactive ediff session; the human edits/accepts/rejects and the tool returns applied (with final content), rejected, or timeout"
+         :description "Propose new content for a file via an interactive ediff session; the human explicitly accepts or rejects (editing first if they wish) and the tool returns applied (with final content), rejected, or timeout"
          :schema (mcp-emacs-server--obj
                   "type" "object"
                   "properties" (mcp-emacs-server--obj

@@ -955,6 +955,23 @@ When no live buffer visits PATH, report that the document is not open."
   :type 'integer
   :group 'mcp-emacs)
 
+(defun mcp-emacs--apply-diff-accept (buffer-a buffer-b entry-content result)
+  "Record an accept decision for an apply-diff session.
+Apply the proposal in BUFFER-B to BUFFER-A when BUFFER-A is still at
+ENTRY-CONTENT (an untouched review); otherwise keep BUFFER-A's
+hand-edited content.  Set the RESULT cell's car to `applied'."
+  (when (buffer-live-p buffer-a)
+    (with-current-buffer buffer-a
+      (when (string= (buffer-substring-no-properties (point-min) (point-max))
+                     entry-content)
+        (erase-buffer)
+        (insert-buffer-substring buffer-b))))
+  (setcar result 'applied))
+
+(defun mcp-emacs--apply-diff-reject (result)
+  "Record a reject decision for an apply-diff session in the RESULT cell."
+  (setcar result 'rejected))
+
 (defun mcp-emacs-apply-diff (path new-content timeout)
   "Present NEW-CONTENT as a proposed change to the file at PATH via ediff.
 Open an `ediff-buffers' session comparing the file's current content
@@ -994,20 +1011,33 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
                (list (lambda ()
                        (setq control ediff-control-buffer)
                        (with-current-buffer ediff-control-buffer
+                         ;; Explicit accept/reject.  Accept copies the
+                         ;; proposal (Buffer B) into Buffer A unless the
+                         ;; human has already hand-edited A, then quits with
+                         ;; `applied'.  Reject, and a bare `q' quit, leave A
+                         ;; untouched and resolve to `rejected'.
+                         (local-set-key
+                          (kbd "C-c C-c")
+                          (lambda ()
+                            (interactive)
+                            (mcp-emacs--apply-diff-accept
+                             buffer-a buffer-b entry-content result)
+                            (ediff-really-quit nil)))
+                         (local-set-key
+                          (kbd "C-c C-k")
+                          (lambda ()
+                            (interactive)
+                            (mcp-emacs--apply-diff-reject result)
+                            (ediff-really-quit nil)))
                          (setq-local
                           ediff-quit-hook
                           (list (lambda ()
-                                  (setcar
-                                   result
-                                   (if (buffer-live-p buffer-a)
-                                       (with-current-buffer buffer-a
-                                         (if (string=
-                                              (buffer-substring-no-properties
-                                               (point-min) (point-max))
-                                              entry-content)
-                                             'rejected
-                                           'applied))
-                                     'rejected)))))))))
+                                  ;; Any quit without an explicit accept
+                                  ;; (e.g. plain `q') is a rejection.
+                                  (unless (car result)
+                                    (setcar result 'rejected)))))
+                         (message
+                          "mcp apply-diff: C-c C-c to accept, C-c C-k (or q) to reject")))))
               ;; Cooperative wait: yield so ediff, edits, and other tool
               ;; calls keep processing until the human quits or we time out.
               (let ((deadline (+ (float-time) secs)))
