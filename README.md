@@ -68,6 +68,30 @@ until the human edits the file, then wakes with the change and the current
 session view. The harness works, then waits for the human's next direction —
 instead of only seeing edits when it happens to re-read.
 
+### opencode client
+
+`elisp/opencode-client.el` is a native Emacs client for
+[opencode](https://opencode.ai)'s local HTTP API. opencode runs headless
+(`opencode serve`, default `127.0.0.1:4096`); the client drives it over HTTP and
+renders the conversation incrementally from the server's Server-Sent Events
+stream into an ordinary Emacs buffer, instead of embedding the opencode TUI in a
+terminal. Editor-tool integration is provided to opencode through the `emacs`
+MCP server (wired via `opencode.json`), so the client does not reimplement
+editor tools.
+
+It requires the [`plz`](https://github.com/alphapapa/plz.el) package, loaded as
+an optional dependency — installing `mcp-emacs` does not pull it in, and client
+commands report clearly if it is missing.
+
+Configure `opencode-client-host`, `-port`, and optional `-password`, then:
+
+- `M-x opencode-client-connect` — verify a running server (or
+  `opencode-client-serve` to start one).
+- `M-x opencode-client-create-session` / `-switch-session` — manage sessions.
+- In the chat buffer: `C-c C-c` to send a prompt (prefix arg steers a running
+  turn), `C-c C-k` to interrupt. Permission and question requests are answered
+  from Emacs.
+
 ### Resources
 
 | Resource            | Description                                                                               |
