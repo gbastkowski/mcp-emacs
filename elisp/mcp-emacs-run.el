@@ -471,15 +471,13 @@ Useful to accept a default or submit without typing a prompt."
   "Explain the current selection, routing output by session visibility.
 Builds a reference for the active region (or point).  When the current
 project's runner session buffer is visible in a window, the explain
-request is sent to and submitted in that live session.  When the session
-buffer is not visible, the explanation is fetched with a headless query
-and rendered in the popup output window instead.  Requires a live
-session; does not launch a new one."
+request is sent to and submitted in that live session.  Otherwise —
+whether the project has a hidden session or no session at all — the
+explanation is fetched with a one-shot headless query and rendered in
+the popup output window.  Does not require or launch a TUI session."
   (interactive)
   (let* ((root (mcp-emacs-run--project-root))
          (prompt (concat "explain " (mcp-emacs-run--selection-reference))))
-    (unless (mcp-emacs-run--live-buffer root)
-      (user-error "No live runner session for this project"))
     (if (mcp-emacs-run--session-visible-p root)
         (mcp-emacs-run-send-prompt prompt)
       (mcp-emacs-popup-show "Working…" "explain")

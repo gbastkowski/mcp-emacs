@@ -121,7 +121,7 @@ Drive a running session from anywhere in Emacs (these require a live session and
 - `M-x mcp-emacs-run-send-1` / `-send-2` / `-send-3` — answer Claude's numbered menus.
 - `M-x mcp-emacs-run-send-shift-tab` — cycle Claude's mode.
 - `M-x mcp-emacs-run-send-up` / `-send-down` — arrow keys for history/menu navigation.
-- `M-x mcp-emacs-explain-selection-in-current-session` — ask the session to explain the region (or line at point). When the session buffer is visible in a window, the request is sent to the running TUI as `explain @file:line` (or the selected text for non-file buffers). When the session buffer is *not* visible, the explanation is fetched with a one-shot headless CLI call (`claude -p ... --output-format text`) and rendered in the popup output window instead, so the answer appears near your code rather than off-screen.
+- `M-x mcp-emacs-explain-selection-in-current-session` — explain the region (or line at point). When the session buffer is visible in a window, the request is sent to the running TUI as `explain @file:line` (or the selected text for non-file buffers). Otherwise — whether the project has a hidden session or none at all — the explanation is fetched with a one-shot headless CLI call (`claude -p ... --output-format text`) and rendered in the popup output window, so it works without an open session and the answer appears near your code.
 
 #### Popup output window
 
