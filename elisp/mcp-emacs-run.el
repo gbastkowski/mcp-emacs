@@ -37,13 +37,16 @@
 
 (require 'project nil t)
 (require 'eat nil t)
+(require 'markdown-mode nil t)
 
 (declare-function eat-make "eat" (name program &optional startfile &rest switches))
 (declare-function eat-term-send-string "eat" (terminal string))
 (declare-function project-current "project" (&optional maybe-prompt directory))
 (declare-function project-root "project" (project))
+(declare-function gfm-view-mode "markdown-mode" ())
 
 (defvar eat-terminal)
+(defvar markdown-fontify-code-blocks-natively)
 
 ;;;; Customization
 
@@ -84,6 +87,21 @@ Used when `mcp-emacs-run-window-direction' is `left' or `right'."
 (defcustom mcp-emacs-run-window-height 0.4
   "Height hint for the runner window, as a fraction of the frame.
 Used when `mcp-emacs-run-window-direction' is `above' or `below'."
+  :type 'number
+  :group 'mcp-emacs-run)
+
+(defcustom mcp-emacs-run-popup-direction 'below
+  "Direction in which the popup output window is placed.
+Like the runner window, the popup uses an ordinary (non-dedicated)
+window in this direction so it can be split, scrolled, and closed like
+any other window."
+  :type '(choice (const right) (const left) (const above) (const below))
+  :group 'mcp-emacs-run)
+
+(defcustom mcp-emacs-run-popup-size 0.4
+  "Size hint for the popup output window, as a fraction of the frame.
+Interpreted as a width when `mcp-emacs-run-popup-direction' is `left' or
+`right', otherwise as a height."
   :type 'number
   :group 'mcp-emacs-run)
 
@@ -195,6 +213,90 @@ when no region is active).  Otherwise return the selected text verbatim
           (buffer-substring-no-properties beg end)
         (buffer-substring-no-properties (line-beginning-position)
                                         (line-end-position))))))
+
+;;;; Popup output window
+
+(defun mcp-emacs-run--ensure-markdown ()
+  "Signal a clear error unless `markdown-mode' is available."
+  (unless (fboundp 'gfm-view-mode)
+    (user-error "mcp-emacs-run requires the `markdown-mode' package for popup output; please install it")))
+
+(defun mcp-emacs-run--popup-buffer-name (kind)
+  "Return the dedicated popup buffer name for KIND."
+  (format "*mcp-emacs:%s*" kind))
+
+(defun mcp-emacs-popup-show (content &optional kind)
+  "Render markdown CONTENT in the popup output window for KIND.
+CONTENT is displayed read-only with `gfm-view-mode' and native code
+fontification in a dedicated per-KIND buffer, shown in an ordinary split
+window that does not auto-hide.  KIND defaults to \"output\".  A new call
+with the same KIND replaces the previous content and reuses its window.
+Return the popup buffer."
+  (mcp-emacs-run--ensure-markdown)
+  (let* ((kind (or kind "output"))
+         (buf (get-buffer-create (mcp-emacs-run--popup-buffer-name kind))))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert content)
+        (goto-char (point-min)))
+      (setq-local markdown-fontify-code-blocks-natively t)
+      (gfm-view-mode)
+      (setq-local markdown-fontify-code-blocks-natively t)
+      (font-lock-flush)
+      (font-lock-ensure))
+    (mcp-emacs-run--display-popup buf)
+    buf))
+
+(defun mcp-emacs-run--display-popup (buffer)
+  "Display BUFFER as an ordinary directional popup window.
+An entry matching the popup buffer name is prepended to a local copy of
+`display-buffer-alist' so this placement wins over any user or framework
+rule (e.g. Doom's `+popup', which would otherwise force a transient,
+auto-hiding side window).  The window is reused if already shown."
+  (let* ((horizontal (memq mcp-emacs-run-popup-direction '(left right)))
+         (size (if horizontal
+                   `(window-width . ,mcp-emacs-run-popup-size)
+                 `(window-height . ,mcp-emacs-run-popup-size)))
+         (rule `(,(regexp-quote (buffer-name buffer))
+                 (display-buffer-reuse-window display-buffer-in-direction)
+                 (direction . ,mcp-emacs-run-popup-direction)
+                 ,size))
+         (display-buffer-alist (cons rule display-buffer-alist)))
+    (display-buffer buffer)))
+
+;;;; Headless query
+
+(defun mcp-emacs-run--query-headless (prompt callback)
+  "Run PROMPT non-interactively via the CLI and pass stdout to CALLBACK.
+Invokes the configured executable with `-p PROMPT --output-format text'
+from the current project root, collecting stdout asynchronously.  On a
+zero exit, CALLBACK is called with the collected string.  On failure the
+user is informed and CALLBACK is not called."
+  (let* ((default-directory (file-name-as-directory (mcp-emacs-run--project-root)))
+         (out (generate-new-buffer " *mcp-emacs-query-out*"))
+         (err (generate-new-buffer " *mcp-emacs-query-err*")))
+    (make-process
+     :name "mcp-emacs-query"
+     :buffer out
+     :stderr err
+     :noquery t
+     :command (list mcp-emacs-run-executable "-p" prompt "--output-format" "text")
+     :sentinel
+     (lambda (proc _event)
+       (when (memq (process-status proc) '(exit signal))
+         (let ((code (process-exit-status proc))
+               (output (with-current-buffer out (buffer-string)))
+               (errtext (with-current-buffer err (buffer-string))))
+           (unwind-protect
+               (if (and (eq (process-status proc) 'exit) (zerop code))
+                   (funcall callback output)
+                 (message "mcp-emacs query failed (exit %s): %s"
+                          code (string-trim (if (string-empty-p errtext)
+                                                 output
+                                               errtext))))
+             (when (buffer-live-p out) (kill-buffer out))
+             (when (buffer-live-p err) (kill-buffer err)))))))))
 
 ;;;; Commands
 
@@ -316,14 +418,31 @@ Requires a live session; does not launch a new one."
   (interactive)
   (mcp-emacs-run--send (mcp-emacs-run--project-root) "\n"))
 
+(defun mcp-emacs-run--session-visible-p (root)
+  "Return non-nil when ROOT's live session buffer is shown in some window."
+  (let ((buf (mcp-emacs-run--live-buffer root)))
+    (and buf (get-buffer-window buf t))))
+
 ;;;###autoload
 (defun mcp-emacs-explain-selection-in-current-session ()
-  "Ask the current project's runner session to explain the selection.
-Builds a reference for the active region (or point) and submits an
-explain request.  Requires a live session; does not launch a new one."
+  "Explain the current selection, routing output by session visibility.
+Builds a reference for the active region (or point).  When the current
+project's runner session buffer is visible in a window, the explain
+request is sent to and submitted in that live session.  When the session
+buffer is not visible, the explanation is fetched with a headless query
+and rendered in the popup output window instead.  Requires a live
+session; does not launch a new one."
   (interactive)
-  (mcp-emacs-run-send-prompt
-   (concat "explain " (mcp-emacs-run--selection-reference))))
+  (let* ((root (mcp-emacs-run--project-root))
+         (prompt (concat "explain " (mcp-emacs-run--selection-reference))))
+    (unless (mcp-emacs-run--live-buffer root)
+      (user-error "No live runner session for this project"))
+    (if (mcp-emacs-run--session-visible-p root)
+        (mcp-emacs-run-send-prompt prompt)
+      (mcp-emacs-popup-show "Working…" "explain")
+      (mcp-emacs-run--query-headless
+       prompt
+       (lambda (output) (mcp-emacs-popup-show output "explain"))))))
 
 (provide 'mcp-emacs-run)
 

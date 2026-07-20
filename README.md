@@ -117,7 +117,21 @@ Drive a running session from anywhere in Emacs (these require a live session and
 
 - `M-x mcp-emacs-run-send-prompt` — send a prompt to the session and submit it.
 - `M-x mcp-emacs-run-send-escape` / `-send-newline` — send an interrupt, or a newline without submitting.
-- `M-x mcp-emacs-explain-selection-in-current-session` — ask the session to explain the region (or line at point); sends `explain @file:line` for file buffers, or the selected text otherwise.
+- `M-x mcp-emacs-explain-selection-in-current-session` — ask the session to explain the region (or line at point). When the session buffer is visible in a window, the request is sent to the running TUI as `explain @file:line` (or the selected text for non-file buffers). When the session buffer is *not* visible, the explanation is fetched with a one-shot headless CLI call (`claude -p ... --output-format text`) and rendered in the popup output window instead, so the answer appears near your code rather than off-screen.
+
+#### Popup output window
+
+Formatted AI output is shown in a popup output window: a dedicated buffer per
+kind (e.g. `*mcp-emacs:explain*`) rendered read-only with
+[`markdown-mode`](https://github.com/jrblevin/markdown-mode)'s `gfm-view-mode`
+and native code-block fontification. `markdown-mode` is an optional dependency,
+loaded only when present; the popup commands error with an install hint if it
+is missing. The window is an ordinary split placed via
+`mcp-emacs-run-popup-direction' (default `below', size
+`mcp-emacs-run-popup-size') — it does not auto-hide, and you can scroll,
+select, and copy from it like any buffer. Re-rendering the same kind reuses its
+buffer and window. `mcp-emacs-popup-show' is a reusable primitive other
+features can render into.
 
 ### Resources
 
