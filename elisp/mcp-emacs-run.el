@@ -418,6 +418,49 @@ Requires a live session; does not launch a new one."
   (interactive)
   (mcp-emacs-run--send (mcp-emacs-run--project-root) "\n"))
 
+;;;###autoload
+(defun mcp-emacs-run-send-return ()
+  "Send a carriage return to the current project's runner session.
+Useful to accept a default or submit without typing a prompt."
+  (interactive)
+  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\r"))
+
+;;;###autoload
+(defun mcp-emacs-run-send-1 ()
+  "Send the digit 1 to the current project's runner session."
+  (interactive)
+  (mcp-emacs-run--send (mcp-emacs-run--project-root) "1"))
+
+;;;###autoload
+(defun mcp-emacs-run-send-2 ()
+  "Send the digit 2 to the current project's runner session."
+  (interactive)
+  (mcp-emacs-run--send (mcp-emacs-run--project-root) "2"))
+
+;;;###autoload
+(defun mcp-emacs-run-send-3 ()
+  "Send the digit 3 to the current project's runner session."
+  (interactive)
+  (mcp-emacs-run--send (mcp-emacs-run--project-root) "3"))
+
+;;;###autoload
+(defun mcp-emacs-run-send-shift-tab ()
+  "Send shift-tab to the current project's runner session (cycle mode)."
+  (interactive)
+  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\e[Z"))
+
+;;;###autoload
+(defun mcp-emacs-run-send-up ()
+  "Send the up arrow key to the current project's runner session."
+  (interactive)
+  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\e[A"))
+
+;;;###autoload
+(defun mcp-emacs-run-send-down ()
+  "Send the down arrow key to the current project's runner session."
+  (interactive)
+  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\e[B"))
+
 (defun mcp-emacs-run--session-visible-p (root)
   "Return non-nil when ROOT's live session buffer is shown in some window."
   (let ((buf (mcp-emacs-run--live-buffer root)))

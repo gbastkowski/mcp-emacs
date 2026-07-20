@@ -90,6 +90,38 @@
       (kill-buffer buf)
       (clrhash mcp-emacs-run--sessions))))
 
+;; Single-keystroke senders: each delivers its exact byte sequence.
+(let ((root "/tmp/keystroke/")
+      (buf (generate-new-buffer "*claude:keys*"))
+      sent)
+  (clrhash mcp-emacs-run--sessions)
+  (with-current-buffer buf (setq-local eat-terminal 'fake-term))
+  (puthash root buf mcp-emacs-run--sessions)
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root))
+            ((symbol-function 'eat-term-send-string)
+             (lambda (_term string) (setq sent string))))
+    (unwind-protect
+        (dolist (case '(("send-return"    mcp-emacs-run-send-return    "\r")
+                        ("send-1"         mcp-emacs-run-send-1         "1")
+                        ("send-2"         mcp-emacs-run-send-2         "2")
+                        ("send-3"         mcp-emacs-run-send-3         "3")
+                        ("send-shift-tab" mcp-emacs-run-send-shift-tab "\e[Z")
+                        ("send-up"        mcp-emacs-run-send-up        "\e[A")
+                        ("send-down"      mcp-emacs-run-send-down      "\e[B")))
+          (setq sent nil)
+          (funcall (nth 1 case))
+          (check (format "keystroke-%s" (nth 0 case)) sent (nth 2 case)))
+      (kill-buffer buf)
+      (clrhash mcp-emacs-run--sessions))))
+
+;; Keystroke senders inherit the no-live-session guard.
+(let ((root "/tmp/keystroke-none/"))
+  (clrhash mcp-emacs-run--sessions)
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root)))
+    (check "keystroke-no-session-errors"
+           (condition-case _ (progn (mcp-emacs-run-send-return) 'no) (user-error 'yes))
+           'yes)))
+
 ;;; Popup output window.
 
 (check "popup-buffer-name" (mcp-emacs-run--popup-buffer-name "explain") "*mcp-emacs:explain*")
