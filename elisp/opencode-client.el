@@ -251,7 +251,9 @@ convenience for starting one."
   (format "*opencode:%s*" title))
 
 (defun opencode-client--open-buffer (id title)
-  "Open (creating if needed) the chat buffer for session ID/TITLE, and stream."
+  "Open (creating if needed) the chat buffer for session ID/TITLE, and stream.
+Loads and renders the session's existing message history before starting
+the live event stream, so reconnecting shows the prior conversation."
   (let ((buf (get-buffer-create (opencode-client--buffer-name title))))
     (with-current-buffer buf
       (unless (derived-mode-p 'opencode-client-mode)
@@ -261,9 +263,52 @@ convenience for starting one."
         (setq opencode-client--parts (make-hash-table :test 'equal)))
       (unless opencode-client--message-parts
         (setq opencode-client--message-parts (make-hash-table :test 'equal)))
+      (opencode-client--seed-history id)
+      (opencode-client--render)
       (opencode-client--start-stream))
     (pop-to-buffer buf)
     buf))
+
+(defun opencode-client--seed-history (id)
+  "Seed the conversation model from session ID's message history.
+Populates `opencode-client--messages', `--message-parts', and `--parts'
+from `GET /api/session/ID/message', adapting each history message into
+the same part model the live stream uses.  A user message becomes a
+single text part; an assistant message contributes its `content' items
+\(text, reasoning, tool), with the tool item's `name' copied to the
+`tool' key the renderer reads."
+  (let ((messages (opencode-client--request
+                   'get (format "/api/session/%s/message" id))))
+    (dolist (msg messages)
+      (let* ((mid (alist-get 'id msg))
+             (mtype (alist-get 'type msg))
+             (parts (opencode-client--history-parts mid mtype msg)))
+        (when mid
+          (unless (member mid opencode-client--messages)
+            (setq opencode-client--messages
+                  (append opencode-client--messages (list mid))))
+          (dolist (part parts)
+            (let ((pid (alist-get 'id part)))
+              (puthash pid part opencode-client--parts)
+              (let ((order (gethash mid opencode-client--message-parts)))
+                (unless (member pid order)
+                  (puthash mid (append order (list pid))
+                           opencode-client--message-parts))))))))))
+
+(defun opencode-client--history-parts (mid mtype msg)
+  "Return render-model parts for history message MSG with id MID, type MTYPE."
+  (if (equal mtype "user")
+      (list `((id . ,(format "%s:text" mid))
+              (type . "text")
+              (text . ,(or (alist-get 'text msg) ""))))
+    ;; assistant (and other content-bearing) messages carry a `content' array
+    (mapcar
+     (lambda (item)
+       (if (equal (alist-get 'type item) "tool")
+           ;; renderer reads the `tool' key; history uses `name'.
+           (cons (cons 'tool (alist-get 'name item)) item)
+         item))
+     (alist-get 'content msg))))
 
 (defun opencode-client--apply-sync-event (buffer event)
   "Apply a parsed sync EVENT to the conversation model in BUFFER.

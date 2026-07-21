@@ -1,4 +1,5 @@
 (add-to-list 'load-path (expand-file-name "elisp"))
+(require 'cl-lib)
 (require 'opencode-client)
 (defun check (label got want)
   (princ (format "%s %s: got=%S want=%S\n" (if (equal got want) "PASS" "FAIL") label got want)))
@@ -39,3 +40,42 @@
        (opencode-client--unwrap '((healthy . t)))
        '((healthy . t)))
 (check "unwrap-nil" (opencode-client--unwrap nil) nil)
+
+;; History seeding: adapt a canned history payload into the render model.
+(with-temp-buffer
+  (opencode-client-mode)
+  (setq opencode-client--parts (make-hash-table :test 'equal))
+  (setq opencode-client--message-parts (make-hash-table :test 'equal))
+  (setq opencode-client--messages nil)
+  (let ((history
+         (list
+          '((id . "m1") (type . "user") (text . "Hi there"))
+          '((id . "m2") (type . "assistant")
+            (content . (((id . "p1") (type . "text") (text . "Hello"))
+                        ((id . "p2") (type . "reasoning") (text . "thinking"))
+                        ((id . "p3") (type . "tool") (name . "read")
+                         (state . "completed"))))))))
+    (cl-letf (((symbol-function 'opencode-client--request)
+               (lambda (&rest _) history)))
+      (opencode-client--seed-history "ses_x")
+      (check "seed-messages-order" opencode-client--messages '("m1" "m2"))
+      (check "seed-user-text"
+             (alist-get 'text (gethash "m1:text" opencode-client--parts)) "Hi there")
+      (check "seed-tool-name-mapped"
+             (alist-get 'tool (gethash "p3" opencode-client--parts)) "read")
+      (opencode-client--render)
+      (check "seed-render"
+             (buffer-string)
+             "Hi there\nHello\n  · thinking\n  [tool: read completed]\n"))))
+
+;; Empty history seeds nothing.
+(with-temp-buffer
+  (opencode-client-mode)
+  (setq opencode-client--parts (make-hash-table :test 'equal))
+  (setq opencode-client--message-parts (make-hash-table :test 'equal))
+  (setq opencode-client--messages nil)
+  (cl-letf (((symbol-function 'opencode-client--request) (lambda (&rest _) nil)))
+    (opencode-client--seed-history "ses_empty")
+    (opencode-client--render)
+    (check "seed-empty-messages" opencode-client--messages nil)
+    (check "seed-empty-render" (buffer-string) "")))
