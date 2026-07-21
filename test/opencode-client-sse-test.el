@@ -27,3 +27,15 @@
     (check "stale-seq" opencode-client--seq 3)
     (opencode-client--render)
     (princ "=== buffer ===\n") (princ (buffer-string))))
+
+;; Response envelope unwrapping (opencode 1.18.0 wraps most responses in `data').
+(check "unwrap-object"
+       (opencode-client--unwrap '((data . ((id . "ses_1") (title . "t")))))
+       '((id . "ses_1") (title . "t")))
+(check "unwrap-list"
+       (opencode-client--unwrap '((data . (((id . "a")) ((id . "b")))) (cursor . "c")))
+       '(((id . "a")) ((id . "b"))))
+(check "unwrap-flat-health"
+       (opencode-client--unwrap '((healthy . t)))
+       '((healthy . t)))
+(check "unwrap-nil" (opencode-client--unwrap nil) nil)
