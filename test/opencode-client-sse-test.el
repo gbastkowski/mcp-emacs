@@ -79,3 +79,32 @@
     (opencode-client--render)
     (check "seed-empty-messages" opencode-client--messages nil)
     (check "seed-empty-render" (buffer-string) "")))
+
+;; Password resolution precedence and header emission.
+(let ((opencode-client-password "direct")
+      (opencode-client-password-command "echo should-not-run"))
+  (check "pw-direct-wins" (opencode-client--password) "direct"))
+
+(let ((opencode-client-password nil)
+      (opencode-client-password-command "printf '  cmdpw\n'"))
+  (check "pw-from-command-trimmed" (opencode-client--password) "cmdpw"))
+
+(let ((opencode-client-password nil)
+      (opencode-client-password-command "printf ''"))
+  (check "pw-empty-command-nil" (opencode-client--password) nil))
+
+(let ((opencode-client-password nil)
+      (opencode-client-password-command nil))
+  (check "pw-none-nil" (opencode-client--password) nil))
+
+(let ((opencode-client-password "s3cret")
+      (opencode-client-password-command nil))
+  (check "headers-auth-present"
+         (assoc "Authorization" (opencode-client--headers))
+         (cons "Authorization"
+               (concat "Basic " (base64-encode-string "opencode:s3cret" t)))))
+
+(let ((opencode-client-password nil)
+      (opencode-client-password-command nil))
+  (check "headers-auth-absent"
+         (assoc "Authorization" (opencode-client--headers)) nil))
