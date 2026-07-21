@@ -125,17 +125,27 @@ BODY, when non-nil, is encoded as a JSON request body.  Errors are
 surfaced as user errors rather than raw signals."
   (opencode-client--ensure-plz)
   (condition-case err
-      (let ((url (concat (opencode-client--base-url) path))
-            (json-object-type 'alist)
-            (json-array-type 'list))
-        (apply #'plz method url
-               (append
-                (list :headers (opencode-client--headers)
-                      :as (lambda () (ignore-errors (json-read))))
-                (when body
-                  (list :body (json-encode body))))))
+      (let* ((url (concat (opencode-client--base-url) path))
+             (json-object-type 'alist)
+             (json-array-type 'list)
+             (res (apply #'plz method url
+                         (append
+                          (list :headers (opencode-client--headers)
+                                :as (lambda () (ignore-errors (json-read))))
+                          (when body
+                            (list :body (json-encode body)))))))
+        (opencode-client--unwrap res))
     (error (user-error "opencode request failed (%s %s): %s"
                        method path (error-message-string err)))))
+
+(defun opencode-client--unwrap (res)
+  "Unwrap the server's `data' envelope from RES.
+opencode wraps most responses as `((data . PAYLOAD) ...)'; return PAYLOAD
+in that case.  Flat responses (for example the health check, which has
+no `data' key) are returned unchanged."
+  (if (and (consp res) (consp (car res)) (assq 'data res))
+      (alist-get 'data res)
+    res))
 
 ;;;; Connection
 
