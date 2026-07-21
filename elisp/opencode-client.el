@@ -68,7 +68,23 @@
 
 (defcustom opencode-client-password nil
   "Optional password for the opencode server (HTTP basic auth).
-The basic-auth username opencode expects is `opencode'."
+The basic-auth username opencode expects is `opencode'.  When nil,
+`opencode-client-password-command' is consulted."
+  :type '(choice (const :tag "None" nil) string)
+  :group 'opencode-client)
+
+(defcustom opencode-client-password-command nil
+  "Shell command whose trimmed stdout is the server password.
+Used only when `opencode-client-password' is nil, so the password can
+come from a secret store (for example \"pass show private/opencode\")."
+  :type '(choice (const :tag "None" nil) string)
+  :group 'opencode-client)
+
+(defcustom opencode-client-launchd-label nil
+  "launchd label of an `opencode serve' agent to start on demand.
+When non-nil, `opencode-client-serve' kickstarts this agent (so the
+server is owned by launchd and outlives Emacs) instead of spawning a
+child process.  When nil, the server is started as a child process."
   :type '(choice (const :tag "None" nil) string)
   :group 'opencode-client)
 
@@ -109,15 +125,27 @@ The basic-auth username opencode expects is `opencode'."
   "Return the base URL of the configured opencode server."
   (format "http://%s:%d" opencode-client-host opencode-client-port))
 
+(defun opencode-client--password ()
+  "Return the server password, or nil.
+Prefer `opencode-client-password'; otherwise run
+`opencode-client-password-command' and use its trimmed stdout."
+  (cond
+   (opencode-client-password opencode-client-password)
+   (opencode-client-password-command
+    (let ((out (string-trim
+                (shell-command-to-string opencode-client-password-command))))
+      (unless (string-empty-p out) out)))
+   (t nil)))
+
 (defun opencode-client--headers ()
-  "Return request headers, including basic auth when a password is set."
+  "Return request headers, including basic auth when a password resolves."
   (append
    '(("Content-Type" . "application/json"))
-   (when opencode-client-password
+   (when-let ((pw (opencode-client--password)))
      (list (cons "Authorization"
                  (concat "Basic "
                          (base64-encode-string
-                          (concat "opencode:" opencode-client-password) t)))))))
+                          (concat "opencode:" pw) t)))))))
 
 (defun opencode-client--request (method path &optional body)
   "Perform a synchronous HTTP METHOD on PATH, returning parsed JSON.
@@ -166,17 +194,27 @@ no `data' key) are returned unchanged."
 
 ;;;###autoload
 (defun opencode-client-serve ()
-  "Start a local `opencode serve' process and wait until it is healthy.
+  "Start an `opencode serve' on demand and wait until it is healthy.
 Attaching to an already-running server is the primary path; this is a
-convenience for starting one."
+convenience for starting one.  When `opencode-client-launchd-label' is
+set, the server is started by kickstarting that launchd agent, so it is
+owned by launchd and outlives Emacs; otherwise it is started as a child
+process."
   (interactive)
   (when (opencode-client-health)
     (user-error "opencode: a server is already running at %s"
                 (opencode-client--base-url)))
-  (start-process "opencode-serve" " *opencode-serve*"
-                 opencode-client-executable "serve"
-                 "--hostname" opencode-client-host
-                 "--port" (number-to-string opencode-client-port))
+  (if opencode-client-launchd-label
+      (unless (zerop (call-process
+                      "launchctl" nil nil nil "kickstart"
+                      (format "gui/%d/%s"
+                              (user-uid) opencode-client-launchd-label)))
+        (user-error "opencode: failed to kickstart launchd agent %s"
+                    opencode-client-launchd-label))
+    (start-process "opencode-serve" " *opencode-serve*"
+                   opencode-client-executable "serve"
+                   "--hostname" opencode-client-host
+                   "--port" (number-to-string opencode-client-port)))
   (let ((deadline (+ (float-time) 20)))
     (while (and (not (opencode-client-health))
                 (< (float-time) deadline))

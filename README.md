@@ -88,9 +88,22 @@ Configure `opencode-client-host`, `-port`, and optional `-password`, then:
 - `M-x opencode-client-connect` — verify a running server (or
   `opencode-client-serve` to start one).
 - `M-x opencode-client-create-session` / `-switch-session` — manage sessions.
+  Opening a session loads and renders its prior history before streaming, so
+  reconnecting to a persistent server shows the existing conversation.
 - In the chat buffer: `C-c C-c` to send a prompt (prefix arg steers a running
   turn), `C-c C-k` to interrupt. Permission and question requests are answered
   from Emacs.
+
+The password may be resolved from a secret store instead of set directly:
+leave `opencode-client-password` nil and set `opencode-client-password-command`
+to a shell command (for example `pass show private/opencode/server-password`);
+its trimmed output is used for HTTP basic auth.
+
+To keep sessions alive across Emacs restarts, run the server independently of
+Emacs. On macOS, define an on-demand launchd user agent for `opencode serve`
+(loaded at login but not started) and set `opencode-client-launchd-label` to its
+label; `opencode-client-serve` then starts it with `launchctl kickstart` so the
+server is owned by launchd and outlives Emacs, rather than as a child process.
 
 ### Claude runner
 
