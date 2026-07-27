@@ -1,7 +1,11 @@
 ## ADDED Requirements
 
-### Requirement: Emacs is discoverable as a Claude Code IDE
-The system SHALL register a running Emacs as a Claude Code IDE by publishing a discovery lockfile at `~/.claude/ide/<port>.lock` describing the IDE, so that Claude Code launched within the workspace connects to Emacs as its IDE. The lockfile SHALL include the Emacs process id, the workspace folder(s), an IDE name, and the WebSocket transport marker, and SHALL be removed when the IDE surface stops.
+### Requirement: Emacs registers as a Claude Code IDE and launches Claude Code against it
+The system SHALL make a running Emacs act as the Claude Code IDE for a workspace by (a) launching the Claude Code process with the IDE integration environment (`CLAUDE_CODE_SSE_PORT` set to the WebSocket server port and `ENABLE_IDE_INTEGRATION` enabled) so it connects back to Emacs, and (b) publishing a discovery lockfile at `~/.claude/ide/<port>.lock` describing the IDE. The lockfile SHALL include the Emacs process id, the workspace folder(s), an IDE name, and the WebSocket transport marker, and SHALL be removed when the IDE surface stops.
+
+#### Scenario: Claude Code launched with IDE environment
+- **WHEN** the IDE integration surface starts Claude Code for a project
+- **THEN** the Claude Code process is started with `CLAUDE_CODE_SSE_PORT` set to the IDE WebSocket port and IDE integration enabled, and it connects to the Emacs WebSocket server
 
 #### Scenario: Lockfile published on start
 - **WHEN** the IDE integration surface is started for a project

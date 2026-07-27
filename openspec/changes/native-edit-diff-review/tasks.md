@@ -1,9 +1,10 @@
-## 1. Protocol spike (verify against live Claude Code)
+## 1. Protocol spike (from claude-code-ide.el reference) — see spike-findings.md
 
-- [ ] 1.1 Using claude-code-ide.el as reference, confirm the `~/.claude/ide/<port>.lock` schema Claude Code actually reads (`pid`, `workspaceFolders`, `ideName`, `transport`).
-- [ ] 1.2 Capture the WebSocket handshake Claude Code performs: connect target, subprotocol, and the `initialize` / tool-negotiation messages over the socket.
-- [ ] 1.3 Record the `openDiff` argument shape (`old_file_contents`, `new_file_contents`, `tab_name` or equivalent) and the exact result strings Claude Code honours (`FILE_SAVED` / `DIFF_REJECTED`).
-- [ ] 1.4 Note the Claude Code version verified against; write it into design.md's Open Questions resolution.
+- [x] 1.1 Lockfile schema confirmed: `~/.claude/ide/<port>.lock` = `{pid, workspaceFolders, ideName:"Emacs", transport:"ws"}`, no auth token.
+- [x] 1.2 Transport confirmed: `websocket.el` server on `127.0.0.1`, subprotocol `mcp`, JSON-RPC 2.0; methods `initialize` (protocolVersion `2024-11-05`), `tools/list`, `tools/call`, `prompts/list`; `notifications/tools/list_changed` sent after init.
+- [x] 1.3 `openDiff` args = `old_file_path`, `new_file_path`, `new_file_contents`, `tab_name`; deferred response — accept → `FILE_SAVED` + final content, reject → `DIFF_REJECTED` + tab_name; also `close_tab`/`closeAllDiffTabs`.
+- [x] 1.4 **KEY**: discovery is push-by-env — Claude CLI is launched with `CLAUDE_CODE_SSE_PORT=<port>` + `ENABLE_IDE_INTEGRATION=true`; it connects to `ws://127.0.0.1:<port>`. Lockfile is secondary. → mcp-emacs must *run* Claude Code (runner dependency).
+- [ ] 1.5 Re-verify against a live current Claude Code version (env vars, handshake, `FILE_SAVED` semantics still current); record the pinned version.
 
 ## 2. IDE-protocol server module
 
@@ -11,10 +12,11 @@
 - [ ] 2.2 Implement MCP-over-WebSocket session negotiation matching the spike findings (initialize, tool list = diff tools only).
 - [ ] 2.3 Lifecycle commands: `mcp-emacs-ide-start` / `mcp-emacs-ide-stop`, off by default behind a defcustom opt-in.
 
-## 3. Discovery lockfile
+## 3. Discovery: env-injecting runner + lockfile
 
-- [ ] 3.1 On IDE-server start, write `~/.claude/ide/<port>.lock` with `pid`, `workspaceFolders` (project root), `ideName` "Emacs", `transport` "ws".
-- [ ] 3.2 Remove the lockfile on `mcp-emacs-ide-stop` and best-effort on `kill-emacs-hook`.
+- [ ] 3.1 Launch Claude Code from mcp-emacs with `CLAUDE_CODE_SSE_PORT=<port>` and `ENABLE_IDE_INTEGRATION=true` in its environment so it connects to the IDE WS server. (Extends existing claude-runner work — the runner is where env vars are injected.)
+- [ ] 3.2 On IDE-server start, write `~/.claude/ide/<port>.lock` with `pid`, `workspaceFolders` (project root), `ideName` "Emacs", `transport` "ws".
+- [ ] 3.3 Remove the lockfile on `mcp-emacs-ide-stop` and best-effort on `kill-emacs-hook`.
 
 ## 4. Diff tools reusing the ediff flow
 

@@ -4,14 +4,14 @@
 
 Claude Code treats an HTTP MCP server purely as a tool provider. Its built-in Edit/Write/MultiEdit tools never consult an MCP server; they write files directly. So `apply_diff` only fires when the model explicitly calls it — never on a native edit.
 
-Claude Code *does* route native edits through a review step when it detects an **IDE**. The IDE integration is a separate channel from MCP:
+Claude Code *does* route native edits through a review step when it detects an **IDE**. The IDE integration is a separate channel from MCP. The spike (see spike-findings.md) established how, from the claude-code-ide.el reference:
 
-1. The IDE runs a WebSocket server.
-2. It writes a lockfile `~/.claude/ide/<port>.lock` containing `{pid, workspaceFolders, ideName, transport:"ws"}` (per claude-code-ide.el `claude-code-ide-mcp.el:176-201`).
-3. Claude Code, launched inside that workspace, scans `~/.claude/ide/`, connects to the advertised port over WebSocket, and negotiates an MCP session over that socket.
-4. When the IDE advertises an `openDiff` tool, Claude Code's native edit flow calls `openDiff` (old contents vs new contents, a tab name) and only writes if the IDE returns an "applied/saved" result; it later issues `close_tab` / `closeAllDiffTabs`.
+1. The IDE runs a WebSocket server (`websocket.el`, `127.0.0.1`, subprotocol `mcp`), speaking JSON-RPC 2.0 (`initialize` → protocol `2024-11-05`, `tools/list`, `tools/call`, `prompts/list`).
+2. The IDE **launches the Claude Code CLI itself** with `CLAUDE_CODE_SSE_PORT=<port>` and `ENABLE_IDE_INTEGRATION=true` in its environment (`claude-code-ide.el:798-801`). The CLI connects back to `ws://127.0.0.1:<port>`. This env push — not a lockfile scan — is what actually drives the connection.
+3. A lockfile `~/.claude/ide/<port>.lock` = `{pid, workspaceFolders, ideName, transport:"ws"}` (`claude-code-ide-mcp.el:176-201`) is also written; secondary/informational, no auth token.
+4. Native edits call `openDiff` (`old_file_path`, `new_file_path`, `new_file_contents`, `tab_name`) as a **deferred** call: the IDE responds only when the human resolves — accept → `FILE_SAVED` + final content (Claude Code then writes the file), reject → `DIFF_REJECTED` + tab name. Followed by `close_tab` / `closeAllDiffTabs`.
 
-The gap: `mcp-emacs` speaks only HTTP MCP and publishes no lockfile, so it is never seen as an IDE, so native edits bypass ediff.
+The gap: `mcp-emacs` speaks only HTTP MCP, publishes no lockfile, and — crucially — does not launch Claude Code with the IDE env vars, so it is never seen as an IDE and native edits bypass ediff.
 
 ## Goals / Non-Goals
 
@@ -48,6 +48,9 @@ The IDE transport is `ws`; the current HTTP server cannot serve it. Depend on `w
 ### D5: Opt-in, off by default
 Gate the IDE surface behind an explicit enable (defcustom / command), off by default. Rationale: the protocol is reverse-engineered and version-fragile; users retiring claude-code-ide opt in deliberately, and a protocol break never affects users who only use the HTTP MCP tools.
 
+### D6: Discovery is env-injection via a runner, not a lockfile scan
+The spike showed the Claude CLI connects because it is *launched with* `CLAUDE_CODE_SSE_PORT` + `ENABLE_IDE_INTEGRATION=true`, not because it scans `~/.claude/ide/`. So the IDE surface only works for Claude Code processes mcp-emacs itself starts. mcp-emacs must own a runner that injects these env vars (extends the existing claude-runner). Still write the lockfile (D3) for any client that does scan, but treat env-injection as the load-bearing path. Rationale: matches observed behaviour; without it, diff review silently never triggers. Consequence: a Claude Code the user launches by hand in a plain terminal will not get diff review — the runner is mandatory, not optional polish.
+
 ## Risks / Trade-offs
 
 - **[Unofficial, undocumented protocol]** Claude Code's IDE WebSocket handshake and tool schemas are reverse-engineered from claude-code-ide.el and may change without notice → isolate in its own module (D1), opt-in (D5), and pin behaviour against a known-good Claude Code version; document the version verified against.
@@ -62,7 +65,10 @@ Purely additive and opt-in. No change to existing tools or transport. Rollback =
 
 ## Open Questions
 
-- Exact WebSocket handshake / MCP-over-ws framing Claude Code expects (subprotocol, initial `initialize` params, auth token if any) — nail down against a live Claude Code, using claude-code-ide.el's `claude-code-ide-mcp-http-server.el` as the reference.
-- Precise result strings Claude Code accepts from `openDiff` (`FILE_SAVED` / `DIFF_REJECTED` observed in claude-code-ide.el) and whether Claude Code writes the file itself on `FILE_SAVED` or expects the IDE to have saved it.
-- Whether `openDiff` must return the (possibly human-edited) final content, or only a status — determines whether the human's in-ediff edits propagate back to Claude Code.
-- Which Claude Code version(s) to pin/verify against, and where to record that.
+Resolved by the spike (see spike-findings.md): WS subprotocol (`mcp`), handshake (`initialize`→`2024-11-05`, then `tools/list`/`tools/call`), no auth token, `openDiff` arg/return shape (`FILE_SAVED`+content / `DIFF_REJECTED`+tab, deferred), and that Claude Code writes the file itself on `FILE_SAVED`.
+
+Remaining:
+- Does a *current* Claude Code version still use `CLAUDE_CODE_SSE_PORT` / `ENABLE_IDE_INTEGRATION` and the same handshake, or has it changed? Verify live (task 1.5).
+- Confirm `FILE_SAVED` still means "Claude Code writes the file" in the current version (affects whether mcp-emacs should save).
+- Which Claude Code version to pin/verify against, and where to record it (README + spike-findings).
+- Exact reuse boundary: how much of the runner already exists vs. must be added to inject the IDE env vars.
