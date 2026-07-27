@@ -43,7 +43,8 @@
 
 ## 6a. Follow-up (ediff window setup)
 
-- [ ] 6a.1 Confirm `openDiff`'s ediff session opens a visible control + diff window inside a real runner session (Claude's eat terminal is a live window). If it still fails to set up (as when driven from `eval`), make `mcp-emacs--ediff-review` force a suitable non-side window before `ediff-buffers`, mirroring the apply-diff change's caveat.
+- [x] 6a.1a Applied the fix in `mcp-emacs--ediff-review`: delete side windows (Treemacs etc.) and force `ediff-setup-windows-plain` + `split-window-horizontally` before `ediff-buffers`, with a per-tab `ediff-control-buffer-suffix`. Mirrors claude-code-ide's handler. Byte-compiles clean; both test suites still green.
+- [ ] 6a.1b Re-verify live inside a real runner session that the ediff control + diff windows now open and accept/reject drive the file write. (Deferred to next session — resume from here.)
 
 ## 7. Docs & checks
 

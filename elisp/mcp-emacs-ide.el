@@ -63,7 +63,8 @@
 (declare-function websocket-send-text "websocket" (ws text))
 (declare-function websocket-frame-text "websocket" (frame))
 (declare-function mcp-emacs--ediff-review "mcp-emacs"
-                  (buffer-a buffer-b entry-content result &optional on-resolve))
+                  (buffer-a buffer-b entry-content result
+                            &optional on-resolve tab-name))
 (declare-function project-current "project" (&optional maybe-prompt directory))
 (declare-function project-root "project" (project))
 
@@ -278,7 +279,8 @@ the human resolves, complete the request with FILE_SAVED + content
                         (point-min) (point-max))))
                   (mcp-emacs-ide--complete-open-diff
                    session tab-name "DIFF_REJECTED" tab-name))
-                (mcp-emacs-ide--cleanup-diff session tab-name)))))
+                (mcp-emacs-ide--cleanup-diff session tab-name))
+              tab-name)))
         (puthash tab-name
                  (list :buffer-a buffer-a :buffer-b buffer-b
                        :control control :result result)

@@ -972,8 +972,12 @@ hand-edited content.  Set the RESULT cell's car to `applied'."
   "Record a reject decision for an apply-diff session in the RESULT cell."
   (setcar result 'rejected))
 
+(defvar ediff-window-setup-function)
+(defvar ediff-split-window-function)
+(defvar ediff-control-buffer-suffix)
+
 (defun mcp-emacs--ediff-review (buffer-a buffer-b entry-content result
-                                         &optional on-resolve)
+                                         &optional on-resolve tab-name)
   "Start an ediff review of BUFFER-A against proposal BUFFER-B.
 
 Bind explicit accept/reject in the ediff control buffer and record the
@@ -988,9 +992,26 @@ This lets deferred callers (the IDE `openDiff' flow) respond
 asynchronously; the synchronous `mcp-emacs-apply-diff' caller instead
 polls the RESULT cell and passes no ON-RESOLVE.
 
+TAB-NAME, when given, is used to make the ediff control buffer name
+unique so concurrent reviews do not collide.
+
+Side windows (e.g. Treemacs) are deleted and ediff is forced into its
+plain, single-frame window layout before setup; otherwise `ediff-buffers'
+can abort when the selected window is a side or dedicated window, leaving
+no control buffer.
+
 Return the ediff control buffer (or nil) so callers can force-quit it on
 timeout."
-  (let (control)
+  ;; A side or dedicated window cannot be split, which aborts ediff setup
+  ;; before the control buffer exists.  Remove side windows first and pin
+  ;; ediff to its plain layout so the control panel lands in this frame.
+  (dolist (window (window-list))
+    (when (window-parameter window 'window-side)
+      (ignore-errors (delete-window window))))
+  (let (control
+        (ediff-window-setup-function 'ediff-setup-windows-plain)
+        (ediff-split-window-function 'split-window-horizontally)
+        (ediff-control-buffer-suffix (if tab-name (format "<%s>" tab-name) "")))
     (ediff-buffers
      buffer-a buffer-b
      (list (lambda ()
