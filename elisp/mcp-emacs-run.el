@@ -123,11 +123,6 @@ Interpreted as a width when `mcp-emacs-run-popup-direction' is `left' or
   :type 'number
   :group 'mcp-emacs-run)
 
-;;;; State
-
-(defvar mcp-emacs-run--sessions (make-hash-table :test 'equal)
-  "Registry mapping a project root to its runner buffer.")
-
 ;;;; Helpers
 
 ;; TODO isn't this already covered by require further up?
@@ -148,17 +143,94 @@ Interpreted as a width when `mcp-emacs-run-popup-direction' is `left' or
   "Return a short name for the project at ROOT."
   (file-name-nondirectory (directory-file-name root)))
 
-(defun mcp-emacs-run--buffer-name (root)
-  "Return the runner buffer name for project ROOT."
-  (format "*claude:%s*" (mcp-emacs-run--project-name root)))
+(defconst mcp-emacs-run--buffer-name-regexp
+  "\\`\\*claude:\\(.+\\):\\([0-9]+\\)\\*\\'"
+  "Regexp matching a runner buffer name `*claude:<project>:<n>*'.
+Group 1 is the project name, group 2 the per-project number.")
 
-(defun mcp-emacs-run--live-buffer (root)
-  "Return the live runner buffer registered for ROOT, or nil."
-  (let ((buf (gethash root mcp-emacs-run--sessions)))
-    (if (buffer-live-p buf)
-        buf
-      (remhash root mcp-emacs-run--sessions)
-      nil)))
+(defun mcp-emacs-run--buffer-name (root n)
+  "Return the runner buffer name for project ROOT and session number N."
+  (format "*claude:%s:%d*" (mcp-emacs-run--project-name root) n))
+
+(defun mcp-emacs-run--sessions-list ()
+  "Return the list of live runner buffers, newest buffers last.
+A runner buffer is any live buffer whose name matches
+`mcp-emacs-run--buffer-name-regexp'."
+  (seq-filter (lambda (buf)
+                (string-match-p mcp-emacs-run--buffer-name-regexp
+                                (buffer-name buf)))
+              (buffer-list)))
+
+(defun mcp-emacs-run--buffer-project (buf)
+  "Return the project root that runner buffer BUF belongs to.
+Derived from BUF's own `default-directory' via `mcp-emacs-run--project-root',
+so it survives without any registry."
+  (with-current-buffer buf
+    (mcp-emacs-run--project-root)))
+
+(defun mcp-emacs-run--project-sessions (root)
+  "Return the live runner buffers whose project is ROOT."
+  (let ((root (expand-file-name root)))
+    (seq-filter (lambda (buf)
+                  (string= (mcp-emacs-run--buffer-project buf) root))
+                (mcp-emacs-run--sessions-list))))
+
+(defun mcp-emacs-run--next-number (root)
+  "Return the lowest positive session number not in use for project ROOT.
+Killed middle slots are refilled, so numbers stay compact."
+  (let ((used (delq nil
+                    (mapcar (lambda (buf)
+                              (when (string-match mcp-emacs-run--buffer-name-regexp
+                                                  (buffer-name buf))
+                                (string-to-number (match-string 2 (buffer-name buf)))))
+                            (mcp-emacs-run--project-sessions root))))
+        (n 1))
+    (while (memq n used) (setq n (1+ n)))
+    n))
+
+(defun mcp-emacs-run--session-label (buf)
+  "Return a `completing-read' label for runner buffer BUF.
+Use `*claude:<project>:<n>*' minus the surrounding stars; unambiguous
+because the buffer name already carries project and number."
+  (let ((name (buffer-name buf)))
+    (if (string-match mcp-emacs-run--buffer-name-regexp name)
+        (format "%s:%s" (match-string 1 name) (match-string 2 name))
+      name)))
+
+(defun mcp-emacs-run--pick-session (candidates &optional prompt)
+  "Return one buffer from CANDIDATES.
+When CANDIDATES has a single element, return it without prompting.
+Otherwise `completing-read' with PROMPT (default \"Runner session: \")."
+  (cond
+   ((null candidates) nil)
+   ((null (cdr candidates)) (car candidates))
+   (t (let* ((alist (mapcar (lambda (b) (cons (mcp-emacs-run--session-label b) b))
+                            candidates))
+             (pick (completing-read (or prompt "Runner session: ") alist nil t)))
+        (cdr (assoc pick alist))))))
+
+(defun mcp-emacs-run--resolve-session ()
+  "Resolve the runner session to receive input, or signal a `user-error'.
+Candidates are ranked into tiers and the first non-empty tier wins:
+  1. same project as the current buffer, and visible in a window
+  2. same project, hidden
+  3. any project, visible
+  4. any project, hidden
+Visible windows are preferred over hidden.  When the winning tier has more
+than one candidate, prompt with `mcp-emacs-run--pick-session'."
+  (let* ((all (mcp-emacs-run--sessions-list)))
+    (unless all
+      (user-error "No live Claude runner session"))
+    (let* ((root (mcp-emacs-run--project-root))
+           (visible (lambda (buf) (get-buffer-window buf t)))
+           (same (seq-filter (lambda (b) (string= (mcp-emacs-run--buffer-project b) root))
+                             all))
+           (tiers (list (seq-filter visible same)
+                        (seq-remove visible same)
+                        (seq-filter visible all)
+                        (seq-remove visible all)))
+           (tier (seq-find #'identity tiers)))
+      (mcp-emacs-run--pick-session tier))))
 
 (defun mcp-emacs-run--resolved-width ()
   "Return the runner window width in columns for a horizontal split.
@@ -195,30 +267,33 @@ to BUFFER so it prefers to keep showing the runner."
     window))
 
 (defun mcp-emacs-run--launch (root no-display &rest extra-switches)
-  "Launch the CLI for project ROOT in an eat buffer.
-Unless NO-DISPLAY is non-nil, the buffer is shown in the runner window.
-EXTRA-SWITCHES are appended to the configured flags (e.g. continue/resume)."
+  "Launch the CLI for project ROOT in a fresh numbered eat buffer.
+Allocates the next per-project session number via
+`mcp-emacs-run--next-number'.  Unless NO-DISPLAY is non-nil, the buffer is
+shown in the runner window.  EXTRA-SWITCHES are appended to the configured
+flags (e.g. continue/resume)."
   (mcp-emacs-run--ensure-eat)
   (let* ((default-directory (file-name-as-directory root))
-         (name (substring (mcp-emacs-run--buffer-name root) 1 -1)) ; eat-make wraps in *...*
+         (n (mcp-emacs-run--next-number root))
+         (name (substring (mcp-emacs-run--buffer-name root n) 1 -1)) ; eat-make wraps in *...*
          (switches (append mcp-emacs-run-flags extra-switches))
          (buffer (apply #'eat-make name mcp-emacs-run-executable nil switches)))
-    (puthash root buffer mcp-emacs-run--sessions)
     (unless no-display
       (mcp-emacs-run--display buffer))
     buffer))
 
-(defun mcp-emacs-run--send (root string)
-  "Send STRING to the live runner terminal for project ROOT.
-Signal a `user-error' when ROOT has no live session, or its buffer is
-not a live eat terminal."
-  (let ((buf (mcp-emacs-run--live-buffer root)))
-    (unless buf
-      (user-error "No live runner session for this project"))
-    (let ((term (buffer-local-value 'eat-terminal buf)))
-      (unless term
-        (user-error "Runner session for this project is not a live terminal"))
-      (eat-term-send-string term string))))
+(defun mcp-emacs-run--send-to-buffer (buf string)
+  "Send STRING to runner buffer BUF's terminal.
+Signal a `user-error' when BUF is not a live eat terminal."
+  (let ((term (buffer-local-value 'eat-terminal buf)))
+    (unless term
+      (user-error "Runner session is not a live terminal"))
+    (eat-term-send-string term string)))
+
+(defun mcp-emacs-run--send (string)
+  "Resolve the target runner session once and send STRING to it.
+Signal a `user-error' when there is no live session."
+  (mcp-emacs-run--send-to-buffer (mcp-emacs-run--resolve-session) string))
 
 (defun mcp-emacs-run--selection-reference ()
   "Return a reference to the current selection for embedding in a prompt.
@@ -334,170 +409,156 @@ user is informed and CALLBACK is not called."
 ;;;; Commands
 
 ;;;###autoload
-(defun mcp-emacs-run (&rest extra-switches)
-  "Start (or switch to) the Claude Code runner for the current project.
-Reuses a live session for the project instead of launching a duplicate.
-EXTRA-SWITCHES, when given, are passed to a fresh launch."
+(defun mcp-emacs-run-new (&rest extra-switches)
+  "Start a new Claude Code runner session for the current project.
+Always launches a fresh numbered session (`*claude:<project>:<n>*') and
+displays it, even when the project already has live sessions.  Reach an
+existing session with `mcp-emacs-run-switch'.  EXTRA-SWITCHES are passed to
+the launch."
   (interactive)
-  (mcp-emacs-run--ensure-eat)
-  (let* ((root (mcp-emacs-run--project-root))
-         (existing (mcp-emacs-run--live-buffer root)))
-    (if (and existing (null extra-switches))
-        (progn (mcp-emacs-run--display existing) existing)
-      (apply #'mcp-emacs-run--launch root nil extra-switches))))
+  (apply #'mcp-emacs-run--launch (mcp-emacs-run--project-root) nil extra-switches))
 
 ;;;###autoload
 (defun mcp-emacs-run-start ()
-  "Start the Claude Code runner for the current project without showing it.
-Reuses a live session if one exists; otherwise launches the CLI in a
-registered eat buffer without displaying any window or moving focus.
-Reveal the session later with `mcp-emacs-run-toggle' or
+  "Start a new Claude Code runner session without showing it.
+Launches the CLI in a fresh numbered eat buffer without displaying any
+window or moving focus.  Reveal it later with `mcp-emacs-run-toggle' or
 `mcp-emacs-run-switch'."
   (interactive)
-  (mcp-emacs-run--ensure-eat)
-  (let* ((root (mcp-emacs-run--project-root))
-         (existing (mcp-emacs-run--live-buffer root)))
-    (prog1 (or existing (mcp-emacs-run--launch root t))
+  (let ((root (mcp-emacs-run--project-root)))
+    (prog1 (mcp-emacs-run--launch root t)
       (message "Claude runner started (hidden) for %s"
                (mcp-emacs-run--project-name root)))))
 
 ;;;###autoload
 (defun mcp-emacs-run-continue ()
-  "Start the runner continuing the most recent conversation."
+  "Start a new runner session continuing the most recent conversation."
   (interactive)
-  (apply #'mcp-emacs-run--launch (mcp-emacs-run--project-root) nil '("--continue")))
+  (mcp-emacs-run--launch (mcp-emacs-run--project-root) nil "--continue"))
 
 ;;;###autoload
 (defun mcp-emacs-run-resume ()
-  "Start the runner resuming a prior conversation."
+  "Start a new runner session resuming a prior conversation."
   (interactive)
-  (apply #'mcp-emacs-run--launch (mcp-emacs-run--project-root) nil '("--resume")))
+  (mcp-emacs-run--launch (mcp-emacs-run--project-root) nil "--resume"))
 
 ;;;###autoload
 (defun mcp-emacs-run-list ()
   "Message the live runner sessions."
   (interactive)
-  (let (entries)
-    (maphash (lambda (root buf)
-               (when (buffer-live-p buf)
-                 (push (format "  %s  ->  %s" (mcp-emacs-run--project-name root)
-                               (buffer-name buf))
-                       entries)))
-             mcp-emacs-run--sessions)
+  (let ((entries (mapcar (lambda (buf)
+                           (format "  %s" (buffer-name buf)))
+                         (mcp-emacs-run--sessions-list))))
     (if entries
-        (message "Claude runner sessions:\n%s" (string-join (nreverse entries) "\n"))
+        (message "Claude runner sessions:\n%s" (string-join entries "\n"))
       (message "No live Claude runner sessions"))))
 
 ;;;###autoload
 (defun mcp-emacs-run-switch ()
   "Choose a live runner session and display it."
   (interactive)
-  (let (choices)
-    (maphash (lambda (root buf)
-               (when (buffer-live-p buf)
-                 (push (cons (mcp-emacs-run--project-name root) buf) choices)))
-             mcp-emacs-run--sessions)
-    (unless choices (user-error "No live Claude runner sessions"))
-    (let* ((pick (completing-read "Runner session: " choices nil t))
-           (buf (cdr (assoc pick choices))))
-      (mcp-emacs-run--display buf))))
+  (let ((sessions (mcp-emacs-run--sessions-list)))
+    (unless sessions (user-error "No live Claude runner sessions"))
+    (mcp-emacs-run--display (mcp-emacs-run--pick-session sessions))))
 
 ;;;###autoload
 (defun mcp-emacs-run-kill ()
-  "Kill the runner session for the current project."
+  "Kill a runner session for the current project.
+When the project has several sessions, prompt for which to kill."
   (interactive)
-  (let* ((root (mcp-emacs-run--project-root))
-         (buf (mcp-emacs-run--live-buffer root)))
+  (let* ((sessions (mcp-emacs-run--project-sessions (mcp-emacs-run--project-root)))
+         (buf (mcp-emacs-run--pick-session sessions "Kill runner session: ")))
     (unless buf (user-error "No live runner session for this project"))
     (when-let ((proc (get-buffer-process buf)))
       (ignore-errors (delete-process proc)))
-    (kill-buffer buf)
-    (remhash root mcp-emacs-run--sessions)
-    (message "Killed Claude runner session for %s"
-             (mcp-emacs-run--project-name root))))
+    (let ((name (buffer-name buf)))
+      (kill-buffer buf)
+      (message "Killed Claude runner session %s" name))))
 
 ;;;###autoload
 (defun mcp-emacs-run-toggle ()
-  "Toggle the runner window for the current project.
-Hides the window when visible (without killing the process); shows it
-otherwise, starting the runner if there is no session yet."
+  "Toggle a runner window for the current project.
+With no session, start a new one.  With one session, hide it when visible
+or show it otherwise.  With several, prompt for which to toggle."
   (interactive)
-  (let* ((root (mcp-emacs-run--project-root))
-         (buf (mcp-emacs-run--live-buffer root)))
+  (let* ((sessions (mcp-emacs-run--project-sessions (mcp-emacs-run--project-root)))
+         (buf (mcp-emacs-run--pick-session sessions "Toggle runner session: ")))
     (cond
-     ((null buf) (mcp-emacs-run))
+     ((null buf) (mcp-emacs-run-new))
      ((get-buffer-window buf)
       (delete-window (get-buffer-window buf)))
      (t (mcp-emacs-run--display buf)))))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-prompt (text)
-  "Send TEXT to the current project's runner session and submit it.
-Requires a live session; does not launch a new one."
+  "Send TEXT to a resolved runner session and submit it.
+Resolves the target session once (so an ambiguous choice prompts at most
+once) and sends TEXT then a carriage return.  Requires a live session;
+does not launch a new one."
   (interactive "sPrompt: ")
-  (let ((root (mcp-emacs-run--project-root)))
-    (mcp-emacs-run--send root text)
-    (mcp-emacs-run--send root "\r")))
+  (let ((buf (mcp-emacs-run--resolve-session)))
+    (mcp-emacs-run--send-to-buffer buf text)
+    (mcp-emacs-run--send-to-buffer buf "\r")))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-escape ()
   "Send an escape/interrupt to the current project's runner session."
   (interactive)
-  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\e"))
+  (mcp-emacs-run--send "\e"))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-newline ()
   "Insert a newline in the runner prompt without submitting it."
   (interactive)
-  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\n"))
+  (mcp-emacs-run--send "\n"))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-return ()
   "Send a carriage return to the current project's runner session.
 Useful to accept a default or submit without typing a prompt."
   (interactive)
-  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\r"))
+  (mcp-emacs-run--send "\r"))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-1 ()
   "Send the digit 1 to the current project's runner session."
   (interactive)
-  (mcp-emacs-run--send (mcp-emacs-run--project-root) "1"))
+  (mcp-emacs-run--send "1"))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-2 ()
   "Send the digit 2 to the current project's runner session."
   (interactive)
-  (mcp-emacs-run--send (mcp-emacs-run--project-root) "2"))
+  (mcp-emacs-run--send "2"))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-3 ()
   "Send the digit 3 to the current project's runner session."
   (interactive)
-  (mcp-emacs-run--send (mcp-emacs-run--project-root) "3"))
+  (mcp-emacs-run--send "3"))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-shift-tab ()
   "Send shift-tab to the current project's runner session (cycle mode)."
   (interactive)
-  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\e[Z"))
+  (mcp-emacs-run--send "\e[Z"))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-up ()
   "Send the up arrow key to the current project's runner session."
   (interactive)
-  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\e[A"))
+  (mcp-emacs-run--send "\e[A"))
 
 ;;;###autoload
 (defun mcp-emacs-run-send-down ()
   "Send the down arrow key to the current project's runner session."
   (interactive)
-  (mcp-emacs-run--send (mcp-emacs-run--project-root) "\e[B"))
+  (mcp-emacs-run--send "\e[B"))
 
 (defun mcp-emacs-run--session-visible-p (root)
-  "Return non-nil when ROOT's live session buffer is shown in some window."
-  (let ((buf (mcp-emacs-run--live-buffer root)))
-    (and buf (get-buffer-window buf t))))
+  "Return non-nil when any of ROOT's live session buffers is shown in a window."
+  (seq-some (lambda (buf) (get-buffer-window buf t))
+            (mcp-emacs-run--project-sessions root)))
 
 ;;;###autoload
 (defun mcp-emacs-explain-selection-in-current-session ()

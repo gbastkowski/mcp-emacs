@@ -6,12 +6,31 @@
 (let ((default-directory (expand-file-name "elisp/"))
       (repo (expand-file-name "./")))
   (check "project-root-is-repo" (mcp-emacs-run--project-root) repo))
-(check "buffer-name" (mcp-emacs-run--buffer-name "/tmp/foo/") "*claude:foo*")
-(let ((buf (generate-new-buffer "*claude:foo*")))
-  (puthash "/tmp/foo/" buf mcp-emacs-run--sessions)
-  (check "registry-live" (mcp-emacs-run--live-buffer "/tmp/foo/") buf)
-  (kill-buffer buf)
-  (check "registry-dead-cleared" (mcp-emacs-run--live-buffer "/tmp/foo/") nil))
+(check "buffer-name" (mcp-emacs-run--buffer-name "/tmp/foo/" 1) "*claude:foo:1*")
+(check "buffer-name-2" (mcp-emacs-run--buffer-name "/tmp/foo/" 2) "*claude:foo:2*")
+
+;; Discovery + numbering: sessions are found from live *claude:*:<n>* buffers,
+;; each matched to its project by the buffer's own default-directory.
+(let* ((root (expand-file-name "/tmp/numproj/"))
+       (b1 (generate-new-buffer "*claude:numproj:1*"))
+       (b3 (generate-new-buffer "*claude:numproj:3*")))
+  (with-current-buffer b1 (setq default-directory root))
+  (with-current-buffer b3 (setq default-directory root))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root)))
+    (unwind-protect
+        (progn
+          (check "sessions-list-finds-both"
+                 (sort (mapcar #'buffer-name (mcp-emacs-run--project-sessions root)) #'string<)
+                 '("*claude:numproj:1*" "*claude:numproj:3*"))
+          ;; lowest free slot fills the gap left by the killed 2
+          (check "next-number-refills-gap" (mcp-emacs-run--next-number root) 2)
+          (kill-buffer b3)
+          (check "next-number-after-kill" (mcp-emacs-run--next-number root) 2))
+      (when (buffer-live-p b1) (kill-buffer b1))
+      (when (buffer-live-p b3) (kill-buffer b3))))
+  ;; no sessions -> first number is 1
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root)))
+    (check "next-number-fresh" (mcp-emacs-run--next-number root) 1)))
 (check "eat-guard-errors"
        (condition-case _ (progn (mcp-emacs-run--ensure-eat) 'no) (user-error 'yes)) 'yes)
 
@@ -32,30 +51,38 @@
     (check "width-fraction-fallback" (mcp-emacs-run--resolved-width) 160)))
 
 ;; Headless launch: stub eat so no real terminal is spawned.  eat-make returns a
-;; plain buffer; ensure-eat is satisfied via a faked `eat' feature.
-(let ((root "/tmp/headless-proj/")
+;; plain buffer whose default-directory is the project root (so discovery works).
+(let ((root (expand-file-name "/tmp/headless-proj/"))
       made)
-  (clrhash mcp-emacs-run--sessions)
   (cl-letf (((symbol-function 'eat-make)
-             (lambda (name &rest _) (setq made (generate-new-buffer (format "*%s*" name)))))
+             (lambda (name &rest _)
+               (let ((b (generate-new-buffer (format "*%s*" name))))
+                 (with-current-buffer b (setq default-directory root))
+                 (push b made) b)))
             ((symbol-function 'mcp-emacs-run--ensure-eat) #'ignore)
             ((symbol-function 'mcp-emacs-run--project-root) (lambda () root)))
     (unwind-protect
         (progn
-          ;; headless start registers a session but shows no window
+          ;; headless start launches a numbered session, shows no window
           (let ((buf (mcp-emacs-run-start)))
-            (check "headless-registers" (mcp-emacs-run--live-buffer root) buf)
+            (check "headless-buffer-numbered" (buffer-name buf) "*claude:headless-proj:1*")
+            (check "headless-discoverable" (memq buf (mcp-emacs-run--project-sessions root)) (list buf))
             (check "headless-no-window" (get-buffer-window buf) nil)
-            ;; starting again reuses the same buffer, still no window
+            ;; starting again always launches a NEW numbered session (no reuse)
             (let ((again (mcp-emacs-run-start)))
-              (check "headless-reuses" again buf)
-              (check "headless-reuse-no-window" (get-buffer-window again) nil))
-            ;; toggle reveals the hidden session
-            (mcp-emacs-run-toggle)
-            (check "headless-toggle-reveals" (and (get-buffer-window buf) t) t)
-            (when (get-buffer-window buf) (delete-window (get-buffer-window buf)))))
-      (when (buffer-live-p made) (kill-buffer made))
-      (clrhash mcp-emacs-run--sessions))))
+              (check "headless-start-is-new" (eq again buf) nil)
+              (check "headless-second-numbered" (buffer-name again) "*claude:headless-proj:2*")
+              (check "headless-two-sessions"
+                     (length (mcp-emacs-run--project-sessions root)) 2))
+            ;; toggle with 2 sessions prompts; stub the picker to choose buf
+            (cl-letf (((symbol-function 'mcp-emacs-run--pick-session)
+                       (lambda (cands &optional _p) (car cands))))
+              (mcp-emacs-run-toggle)
+              (check "headless-toggle-reveals" (and (get-buffer-window (car (mcp-emacs-run--project-sessions root))) t) t))
+            (dolist (w (window-list))
+              (when (memq (window-buffer w) (mcp-emacs-run--project-sessions root))
+                (ignore-errors (delete-window w))))))
+      (dolist (b made) (when (buffer-live-p b) (kill-buffer b))))))
 
 ;; Selection reference: file-with-region, file-no-region, non-file.
 (let* ((root (expand-file-name "./"))
@@ -81,38 +108,36 @@
   (goto-char (point-min)) (forward-line 1)
   (check "ref-nonfile-no-region" (mcp-emacs-run--selection-reference) "beta"))
 
-;; Send guard: no live session -> user-error, no launch.
-(let ((root "/tmp/send-guard/"))
-  (clrhash mcp-emacs-run--sessions)
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root)))
-    (check "send-no-session-errors"
-           (condition-case _ (progn (mcp-emacs-run-send-prompt "hi") 'no)
-             (user-error 'yes))
-           'yes)))
+;; Send guard: no live session anywhere -> user-error, no launch.
+(cl-letf (((symbol-function 'mcp-emacs-run--sessions-list) (lambda () nil)))
+  (check "send-no-session-errors"
+         (condition-case _ (progn (mcp-emacs-run-send-prompt "hi") 'no)
+           (user-error 'yes))
+         'yes))
 
-;; Send delivery: --send feeds the string to the buffer's eat terminal.
-(let ((root "/tmp/send-deliver/")
-      (buf (generate-new-buffer "*claude:send*"))
+;; Send delivery: --send resolves the single session and feeds its terminal.
+(let ((root (expand-file-name "/tmp/send-deliver/"))
+      (buf (generate-new-buffer "*claude:send-deliver:1*"))
       sent)
-  (clrhash mcp-emacs-run--sessions)
-  (with-current-buffer buf (setq-local eat-terminal 'fake-term))
-  (puthash root buf mcp-emacs-run--sessions)
-  (cl-letf (((symbol-function 'eat-term-send-string)
+  (with-current-buffer buf
+    (setq default-directory root)
+    (setq-local eat-terminal 'fake-term))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root))
+            ((symbol-function 'eat-term-send-string)
              (lambda (term string) (push (cons term string) sent))))
     (unwind-protect
         (progn
-          (mcp-emacs-run--send root "hello")
+          (mcp-emacs-run--send "hello")
           (check "send-delivers-string" (car sent) '(fake-term . "hello")))
-      (kill-buffer buf)
-      (clrhash mcp-emacs-run--sessions))))
+      (kill-buffer buf))))
 
 ;; Single-keystroke senders: each delivers its exact byte sequence.
-(let ((root "/tmp/keystroke/")
-      (buf (generate-new-buffer "*claude:keys*"))
+(let ((root (expand-file-name "/tmp/keystroke/"))
+      (buf (generate-new-buffer "*claude:keystroke:1*"))
       sent)
-  (clrhash mcp-emacs-run--sessions)
-  (with-current-buffer buf (setq-local eat-terminal 'fake-term))
-  (puthash root buf mcp-emacs-run--sessions)
+  (with-current-buffer buf
+    (setq default-directory root)
+    (setq-local eat-terminal 'fake-term))
   (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root))
             ((symbol-function 'eat-term-send-string)
              (lambda (_term string) (setq sent string))))
@@ -127,16 +152,77 @@
           (setq sent nil)
           (funcall (nth 1 case))
           (check (format "keystroke-%s" (nth 0 case)) sent (nth 2 case)))
-      (kill-buffer buf)
-      (clrhash mcp-emacs-run--sessions))))
+      (kill-buffer buf))))
 
 ;; Keystroke senders inherit the no-live-session guard.
-(let ((root "/tmp/keystroke-none/"))
-  (clrhash mcp-emacs-run--sessions)
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root)))
-    (check "keystroke-no-session-errors"
-           (condition-case _ (progn (mcp-emacs-run-send-return) 'no) (user-error 'yes))
-           'yes)))
+(cl-letf (((symbol-function 'mcp-emacs-run--sessions-list) (lambda () nil)))
+  (check "keystroke-no-session-errors"
+         (condition-case _ (progn (mcp-emacs-run-send-return) 'no) (user-error 'yes))
+         'yes))
+
+;; Resolution tiers: same-project+visible beats same-project+hidden beats
+;; cross-project; ambiguity within the winning tier invokes the picker once.
+(let* ((rootA (expand-file-name "/tmp/resolveA/"))
+       (rootB (expand-file-name "/tmp/resolveB/"))
+       (a1 (generate-new-buffer "*claude:resolveA:1*"))
+       (a2 (generate-new-buffer "*claude:resolveA:2*"))
+       (b1 (generate-new-buffer "*claude:resolveB:1*"))
+       (visible '())
+       (picks '()))
+  (dolist (b (list a1 a2)) (with-current-buffer b (setq default-directory rootA)))
+  (with-current-buffer b1 (setq default-directory rootB))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () rootA))
+            ((symbol-function 'get-buffer-window)
+             (lambda (buf &optional _all) (and (memq buf visible) t)))
+            ;; count real prompts by stubbing completing-read, but keep the real
+            ;; --pick-session so its "1 candidate = no prompt" logic is exercised
+            ((symbol-function 'completing-read)
+             (lambda (_p coll &rest _) (push coll picks) (caar coll))))
+    (unwind-protect
+        (progn
+          ;; only a2 visible -> tier 1 has exactly a2, no prompt
+          (setq visible (list a2) picks nil)
+          (check "resolve-visible-same-project" (mcp-emacs-run--resolve-session) a2)
+          (check "resolve-visible-no-pick" picks nil)
+          ;; none visible -> tier 2 (same project) has a1 & a2 -> one prompt
+          (setq visible nil picks nil)
+          (mcp-emacs-run--resolve-session)
+          (check "resolve-hidden-same-project-picks" (length picks) 1))
+      (dolist (b (list a1 a2 b1)) (when (buffer-live-p b) (kill-buffer b))))))
+
+;; Cross-project fallback: current project has no session; a visible session of
+;; another project is chosen.
+(let* ((rootX (expand-file-name "/tmp/resolveX/"))    ; current, no sessions
+       (rootY (expand-file-name "/tmp/resolveY/"))
+       (y1 (generate-new-buffer "*claude:resolveY:1*")))
+  (with-current-buffer y1 (setq default-directory rootY))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () rootX))
+            ((symbol-function 'get-buffer-window) (lambda (buf &optional _a) (eq buf y1))))
+    (unwind-protect
+        (check "resolve-cross-project-fallback" (mcp-emacs-run--resolve-session) y1)
+      (kill-buffer y1))))
+
+;; send-prompt resolves once: ambiguous tier -> picker invoked exactly once for
+;; the whole text+return operation.
+(let* ((root (expand-file-name "/tmp/once/"))
+       (b1 (generate-new-buffer "*claude:once:1*"))
+       (b2 (generate-new-buffer "*claude:once:2*"))
+       (picks 0) sent)
+  (dolist (b (list b1 b2)) (with-current-buffer b
+                             (setq default-directory root)
+                             (setq-local eat-terminal 'fake-term)))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () root))
+            ((symbol-function 'get-buffer-window) (lambda (&rest _) nil)) ; none visible
+            ((symbol-function 'mcp-emacs-run--pick-session)
+             (lambda (cands &optional _p) (setq picks (1+ picks)) (car cands)))
+            ((symbol-function 'eat-term-send-string)
+             (lambda (_t s) (push s sent))))
+    (unwind-protect
+        (progn
+          (mcp-emacs-run-send-prompt "hi")
+          (check "send-prompt-resolves-once" picks 1)
+          (check "send-prompt-sends-text-then-return" (reverse sent) '("hi" "\r")))
+      (dolist (b (list b1 b2)) (when (buffer-live-p b) (kill-buffer b))))))
 
 ;;; Popup output window.
 
@@ -250,20 +336,17 @@
             ((symbol-function 'mcp-emacs-popup-show) (lambda (&rest _) (push 'popup fired)))
             ((symbol-function 'mcp-emacs-run--query-headless) (lambda (&rest _) (push 'headless fired))))
     ;; Visible session -> TUI only.
-    (cl-letf (((symbol-function 'mcp-emacs-run--live-buffer) (lambda (_) 'buf))
-              ((symbol-function 'mcp-emacs-run--session-visible-p) (lambda (_) t)))
+    (cl-letf (((symbol-function 'mcp-emacs-run--session-visible-p) (lambda (_) t)))
       (setq fired nil)
       (mcp-emacs-explain-selection-in-current-session)
       (check "explain-visible-routes-tui" (reverse fired) '(tui)))
     ;; Hidden session -> popup placeholder + headless.
-    (cl-letf (((symbol-function 'mcp-emacs-run--live-buffer) (lambda (_) 'buf))
-              ((symbol-function 'mcp-emacs-run--session-visible-p) (lambda (_) nil)))
+    (cl-letf (((symbol-function 'mcp-emacs-run--session-visible-p) (lambda (_) nil)))
       (setq fired nil)
       (mcp-emacs-explain-selection-in-current-session)
       (check "explain-hidden-routes-popup" (reverse fired) '(popup headless)))
     ;; No session -> headless popup (no error, no TUI).
-    (cl-letf (((symbol-function 'mcp-emacs-run--live-buffer) (lambda (_) nil))
-              ((symbol-function 'mcp-emacs-run--session-visible-p) (lambda (_) nil)))
+    (cl-letf (((symbol-function 'mcp-emacs-run--session-visible-p) (lambda (_) nil)))
       (setq fired nil)
       (mcp-emacs-explain-selection-in-current-session)
       (check "explain-no-session-routes-popup" (reverse fired) '(popup headless)))))
