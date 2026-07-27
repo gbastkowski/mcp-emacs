@@ -1,9 +1,74 @@
 # Protocol spike findings
 
-Source: reverse-engineered from `claude-code-ide.el` (commit checked out at
-`~/git/emacs/claude-code-ide.el`). Not sniffed from a live Claude Code — extracted
-from the reference implementation, which is itself reverse-engineered. Treat as
-unofficial; re-verify against a live session before relying on it.
+Source: reverse-engineered from `claude-code-ide.el`, then **verified live**
+against Claude Code **v2.1.212** on 2026-07-28 by standing up a throwaway
+`websocket.el` server in the user's Emacs, launching `claude` with the IDE env
+vars, and driving a real edit through `openDiff` (accept and reject). The
+live-verified contract below supersedes the reference where they differ.
+
+## Live verification summary (v2.1.212)
+
+Confirmed end to end:
+- Env-var launch triggers the IDE connection (interactive mode only — see below).
+- Handshake, `openDiff` args, and the accept/reject return contract all work.
+- **Accept** (`FILE_SAVED` + content) → Claude Code applies the edit (file written).
+- **Reject** (`DIFF_REJECTED` + tab_name) → file left unchanged, Claude Code stops.
+
+### Protocol drift from the reference (IMPORTANT)
+- **protocolVersion is `2025-11-25`**, not `2024-11-05`. Claude sends it in
+  `initialize`; our server echoed `2025-11-25` and the session held.
+- **`-p` / print (headless) mode does NOT connect to the IDE.** It edits the
+  file directly, no `openDiff`. IDE integration only happens in **interactive**
+  mode (a real TTY / terminal buffer). The runner must launch interactive Claude.
+- Claude sends a **trust prompt** ("Is this a project you trust?") on first run
+  in a directory; until it's answered the process never connects. The runner
+  must handle/appease this (trust the workspace).
+- **Every `tools/call` must be answered or Claude blocks** ("Percolating…").
+  Before each native edit Claude calls, in order: `closeAllDiffTabs {}`,
+  `getDiagnostics {}`, then `openDiff`. Unanswered `closeAllDiffTabs`/
+  `getDiagnostics` stall the whole edit. So the IDE surface MUST implement (at
+  least stub) `closeAllDiffTabs` and `getDiagnostics`, not only `openDiff`.
+
+### Observed message sequence (verified)
+```
+→ initialize  {protocolVersion:"2025-11-25", capabilities:{roots:{listChanged},elicitation:{}}, clientInfo:{name:"claude-code",version:"2.1.212"}}  id 0
+← initialize result {protocolVersion:"2025-11-25", capabilities:{tools:{listChanged}}, serverInfo}
+→ notifications/initialized            (notification)
+→ ide_connected {pid: <claude-pid>}    (notification — NOT in the reference)
+→ tools/list  id 1                     ← must return the tool list
+--- on a native edit ---
+→ tools/call closeAllDiffTabs {}                       id 2   (must answer)
+→ tools/call getDiagnostics  {}                        id 3   (must answer)
+→ tools/call openDiff {old_file_path,new_file_path,new_file_contents,tab_name}  id 4  (DEFERRED)
+← (later) openDiff result: FILE_SAVED+content  OR  DIFF_REJECTED+tab_name
+→ tools/call getDiagnostics {uri:"file://…"}           (post-edit; also plain {})
+```
+
+### openDiff arguments (verified, v2.1.212)
+```json
+{
+  "old_file_path": "/abs/path/hello.txt",
+  "new_file_path": "/abs/path/hello.txt",      // same as old
+  "new_file_contents": "FIRST\nline two\n",     // full new file content
+  "tab_name": "✻ [Claude Code] hello.txt (61e49d) ⧉"   // Claude-generated, unicode markers + short hash
+}
+```
+Plus `_meta.progressToken` on the call. `tab_name` is opaque — echo it back in
+the response (esp. on reject) and use it as the diff-session key.
+
+### openDiff return (verified)
+Deferred: do NOT respond when called; respond when the human resolves.
+- Accept: `result.content = [{type:"text",text:"FILE_SAVED"}, {type:"text",text:<final content>}]` → Claude writes the file.
+- Reject: `result.content = [{type:"text",text:"DIFF_REJECTED"}, {type:"text",text:<tab_name>}]` → file unchanged.
+
+---
+
+## Original reference-derived findings (claude-code-ide.el)
+
+Below is what was extracted from the reference before live verification. Kept
+for provenance; where it disagrees with the live section above (protocol
+version, ide_connected, mandatory closeAllDiffTabs/getDiagnostics), the live
+section wins.
 
 ## Discovery is push-by-env, not lockfile-scan (KEY CORRECTION)
 

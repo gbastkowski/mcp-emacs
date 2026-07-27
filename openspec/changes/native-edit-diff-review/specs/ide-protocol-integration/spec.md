@@ -5,7 +5,11 @@ The system SHALL make a running Emacs act as the Claude Code IDE for a workspace
 
 #### Scenario: Claude Code launched with IDE environment
 - **WHEN** the IDE integration surface starts Claude Code for a project
-- **THEN** the Claude Code process is started with `CLAUDE_CODE_SSE_PORT` set to the IDE WebSocket port and IDE integration enabled, and it connects to the Emacs WebSocket server
+- **THEN** the Claude Code process is started **interactively** (in a terminal buffer, not headless `-p`) with `CLAUDE_CODE_SSE_PORT` set to the IDE WebSocket port and IDE integration enabled, and it connects to the Emacs WebSocket server
+
+#### Scenario: Workspace trust does not block the connection
+- **WHEN** Claude Code shows its first-run "do you trust this folder?" prompt for the workspace
+- **THEN** the integration ensures the workspace is trusted so Claude Code proceeds to connect rather than waiting at the prompt
 
 #### Scenario: Lockfile published on start
 - **WHEN** the IDE integration surface is started for a project
@@ -16,11 +20,15 @@ The system SHALL make a running Emacs act as the Claude Code IDE for a workspace
 - **THEN** the corresponding `~/.claude/ide/<port>.lock` file no longer exists
 
 ### Requirement: IDE surface serves the diff tools over WebSocket
-The system SHALL run a WebSocket server that speaks Claude Code's IDE protocol and advertises the diff tools Claude Code invokes during native file edits (`openDiff`, `close_tab`, `closeAllDiffTabs`). The surface SHALL be opt-in and disabled by default, and SHALL not alter or replace the existing HTTP MCP server or its tools.
+The system SHALL run a WebSocket server that speaks Claude Code's IDE protocol (JSON-RPC 2.0; `initialize` echoing the protocol version Claude Code offers) and advertises the tools Claude Code invokes around native file edits: `openDiff`, `close_tab`, `closeAllDiffTabs`, and `getDiagnostics`. The surface SHALL respond to every tools/call Claude Code makes, because an unanswered call blocks the edit. The surface SHALL be opt-in and disabled by default, and SHALL not alter or replace the existing HTTP MCP server or its tools.
 
-#### Scenario: Diff tools advertised to a connecting IDE client
+#### Scenario: Tools advertised to a connecting IDE client
 - **WHEN** Claude Code connects to the advertised WebSocket port and negotiates a session
-- **THEN** the IDE surface advertises `openDiff`, `close_tab`, and `closeAllDiffTabs`
+- **THEN** the IDE surface advertises `openDiff`, `close_tab`, `closeAllDiffTabs`, and `getDiagnostics`
+
+#### Scenario: Pre-edit calls are answered so the edit proceeds
+- **WHEN** Claude Code calls `closeAllDiffTabs` and `getDiagnostics` immediately before a native edit
+- **THEN** the surface responds to both so Claude Code proceeds to call `openDiff` rather than blocking
 
 #### Scenario: HTTP MCP server unaffected
 - **WHEN** the IDE surface is enabled alongside the HTTP MCP server for the same project

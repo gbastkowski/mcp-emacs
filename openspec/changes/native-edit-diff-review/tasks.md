@@ -4,7 +4,8 @@
 - [x] 1.2 Transport confirmed: `websocket.el` server on `127.0.0.1`, subprotocol `mcp`, JSON-RPC 2.0; methods `initialize` (protocolVersion `2024-11-05`), `tools/list`, `tools/call`, `prompts/list`; `notifications/tools/list_changed` sent after init.
 - [x] 1.3 `openDiff` args = `old_file_path`, `new_file_path`, `new_file_contents`, `tab_name`; deferred response — accept → `FILE_SAVED` + final content, reject → `DIFF_REJECTED` + tab_name; also `close_tab`/`closeAllDiffTabs`.
 - [x] 1.4 **KEY**: discovery is push-by-env — Claude CLI is launched with `CLAUDE_CODE_SSE_PORT=<port>` + `ENABLE_IDE_INTEGRATION=true`; it connects to `ws://127.0.0.1:<port>`. Lockfile is secondary. → mcp-emacs must *run* Claude Code (runner dependency).
-- [ ] 1.5 Re-verify against a live current Claude Code version (env vars, handshake, `FILE_SAVED` semantics still current); record the pinned version.
+- [x] 1.5 Live-verified against Claude Code **v2.1.212** (2026-07-28): env-var launch connects (interactive only), handshake, `openDiff` args, and `FILE_SAVED`/`DIFF_REJECTED` accept/reject all confirmed. Findings recorded in spike-findings.md. Drift found — see 1.6.
+- [x] 1.6 Record live-only findings that change the design: protocolVersion is **`2025-11-25`** (not `2024-11-05`); **`-p` headless does NOT connect** — runner must be interactive; Claude shows a **trust prompt** the runner must handle; **every `tools/call` must be answered or Claude blocks** — before each edit Claude calls `closeAllDiffTabs`+`getDiagnostics` then `openDiff`, so those two must be implemented/stubbed; new `ide_connected` notification.
 
 ## 2. IDE-protocol server module
 
@@ -14,7 +15,8 @@
 
 ## 3. Discovery: env-injecting runner + lockfile
 
-- [ ] 3.1 Launch Claude Code from mcp-emacs with `CLAUDE_CODE_SSE_PORT=<port>` and `ENABLE_IDE_INTEGRATION=true` in its environment so it connects to the IDE WS server. (Extends existing claude-runner work — the runner is where env vars are injected.)
+- [ ] 3.1 Launch Claude Code from mcp-emacs with `CLAUDE_CODE_SSE_PORT=<port>` and `ENABLE_IDE_INTEGRATION=true` in its environment so it connects to the IDE WS server. **Must be interactive** (a TTY/eat buffer) — `-p` headless does not connect. Extends `mcp-emacs-run.el` (already uses `eat-make`); inject the env vars there.
+- [ ] 3.1a Handle Claude Code's first-run trust prompt for the workspace so the connection isn't blocked waiting on it (pre-trust, or auto-confirm).
 - [ ] 3.2 On IDE-server start, write `~/.claude/ide/<port>.lock` with `pid`, `workspaceFolders` (project root), `ideName` "Emacs", `transport` "ws".
 - [ ] 3.3 Remove the lockfile on `mcp-emacs-ide-stop` and best-effort on `kill-emacs-hook`.
 
@@ -22,8 +24,10 @@
 
 - [ ] 4.1 Factor the ediff accept/reject session core out of `mcp-emacs-apply-diff` into a shared function (Buffer A = old, Buffer B = new; cooperative poll; explicit accept/reject; timeout) without changing `apply_diff` behaviour.
 - [ ] 4.2 `openDiff`: drive the shared ediff flow; accept → `FILE_SAVED` (apply accepted content), reject → `DIFF_REJECTED`, timeout → `DIFF_REJECTED`.
-- [ ] 4.3 `close_tab` and `closeAllDiffTabs`: tear down the ediff session(s) for the named tab / all tabs and clean up buffers.
-- [ ] 4.4 Track active diff sessions by tab name so `close_tab` can target the right one.
+- [ ] 4.3 `close_tab` and `closeAllDiffTabs`: tear down the ediff session(s) for the named tab / all tabs and clean up buffers. **Required, not optional** — Claude calls `closeAllDiffTabs` before every edit and blocks until answered.
+- [ ] 4.4 Track active diff sessions by tab name so `close_tab` can target the right one. `tab_name` is Claude-generated and opaque (e.g. `"✻ [Claude Code] hello.txt (61e49d) ⧉"`) — echo it back verbatim on reject.
+- [ ] 4.5 `getDiagnostics`: implement/stub (accepts `{}` and `{uri:"file://…"}`). Claude calls it before and after every edit and blocks until answered; can return an empty diagnostics result initially (a full impl could wire Flycheck/Flymake later).
+- [ ] 4.6 Answer **every** `tools/call` — an unanswered call stalls the whole edit. `initialize` must echo protocolVersion `2025-11-25`.
 
 ## 5. Coexistence & lifecycle
 
