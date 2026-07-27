@@ -24,11 +24,23 @@ The system SHALL launch the `claude` CLI inside an Emacs terminal buffer using e
 - **THEN** the runner launches that executable with those flags
 
 ### Requirement: Manage per-project runner sessions
-The system SHALL keep at most one primary runner session per project, name its buffer distinctly (for example `*claude:<project>*`), and provide commands to list, switch to, and kill sessions.
+The system SHALL support multiple concurrent runner sessions per project.
+Each session's buffer SHALL be named `*claude:<project>:<n>*`, where `<n>`
+is a positive integer allocated per project starting at 1 (the lowest
+number not currently in use by a live session for that project). The
+system SHALL provide a command to start a new session (always allocating a
+fresh number), and commands to list, switch to, and kill sessions. The set
+of live sessions SHALL be derived from the live runner buffers themselves
+(matched by name and each buffer's own project directory), not from a
+separately maintained root-to-buffer registry.
 
-#### Scenario: Reusing a project's session
-- **WHEN** the user starts the runner for a project that already has a live session
-- **THEN** the runner switches to the existing session rather than starting a duplicate
+#### Scenario: Starting allocates a new numbered session
+- **WHEN** the user starts a new runner and the project already has a live session numbered 1
+- **THEN** a new session is started in buffer `*claude:<project>:2*` without disturbing session 1
+
+#### Scenario: Numbering fills the lowest free slot
+- **WHEN** the user starts a new runner and sessions 1 and 3 are live but 2 was killed
+- **THEN** the new session reuses number 2
 
 #### Scenario: Listing and switching
 - **WHEN** the user lists sessions and selects one
@@ -37,6 +49,10 @@ The system SHALL keep at most one primary runner session per project, name its b
 #### Scenario: Killing a session
 - **WHEN** the user kills a session
 - **THEN** the runner terminates the CLI process and cleans up its buffer
+
+#### Scenario: Sessions discoverable without a registry
+- **WHEN** a runner buffer is live but no in-memory registry entry exists for it
+- **THEN** the session is still listed, switchable, and killable
 
 ### Requirement: Manage the runner window
 The system SHALL provide commands to show, hide, and toggle the runner window, placing the buffer in an ordinary (non-dedicated) window in a configurable direction, with control over whether focus moves to the runner.
