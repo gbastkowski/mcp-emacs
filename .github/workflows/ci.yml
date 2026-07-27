@@ -19,14 +19,15 @@ jobs:
         with:
           version: '29.4'
 
-      - name: Install web-server dependency
+      - name: Install dependencies
         run: |
           emacs --batch \
             --eval "(require 'package)" \
             --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\"))" \
             --eval "(package-initialize)" \
             --eval "(package-refresh-contents)" \
-            --eval "(package-install 'web-server)"
+            --eval "(package-install 'web-server)" \
+            --eval "(package-install 'websocket)"
 
       - name: Byte-compile
         run: |
@@ -34,4 +35,16 @@ jobs:
             --eval "(require 'package)" \
             --eval "(package-initialize)" \
             -L elisp \
-            -f batch-byte-compile elisp/mcp-emacs.el elisp/mcp-emacs-server.el
+            -f batch-byte-compile \
+            elisp/mcp-emacs.el elisp/mcp-emacs-server.el elisp/mcp-emacs-ide.el
+
+      - name: Run tests
+        run: |
+          for t in test/mcp-emacs-apply-diff-test.el test/mcp-emacs-ide-test.el; do
+            echo "== $t =="
+            emacs --batch \
+              --eval "(require 'package)" \
+              --eval "(package-initialize)" \
+              -L elisp -l "$t" 2>&1 | tee "/tmp/out.txt"
+            grep -q FAIL "/tmp/out.txt" && { echo "TESTS FAILED in $t"; exit 1; } || true
+          done

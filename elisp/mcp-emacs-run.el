@@ -65,6 +65,21 @@
   :type '(repeat string)
   :group 'mcp-emacs-run)
 
+(defcustom mcp-emacs-run-ide-integration nil
+  "When non-nil, connect launched Claude Code sessions to the Emacs IDE.
+Starts the `mcp-emacs-ide' WebSocket server (if not already running) and
+launches Claude Code with `CLAUDE_CODE_SSE_PORT' and
+`ENABLE_IDE_INTEGRATION' set, so its native Edit/Write operations are
+reviewed via ediff in Emacs.  Requires `mcp-emacs-ide-enabled' and the
+`websocket' package.  IDE integration only works for interactive
+sessions launched by this runner; a Claude Code started by hand will not
+connect."
+  :type 'boolean
+  :group 'mcp-emacs-run)
+
+(declare-function mcp-emacs-ide-start "mcp-emacs-ide" ())
+(declare-function mcp-emacs-ide-port "mcp-emacs-ide" ())
+
 (defcustom mcp-emacs-run-focus-on-show t
   "When non-nil, showing the runner window also selects it."
   :type 'boolean
@@ -285,10 +300,37 @@ flags (e.g. continue/resume)."
          (n (mcp-emacs-run--next-number root))
          (name (substring (mcp-emacs-run--buffer-name root n) 1 -1)) ; eat-make wraps in *...*
          (switches (append mcp-emacs-run-flags extra-switches))
+         ;; When IDE integration is on, start the IDE server and pass its
+         ;; port to the CLI via the environment (verified handshake; see
+         ;; mcp-emacs-ide).  `eat' inherits `process-environment', so bind
+         ;; it around the launch.
+         (ide-port (mcp-emacs-run--ide-port))
+         (process-environment
+          (if ide-port
+              (append (list (format "CLAUDE_CODE_SSE_PORT=%d" ide-port)
+                            "ENABLE_IDE_INTEGRATION=true"
+                            "TERM_PROGRAM=emacs")
+                      process-environment)
+            process-environment))
          (buffer (apply #'eat-make name mcp-emacs-run-executable nil switches)))
     (unless no-display
       (mcp-emacs-run--display buffer))
     buffer))
+
+(defun mcp-emacs-run--ide-port ()
+  "Return the IDE WebSocket port to hand to Claude Code, or nil.
+When `mcp-emacs-run-ide-integration' is enabled, ensure the
+`mcp-emacs-ide' server is running and return its port.  Any failure
+\(package missing, surface disabled) degrades gracefully to nil so a
+session still launches without IDE integration."
+  (when mcp-emacs-run-ide-integration
+    (condition-case err
+        (when (require 'mcp-emacs-ide nil t)
+          (or (mcp-emacs-ide-port) (mcp-emacs-ide-start)))
+      (error
+       (message "mcp-emacs-run: IDE integration unavailable: %s"
+                (error-message-string err))
+       nil))))
 
 (defun mcp-emacs-run--send-to-buffer (buf string)
   "Send STRING to runner buffer BUF's terminal.
