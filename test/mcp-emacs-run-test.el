@@ -224,6 +224,54 @@
           (check "send-prompt-sends-text-then-return" (reverse sent) '("hi" "\r")))
       (dolist (b (list b1 b2)) (when (buffer-live-p b) (kill-buffer b))))))
 
+;;; Quit: sends the quit sequence, arms a timer, force-kills + removes buffer.
+
+;; Quit sends Ctrl-C twice to the resolved buffer and arms one timer.
+(let* ((buf (generate-new-buffer "*claude:quit:1*"))
+       sent timers)
+  (with-current-buffer buf (setq-local eat-terminal 'fake-term))
+  (cl-letf (((symbol-function 'mcp-emacs-run--resolve-session) (lambda () buf))
+            ((symbol-function 'eat-term-send-string) (lambda (_t s) (push s sent)))
+            ((symbol-function 'run-with-timer)
+             (lambda (secs _rep _fn &rest _args) (push secs timers) 'fake-timer)))
+    (unwind-protect
+        (progn
+          (mcp-emacs-run-quit)
+          (check "quit-sends-double-ctrl-c" (car sent) "\003\003")
+          (check "quit-arms-one-timer" (length timers) 1)
+          (check "quit-timer-uses-timeout" (car timers) mcp-emacs-run-quit-timeout))
+      (when (buffer-live-p buf) (kill-buffer buf)))))
+
+;; Quit with no live session -> user-error, nothing sent.
+(let (sent)
+  (cl-letf (((symbol-function 'mcp-emacs-run--sessions-list) (lambda () nil))
+            ((symbol-function 'eat-term-send-string) (lambda (_t s) (push s sent))))
+    (check "quit-no-session-errors"
+           (condition-case _ (progn (mcp-emacs-run-quit) 'no) (user-error 'yes)) 'yes)
+    (check "quit-no-session-sends-nothing" sent nil)))
+
+;; Timeout handler: still-live process -> force-killed, buffer killed.
+;; Use a real long-lived process so the real delete-process/kill-buffer run.
+(let* ((buf (generate-new-buffer "*claude:quit-force:1*"))
+       (proc (make-process :name "quit-force-test" :buffer buf
+                           :command '("sleep" "60") :noquery t)))
+  (check "force-kill-precondition-live" (and (process-live-p proc) t) t)
+  (mcp-emacs-run--force-kill-buffer buf)
+  (check "force-kill-deletes-live-process" (process-live-p proc) nil)
+  (check "force-kill-kills-buffer" (buffer-live-p buf) nil))
+
+;; Timeout handler: no process -> just kills the buffer, no error.
+(let ((buf (generate-new-buffer "*claude:quit-noproc:1*")))
+  (mcp-emacs-run--force-kill-buffer buf)
+  (check "force-kill-no-process-kills-buffer" (buffer-live-p buf) nil))
+
+;; Timeout handler: already-killed buffer -> no-op, no error.
+(let ((buf (generate-new-buffer "*claude:quit-dead:1*")))
+  (kill-buffer buf)
+  (check "force-kill-dead-buffer-noop"
+         (condition-case _ (progn (mcp-emacs-run--force-kill-buffer buf) 'ok) (error 'err))
+         'ok))
+
 ;;; Popup output window.
 
 (check "popup-buffer-name" (mcp-emacs-run--popup-buffer-name "explain") "*mcp-emacs:explain*")

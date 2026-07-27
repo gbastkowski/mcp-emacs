@@ -125,6 +125,7 @@ Configure `mcp-emacs-run-executable` and `-flags`, then:
 - `M-x mcp-emacs-run-continue` / `-resume` — pick up a prior conversation.
 - `M-x mcp-emacs-run-toggle` — show/hide the runner window.
 - `M-x mcp-emacs-run-list` / `-switch` / `-kill` — manage sessions.
+- `M-x mcp-emacs-run-quit` — gracefully quit a session: sends the CLI quit (Ctrl-C twice), then force-kills the process and removes the buffer if it has not exited within `mcp-emacs-run-quit-timeout` seconds (default 10). Unlike `-kill`, it lets the CLI shut down cleanly first.
 
 Drive a running session from anywhere in Emacs (these require a live session and never launch one):
 

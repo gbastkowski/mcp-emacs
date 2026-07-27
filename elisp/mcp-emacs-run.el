@@ -123,6 +123,14 @@ Interpreted as a width when `mcp-emacs-run-popup-direction' is `left' or
   :type 'number
   :group 'mcp-emacs-run)
 
+(defcustom mcp-emacs-run-quit-timeout 10
+  "Seconds to wait for the CLI to exit after a graceful quit.
+`mcp-emacs-run-quit' sends the quit sequence and, if the session process
+is still live after this many seconds, force-kills it and removes the
+buffer."
+  :type 'number
+  :group 'mcp-emacs-run)
+
 ;;;; Helpers
 
 ;; TODO isn't this already covered by require further up?
@@ -474,6 +482,32 @@ When the project has several sessions, prompt for which to kill."
     (let ((name (buffer-name buf)))
       (kill-buffer buf)
       (message "Killed Claude runner session %s" name))))
+
+(defconst mcp-emacs-run--quit-sequence "\003\003"
+  "Sequence that makes the Claude CLI exit: two Ctrl-C characters.")
+
+(defun mcp-emacs-run--force-kill-buffer (buf)
+  "Force-kill BUF's process if still live, then kill BUF.
+A no-op when BUF has already been killed."
+  (when (buffer-live-p buf)
+    (when-let ((proc (get-buffer-process buf)))
+      (ignore-errors (delete-process proc)))
+    (kill-buffer buf)))
+
+;;;###autoload
+(defun mcp-emacs-run-quit ()
+  "Gracefully quit a resolved runner session, force-killing if it hangs.
+Resolves the target session like the send commands (see
+`mcp-emacs-run--resolve-session'), sends the CLI quit sequence, then after
+`mcp-emacs-run-quit-timeout' seconds — without blocking Emacs — force-kills
+the process if it is still live and removes the session buffer.  The end
+state has no process and no buffer for that session."
+  (interactive)
+  (let ((buf (mcp-emacs-run--resolve-session)))
+    (mcp-emacs-run--send-to-buffer buf mcp-emacs-run--quit-sequence)
+    (run-with-timer mcp-emacs-run-quit-timeout nil
+                    #'mcp-emacs-run--force-kill-buffer buf)
+    (message "Quitting Claude runner session %s" (buffer-name buf))))
 
 ;;;###autoload
 (defun mcp-emacs-run-toggle ()
