@@ -15,6 +15,22 @@
 (check "eat-guard-errors"
        (condition-case _ (progn (mcp-emacs-run--ensure-eat) 'no) (user-error 'yes)) 'yes)
 
+;; resolved width: columns preferred, clamped to max-fraction of frame width.
+(cl-letf (((symbol-function 'frame-width) (lambda (&optional _) 400)))
+  ;; configured columns fit under the clamp (0.5 * 400 = 200)
+  (let ((mcp-emacs-run-window-width-columns 120)
+        (mcp-emacs-run-window-max-width-fraction 0.5))
+    (check "width-columns-under-clamp" (mcp-emacs-run--resolved-width) 120))
+  ;; configured columns exceed the clamp -> reduced to the cap
+  (let ((mcp-emacs-run-window-width-columns 300)
+        (mcp-emacs-run-window-max-width-fraction 0.5))
+    (check "width-columns-clamped" (mcp-emacs-run--resolved-width) 200))
+  ;; nil columns -> fall back to the fraction (0.4 * 400 = 160, under cap)
+  (let ((mcp-emacs-run-window-width-columns nil)
+        (mcp-emacs-run-window-width 0.4)
+        (mcp-emacs-run-window-max-width-fraction 0.5))
+    (check "width-fraction-fallback" (mcp-emacs-run--resolved-width) 160)))
+
 ;; Headless launch: stub eat so no real terminal is spawned.  eat-make returns a
 ;; plain buffer; ensure-eat is satisfied via a faked `eat' feature.
 (let ((root "/tmp/headless-proj/")

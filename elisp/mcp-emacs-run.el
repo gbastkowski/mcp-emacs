@@ -72,15 +72,33 @@
 
 (defcustom mcp-emacs-run-window-direction 'right
   "Direction in which the runner window is placed.
-The runner uses an ordinary (non-dedicated) window in this direction, so
-it can be split, navigated, and closed like any other window."
+The runner uses an ordinary window in this direction, so it can be split,
+navigated, and closed like any other window.  The window is weakly
+dedicated to its buffer (see `set-window-dedicated-p'), so it prefers to
+keep showing the runner but `display-buffer' may still reuse it when no
+other window is available."
   :type '(choice (const right) (const left) (const above) (const below))
   :group 'mcp-emacs-run)
 
-;; TODO specify size in columns/lines
 (defcustom mcp-emacs-run-window-width 0.4
-  "Width hint for the runner window, as a fraction of the frame.
-Used when `mcp-emacs-run-window-direction' is `left' or `right'."
+  "Fallback width hint for the runner window, as a fraction of the frame.
+Used when `mcp-emacs-run-window-direction' is `left' or `right' and
+`mcp-emacs-run-window-width-columns' is nil."
+  :type 'number
+  :group 'mcp-emacs-run)
+
+(defcustom mcp-emacs-run-window-width-columns 120
+  "Desired width of the runner window in columns.
+Used when `mcp-emacs-run-window-direction' is `left' or `right'.  The
+resolved width is clamped to `mcp-emacs-run-window-max-width-fraction' of
+the frame width.  When nil, fall back to `mcp-emacs-run-window-width'."
+  :type '(choice (const :tag "Use fraction fallback" nil) integer)
+  :group 'mcp-emacs-run)
+
+(defcustom mcp-emacs-run-window-max-width-fraction 0.5
+  "Maximum runner window width, as a fraction of the frame width.
+Caps `mcp-emacs-run-window-width-columns' so the code pane is not crushed
+on narrow frames."
   :type 'number
   :group 'mcp-emacs-run)
 
@@ -142,14 +160,27 @@ Interpreted as a width when `mcp-emacs-run-popup-direction' is `left' or
       (remhash root mcp-emacs-run--sessions)
       nil)))
 
+(defun mcp-emacs-run--resolved-width ()
+  "Return the runner window width in columns for a horizontal split.
+Prefer `mcp-emacs-run-window-width-columns'; otherwise derive columns from
+the `mcp-emacs-run-window-width' fraction.  The result is clamped to
+`mcp-emacs-run-window-max-width-fraction' of the current frame width."
+  (let ((cap (truncate (* mcp-emacs-run-window-max-width-fraction
+                          (frame-width))))
+        (cols (or mcp-emacs-run-window-width-columns
+                  (truncate (* mcp-emacs-run-window-width (frame-width))))))
+    (min cols cap)))
+
 (defun mcp-emacs-run--display (buffer)
   "Display BUFFER in an ordinary window, honouring the focus preference.
 The window is placed in `mcp-emacs-run-window-direction' via
-`display-buffer-in-direction', so it stays splittable and closable
-rather than a dedicated side window."
+`display-buffer-in-direction', so it stays splittable and closable rather
+than a dedicated side window.  For a horizontal split the width is
+`mcp-emacs-run--resolved-width' columns.  The window is weakly dedicated
+to BUFFER so it prefers to keep showing the runner."
   (let* ((horizontal (memq mcp-emacs-run-window-direction '(left right)))
          (size (if horizontal
-                   `(window-width . ,mcp-emacs-run-window-width)
+                   `(window-width . ,(mcp-emacs-run--resolved-width))
                  `(window-height . ,mcp-emacs-run-window-height)))
          (window
           (display-buffer
@@ -157,6 +188,8 @@ rather than a dedicated side window."
            `((display-buffer-in-direction)
              (direction . ,mcp-emacs-run-window-direction)
              ,size))))
+    (when window
+      (set-window-dedicated-p window t))
     (when (and window mcp-emacs-run-focus-on-show)
       (select-window window))
     window))
