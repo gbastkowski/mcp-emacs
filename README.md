@@ -151,6 +151,46 @@ select, and copy from it like any buffer. Re-rendering the same kind reuses its
 buffer and window. `mcp-emacs-popup-show' is a reusable primitive other
 features can render into.
 
+### IDE integration (native-edit diff review)
+
+`elisp/mcp-emacs-ide.el` makes Emacs act as a Claude Code *IDE* so that Claude
+Code's **native** Edit/Write operations are reviewed in an interactive ediff
+session before they are written — the same accept/reject flow as `apply_diff`,
+but triggered automatically instead of only when the model calls a tool.
+
+This is separate from the HTTP MCP server and is **opt-in and off by default**.
+It relies on Claude Code's unofficial, reverse-engineered IDE protocol
+(WebSocket, verified against Claude Code 2.1.212), so it can break across Claude
+Code releases.
+
+How it works: Emacs runs a WebSocket server and launches Claude Code with
+`CLAUDE_CODE_SSE_PORT` and `ENABLE_IDE_INTEGRATION=true` in its environment, so
+the CLI connects back and calls Emacs's `openDiff` before each edit. Because the
+connection is driven by those launch-time environment variables, **only Claude
+Code sessions started by the runner get diff review** — a Claude Code you start
+by hand in a plain terminal will not.
+
+To enable:
+
+```elisp
+(setq mcp-emacs-ide-enabled t)          ; allow the IDE surface to start
+(setq mcp-emacs-run-ide-integration t)  ; make the runner launch Claude against it
+```
+
+Requires the [`websocket`](https://github.com/ahyatt/emacs-websocket) package
+(loaded lazily; the surface errors with an install hint if it is missing). The
+runner starts the IDE server automatically on the next launch and manages its
+`~/.claude/ide/<port>.lock` discovery file; you can also drive it directly with
+`M-x mcp-emacs-ide-start` / `mcp-emacs-ide-stop`.
+
+On the first launch in a project, Claude Code shows a one-time "do you trust
+this folder?" prompt; answer it (press Enter / choose *Yes*) so the CLI proceeds
+to connect. Reviewing an edit: `C-c C-c` accepts (Claude Code writes the file),
+`C-c C-k` or `q` rejects (the file is left unchanged).
+
+If you are migrating from `claude-code-ide.el`, disable it for the workspace
+first so only one IDE lockfile is published.
+
 ### Resources
 
 | Resource            | Description                                                                               |

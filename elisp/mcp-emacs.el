@@ -1,7 +1,7 @@
 ;;; mcp-emacs.el --- Helper functions for MCP Emacs -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.0.0
+;; Version: 1.1.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
@@ -972,6 +972,80 @@ hand-edited content.  Set the RESULT cell's car to `applied'."
   "Record a reject decision for an apply-diff session in the RESULT cell."
   (setcar result 'rejected))
 
+(defvar ediff-window-setup-function)
+(defvar ediff-split-window-function)
+(defvar ediff-control-buffer-suffix)
+
+(defun mcp-emacs--ediff-review (buffer-a buffer-b entry-content result
+                                         &optional on-resolve tab-name)
+  "Start an ediff review of BUFFER-A against proposal BUFFER-B.
+
+Bind explicit accept/reject in the ediff control buffer and record the
+decision in the RESULT cell (a one-element list): accept copies BUFFER-B
+into BUFFER-A unless BUFFER-A was hand-edited away from ENTRY-CONTENT,
+and sets the car to `applied'; reject (and a bare `q' quit) leaves
+BUFFER-A untouched and sets it to `rejected'.
+
+When ON-RESOLVE is non-nil it is called with no arguments once, after the
+decision is recorded and the session has quit, with the RESULT car set.
+This lets deferred callers (the IDE `openDiff' flow) respond
+asynchronously; the synchronous `mcp-emacs-apply-diff' caller instead
+polls the RESULT cell and passes no ON-RESOLVE.
+
+TAB-NAME, when given, is used to make the ediff control buffer name
+unique so concurrent reviews do not collide.
+
+Side windows (e.g. Treemacs) are deleted and ediff is forced into its
+plain, single-frame window layout before setup; otherwise `ediff-buffers'
+can abort when the selected window is a side or dedicated window, leaving
+no control buffer.
+
+Return the ediff control buffer (or nil) so callers can force-quit it on
+timeout."
+  ;; A side or dedicated window cannot be split, which aborts ediff setup
+  ;; before the control buffer exists.  Remove side windows first and pin
+  ;; ediff to its plain layout so the control panel lands in this frame.
+  (dolist (window (window-list))
+    (when (window-parameter window 'window-side)
+      (ignore-errors (delete-window window))))
+  (let (control
+        (ediff-window-setup-function 'ediff-setup-windows-plain)
+        (ediff-split-window-function 'split-window-horizontally)
+        (ediff-control-buffer-suffix (if tab-name (format "<%s>" tab-name) "")))
+    (ediff-buffers
+     buffer-a buffer-b
+     (list (lambda ()
+             (setq control ediff-control-buffer)
+             (with-current-buffer ediff-control-buffer
+               ;; Accept/reject record the decision, then quit.  The
+               ;; quit hook below is the single place that fires
+               ;; ON-RESOLVE, so it runs exactly once whether the human
+               ;; used a key binding or a bare `q'.
+               (local-set-key
+                (kbd "C-c C-c")
+                (lambda ()
+                  (interactive)
+                  (mcp-emacs--apply-diff-accept
+                   buffer-a buffer-b entry-content result)
+                  (ediff-really-quit nil)))
+               (local-set-key
+                (kbd "C-c C-k")
+                (lambda ()
+                  (interactive)
+                  (mcp-emacs--apply-diff-reject result)
+                  (ediff-really-quit nil)))
+               (setq-local
+                ediff-quit-hook
+                (list (lambda ()
+                        ;; Any quit without an explicit accept
+                        ;; (e.g. plain `q') is a rejection.
+                        (unless (car result)
+                          (setcar result 'rejected))
+                        (when on-resolve (funcall on-resolve)))))
+               (message
+                "mcp diff: C-c C-c to accept, C-c C-k (or q) to reject")))))
+    control))
+
 (defun mcp-emacs-apply-diff (path new-content timeout)
   "Present NEW-CONTENT as a proposed change to the file at PATH via ediff.
 Open an `ediff-buffers' session comparing the file's current content
@@ -1006,38 +1080,9 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
             (when (functionp mode) (ignore-errors (funcall mode)))))
         (unwind-protect
             (progn
-              (ediff-buffers
-               buffer-a buffer-b
-               (list (lambda ()
-                       (setq control ediff-control-buffer)
-                       (with-current-buffer ediff-control-buffer
-                         ;; Explicit accept/reject.  Accept copies the
-                         ;; proposal (Buffer B) into Buffer A unless the
-                         ;; human has already hand-edited A, then quits with
-                         ;; `applied'.  Reject, and a bare `q' quit, leave A
-                         ;; untouched and resolve to `rejected'.
-                         (local-set-key
-                          (kbd "C-c C-c")
-                          (lambda ()
-                            (interactive)
-                            (mcp-emacs--apply-diff-accept
-                             buffer-a buffer-b entry-content result)
-                            (ediff-really-quit nil)))
-                         (local-set-key
-                          (kbd "C-c C-k")
-                          (lambda ()
-                            (interactive)
-                            (mcp-emacs--apply-diff-reject result)
-                            (ediff-really-quit nil)))
-                         (setq-local
-                          ediff-quit-hook
-                          (list (lambda ()
-                                  ;; Any quit without an explicit accept
-                                  ;; (e.g. plain `q') is a rejection.
-                                  (unless (car result)
-                                    (setcar result 'rejected)))))
-                         (message
-                          "mcp apply-diff: C-c C-c to accept, C-c C-k (or q) to reject")))))
+              (setq control
+                    (mcp-emacs--ediff-review
+                     buffer-a buffer-b entry-content result))
               ;; Cooperative wait: yield so ediff, edits, and other tool
               ;; calls keep processing until the human quits or we time out.
               (let ((deadline (+ (float-time) secs)))
