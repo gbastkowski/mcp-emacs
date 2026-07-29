@@ -334,11 +334,16 @@ session still launches without IDE integration."
 
 (defun mcp-emacs-run--send-to-buffer (buf string)
   "Send STRING to runner buffer BUF's terminal.
-Signal a `user-error' when BUF is not a live eat terminal."
-  (let ((term (buffer-local-value 'eat-terminal buf)))
-    (unless term
-      (user-error "Runner session is not a live terminal"))
-    (eat-term-send-string term string)))
+Signal a `user-error' when BUF is not a live eat terminal.
+`eat-term-send-string' resolves the input process from the current
+buffer's eat state, not from its TERM argument, so this must run with
+BUF current or it silently sends nothing when invoked from another
+buffer (e.g. via \\[execute-extended-command] from a file buffer)."
+  (with-current-buffer buf
+    (let ((term (buffer-local-value 'eat-terminal buf)))
+      (unless term
+        (user-error "Runner session is not a live terminal"))
+      (eat-term-send-string term string))))
 
 (defun mcp-emacs-run--send (string)
   "Resolve the target runner session once and send STRING to it.
@@ -635,6 +640,19 @@ Useful to accept a default or submit without typing a prompt."
   "Return non-nil when any of ROOT's live session buffers is shown in a window."
   (seq-some (lambda (buf) (get-buffer-window buf t))
             (mcp-emacs-run--project-sessions root)))
+
+;;;###autoload
+(defun mcp-emacs-run-mention-selection ()
+  "Insert an at-mention of the current selection into the runner prompt.
+Builds a reference for the active region (or point) with
+`mcp-emacs-run--selection-reference' and sends it to the current
+project's runner session without submitting, so the user can keep
+typing around the reference.  Requires a live session; does not launch
+one.  Mirrors claude-code-ide's `insert-at-mentioned'."
+  (interactive)
+  (let ((reference (mcp-emacs-run--selection-reference)))
+    (mcp-emacs-run--send-to-buffer (mcp-emacs-run--resolve-session)
+                                   (concat reference " "))))
 
 ;;;###autoload
 (defun mcp-emacs-explain-selection-in-current-session ()
