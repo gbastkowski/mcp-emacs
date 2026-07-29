@@ -44,7 +44,7 @@
 ## 6a. Follow-up (ediff window setup)
 
 - [x] 6a.1a Applied the fix in `mcp-emacs--ediff-review`: delete side windows (Treemacs etc.) and force `ediff-setup-windows-plain` + `split-window-horizontally` before `ediff-buffers`, with a per-tab `ediff-control-buffer-suffix`. Mirrors claude-code-ide's handler. Byte-compiles clean; both test suites still green.
-- [ ] 6a.1b Re-verify live inside a real runner session that the ediff control + diff windows now open and accept/reject drive the file write. (Deferred to next session — resume from here.)
+- [x] 6a.1b Re-verified live in the running Emacs (server on :8765): drove `mcp-emacs-ide--open-diff` in a real frame — ediff control panel + buffer-A + buffer-B all open in live windows (the old "Buffer B created, no control buffer" symptom is gone). Accept (`C-c C-c`) completed the deferred request with `FILE_SAVED`+content; reject (`C-c C-k`) completed with `DIFF_REJECTED`+tab and left the file unchanged; session diff/deferred entries cleaned up on resolve, and `:control` is stored live on a pending diff. The Claude-TUI-over-socket leg was already confirmed in 7.4 (v2.1.212); this task only re-checked the window setup + accept/reject deferred drive, both now confirmed.
 
 ## 7. Docs & checks
 
