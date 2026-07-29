@@ -637,6 +637,19 @@ Useful to accept a default or submit without typing a prompt."
             (mcp-emacs-run--project-sessions root)))
 
 ;;;###autoload
+(defun mcp-emacs-run-mention-selection ()
+  "Insert an at-mention of the current selection into the runner prompt.
+Builds a reference for the active region (or point) with
+`mcp-emacs-run--selection-reference' and sends it to the current
+project's runner session without submitting, so the user can keep
+typing around the reference.  Requires a live session; does not launch
+one.  Mirrors claude-code-ide's `insert-at-mentioned'."
+  (interactive)
+  (let ((reference (mcp-emacs-run--selection-reference)))
+    (mcp-emacs-run--send-to-buffer (mcp-emacs-run--resolve-session)
+                                   (concat reference " "))))
+
+;;;###autoload
 (defun mcp-emacs-explain-selection-in-current-session ()
   "Explain the current selection, routing output by session visibility.
 Builds a reference for the active region (or point).  When the current
