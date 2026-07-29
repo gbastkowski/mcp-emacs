@@ -334,11 +334,16 @@ session still launches without IDE integration."
 
 (defun mcp-emacs-run--send-to-buffer (buf string)
   "Send STRING to runner buffer BUF's terminal.
-Signal a `user-error' when BUF is not a live eat terminal."
-  (let ((term (buffer-local-value 'eat-terminal buf)))
-    (unless term
-      (user-error "Runner session is not a live terminal"))
-    (eat-term-send-string term string)))
+Signal a `user-error' when BUF is not a live eat terminal.
+`eat-term-send-string' resolves the input process from the current
+buffer's eat state, not from its TERM argument, so this must run with
+BUF current or it silently sends nothing when invoked from another
+buffer (e.g. via \\[execute-extended-command] from a file buffer)."
+  (with-current-buffer buf
+    (let ((term (buffer-local-value 'eat-terminal buf)))
+      (unless term
+        (user-error "Runner session is not a live terminal"))
+      (eat-term-send-string term string))))
 
 (defun mcp-emacs-run--send (string)
   "Resolve the target runner session once and send STRING to it.
