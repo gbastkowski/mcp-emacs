@@ -1,7 +1,7 @@
 ;;; mcp-emacs.el --- Helper functions for MCP Emacs -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.1.0
+;; Version: 1.1.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
@@ -974,7 +974,6 @@ hand-edited content.  Set the RESULT cell's car to `applied'."
 
 (defvar ediff-window-setup-function)
 (defvar ediff-split-window-function)
-(defvar ediff-control-buffer-suffix)
 
 (defun mcp-emacs--ediff-review (buffer-a buffer-b entry-content result
                                          &optional on-resolve tab-name)
@@ -992,8 +991,10 @@ This lets deferred callers (the IDE `openDiff' flow) respond
 asynchronously; the synchronous `mcp-emacs-apply-diff' caller instead
 polls the RESULT cell and passes no ON-RESOLVE.
 
-TAB-NAME, when given, is used to make the ediff control buffer name
-unique so concurrent reviews do not collide.
+TAB-NAME, when given, renames the ediff control buffer to
+\"*mcp diff: TAB-NAME*\" (done in the setup hook, since ediff overwrites
+its own suffix during setup) so concurrent reviews are distinguishable;
+if that name is taken, ediff's own unique name is kept.
 
 Side windows (e.g. Treemacs) are deleted and ediff is forced into its
 plain, single-frame window layout before setup; otherwise `ediff-buffers'
@@ -1010,12 +1011,21 @@ timeout."
       (ignore-errors (delete-window window))))
   (let (control
         (ediff-window-setup-function 'ediff-setup-windows-plain)
-        (ediff-split-window-function 'split-window-horizontally)
-        (ediff-control-buffer-suffix (if tab-name (format "<%s>" tab-name) "")))
+        (ediff-split-window-function 'split-window-horizontally))
     (ediff-buffers
      buffer-a buffer-b
      (list (lambda ()
              (setq control ediff-control-buffer)
+             ;; Give the control buffer a tab-scoped name.  Ediff derives
+             ;; its own name (and clobbers `ediff-control-buffer-suffix')
+             ;; during setup, so the only reliable point to inject TAB-NAME
+             ;; is here, once the control buffer exists.  Fall back to the
+             ;; ediff-chosen name if that name is already taken.
+             (when tab-name
+               (let ((wanted (format "*mcp diff: %s*" tab-name)))
+                 (unless (get-buffer wanted)
+                   (with-current-buffer ediff-control-buffer
+                     (rename-buffer wanted)))))
              (with-current-buffer ediff-control-buffer
                ;; Accept/reject record the decision, then quit.  The
                ;; quit hook below is the single place that fires
