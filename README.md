@@ -211,6 +211,37 @@ to connect. Reviewing an edit: `C-c C-c` accepts (Claude Code writes the file),
 If you are migrating from `claude-code-ide.el`, disable it for the workspace
 first so only one IDE lockfile is published.
 
+### Remote control (Org transcript)
+
+`mcp-emacs-remote.el` (opt-in) lets you drive the interactive Claude session
+from ordinary Emacs input and watch its tool activity as a live Org
+transcript — without reading the terminal.
+
+- **Prompt input** — `mcp-emacs-remote-prompt` reads a prompt from the
+  minibuffer (seeded from the active region when one is set) and sends it to
+  the current project's running session; `mcp-emacs-remote-prompt-buffer` sends
+  the whole current buffer. Both auto-submit via `mcp-emacs-run-send-prompt`
+  and require a live session (they never launch one). Empty or whitespace-only
+  input is not sent.
+- **Org transcript** — a per-session `*claude: <project>*` Org buffer records
+  the session's tool activity: one heading per tool call with its arguments,
+  the accept/reject outcome of each `openDiff`, and a run-metadata drawer.
+  `getDiagnostics` / `closeAllDiffTabs` are recorded compactly to keep the
+  transcript readable.
+
+Enable with `M-x mcp-emacs-remote-enable` (or set `mcp-emacs-remote-enabled`);
+the transcript tap on the IDE surface is a no-op while disabled. Recording is
+passive — it never changes whether or how a tool call is approved or executed,
+and a rendering error cannot stall an edit.
+
+Tool **approval** is not part of this surface: native Edit/Write flow through
+the IDE surface's ediff review (above), which is the per-call gate. This is
+why the session runs interactively rather than headless — `claude -p` cannot
+route per-call approval to Emacs (the `--permission-prompt-tool` flag was
+removed in Claude Code 2.1.212). Because the IDE socket carries structured
+tool calls but not assistant prose, the transcript records tool activity only
+in this version; a full-prose transcript is a tracked follow-up (see #23).
+
 ### Resources
 
 | Resource            | Description                                                                               |
