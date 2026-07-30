@@ -51,6 +51,7 @@ observe the real buffers, windows, and Org state of the running session.
 | `org_task_append_note`            | Append a progress note to the task body without altering existing content                  |
 | `org_task_append_item`            | Append a new TODO item as a child under the task heading                                   |
 | `org_task_wait_for_change`        | Block until the task file changes past a baseline token (or a timeout), then return it     |
+| `report_tooling_issue`            | File a bug report or feature request about mcp-emacs itself as a GitHub issue               |
 
 ### Org task session sync
 
@@ -67,6 +68,25 @@ For a cooperative loop, `org_task_session` returns a change token and
 until the human edits the file, then wakes with the change and the current
 session view. The harness works, then waits for the human's next direction —
 instead of only seeing edits when it happens to re-read.
+
+### Report a tooling issue
+
+When a tool or skill from mcp-emacs misbehaves — or you want a feature — the
+`report_tooling_issue` tool files it as a GitHub issue on
+`gbastkowski/mcp-emacs`, so you can report from inside the assistant instead of
+switching to GitHub by hand. It takes a `title`, an optional `description`, and
+an optional `kind` (`bug` / `feature` / `skill` / `server`) applied as a label.
+
+Filing is resilient: it uses the `gh` CLI, falling back to `gh api`; when no
+GitHub mechanism is available it hands back the composed issue text for manual
+filing. The `report-issue` skill wraps this in a guided flow — classify, draft,
+confirm, file, report the URL — and prefers the `github` MCP server when one is
+connected. The target repo is fixed: this reports issues about mcp-emacs
+itself, not arbitrary repositories.
+
+This is the GitHub, single-repo counterpart to the "report a tooling issue"
+feature in the sibling GitLab AI-tooling (see #26); there is no fault-domain
+router because mcp-emacs is one repo.
 
 ### opencode client
 
