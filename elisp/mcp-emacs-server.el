@@ -1,7 +1,7 @@
 ;;; mcp-emacs-server.el --- HTTP MCP server running inside Emacs -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.2.0
+;; Version: 1.3.0
 ;; Package-Requires: ((emacs "28.1") (web-server "0.1.2"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
