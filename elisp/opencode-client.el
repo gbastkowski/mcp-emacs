@@ -1,7 +1,7 @@
 ;;; opencode-client.el --- Native Emacs client for the opencode HTTP API -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.3.0
+;; Version: 1.4.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
