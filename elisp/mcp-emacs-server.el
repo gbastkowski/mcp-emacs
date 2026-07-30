@@ -1,7 +1,7 @@
 ;;; mcp-emacs-server.el --- HTTP MCP server running inside Emacs -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.2.0
+;; Version: 1.3.0
 ;; Package-Requires: ((emacs "28.1") (web-server "0.1.2"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
@@ -38,6 +38,7 @@
 ;;; Code:
 
 (require 'mcp-emacs)
+(require 'mcp-emacs-report)
 (require 'web-server)
 (require 'json)
 (require 'cl-lib)
@@ -394,7 +395,24 @@ rather than `null' (an empty alist would)."
                     (mcp-emacs-org-task-wait-for-change
                      (alist-get 'path args)
                      (alist-get 'token args)
-                     (alist-get 'timeout args)))))
+                     (alist-get 'timeout args))))
+   (list :name "report_tooling_issue"
+         :description "File a bug report or feature request about mcp-emacs itself: the MCP server's tools or a plugin skill, as a GitHub issue on gbastkowski/mcp-emacs. Use this when a tool or skill from this tooling misbehaves or is missing a feature. Not for issues in arbitrary project repositories."
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "title" (mcp-emacs-server--prop "string" "Short, specific issue title")
+                                "description" (mcp-emacs-server--prop "string" "Issue body. Include what happened, expected behaviour, and reproduction steps when reporting a bug.")
+                                "kind" (mcp-emacs-server--obj
+                                        "type" "string"
+                                        "description" "Category applied as a GitHub label: bug, feature, skill, or server"
+                                        "enum" (vector "bug" "feature" "skill" "server")))
+                  "required" (vector "title"))
+         :handler (lambda (args)
+                    (mcp-emacs-report-tooling-issue
+                     (alist-get 'title args)
+                     (alist-get 'description args)
+                     (alist-get 'kind args)))))
   "List of tool descriptors.  Each is a plist with :name :description :schema :handler.")
 
 (defun mcp-emacs-server--find-tool (name)
