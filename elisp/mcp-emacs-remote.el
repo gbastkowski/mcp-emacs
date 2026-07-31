@@ -1,7 +1,7 @@
 ;;; mcp-emacs-remote.el --- Remote-control an interactive Claude from Emacs -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.4.0
+;; Version: 1.5.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs

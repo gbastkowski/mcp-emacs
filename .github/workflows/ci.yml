@@ -36,11 +36,12 @@ jobs:
             --eval "(package-initialize)" \
             -L elisp \
             -f batch-byte-compile \
-            elisp/mcp-emacs.el elisp/mcp-emacs-report.el elisp/mcp-emacs-server.el elisp/mcp-emacs-ide.el elisp/mcp-emacs-remote.el
+            elisp/mcp-emacs.el elisp/mcp-emacs-report.el elisp/mcp-emacs-server.el elisp/mcp-emacs-ide.el elisp/mcp-emacs-remote.el \
+            elisp/orgspec-model.el elisp/orgspec.el elisp/orgspec-parse.el elisp/orgspec-fold.el elisp/orgspec-commands.el
 
       - name: Run tests
         run: |
-          for t in test/mcp-emacs-apply-diff-test.el test/mcp-emacs-ide-test.el test/mcp-emacs-report-test.el test/mcp-emacs-remote-test.el; do
+          for t in test/mcp-emacs-apply-diff-test.el test/mcp-emacs-ide-test.el test/mcp-emacs-report-test.el test/mcp-emacs-remote-test.el test/orgspec-fold-spike-test.el test/orgspec-parse-test.el test/orgspec-fold-test.el; do
             echo "== $t =="
             emacs --batch \
               --eval "(require 'package)" \
