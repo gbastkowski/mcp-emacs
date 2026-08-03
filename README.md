@@ -60,6 +60,7 @@ work the same live artifacts together — see [`docs/VISION.md`](docs/VISION.md)
 | `orgspec_status`                  | Report task-checkbox completion for one change or all active changes                       |
 | `orgspec_parse`                   | Read a change's delta as structured data (per-requirement op / area / scenarios)           |
 | `orgspec_archive`                 | Fold a change's delta into `specs/` and move the change to archive                         |
+| `orgspec_review`                  | Ediff a change's fold against the current specs before writing (writes nothing)            |
 | `orgspec_advance`                 | Set a delta requirement's lifecycle TODO keyword (active / blocked / removed / done)       |
 | `orgspec_agenda`                  | Register the in-flight-requirements agenda custom command                                  |
 
@@ -91,6 +92,7 @@ tools above:
 | `/orgspec:apply`   | implement the tasks, tick the checklist, advance each requirement's TODO keyword |
 | `/orgspec:status`  | report `[x]`/`[ ]` task completion |
 | `/orgspec:parse`   | read a change's delta as structured data |
+| `/orgspec:review`  | ediff the fold against the current specs before writing — see it, don't trust it |
 | `/orgspec:archive` | fold the delta into `specs/` and `git mv` the change to archive |
 
 **The fold** is the load-bearing piece. It applies a change's delta in the fixed
