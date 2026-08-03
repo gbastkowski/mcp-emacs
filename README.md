@@ -7,6 +7,10 @@ over HTTP. There is no separate process and no `emacsclient` round-trip per
 call: tool calls are dispatched directly to the helper functions, so they
 observe the real buffers, windows, and Org state of the running session.
 
+Longer term this is aimed at moving away from the chatbot request/response loop
+toward a dynamic, AI-driven development environment where the human and the AI
+work the same live artifacts together — see [`docs/VISION.md`](docs/VISION.md).
+
 ## Features
 
 ### Tools
