@@ -415,10 +415,20 @@ rather than `null' (an empty alist would)."
                      (alist-get 'kind args)))))
   "List of tool descriptors.  Each is a plist with :name :description :schema :handler.")
 
+(defvar mcp-emacs-server-extra-tools nil
+  "Tool descriptors registered by optional modules (e.g. orgspec).
+Same plist shape as `mcp-emacs-server--tools' (:name :description
+:schema :handler).  Modules push their descriptors here at load time so
+they are exposed without editing the core tool list.")
+
+(defun mcp-emacs-server--all-tools ()
+  "Return the core tools followed by any registered extra tools."
+  (append mcp-emacs-server--tools mcp-emacs-server-extra-tools))
+
 (defun mcp-emacs-server--find-tool (name)
   "Return the tool descriptor whose :name equals NAME, or nil."
   (seq-find (lambda (tool) (string= (plist-get tool :name) name))
-            mcp-emacs-server--tools))
+            (mcp-emacs-server--all-tools)))
 
 ;;;; Resource registry
 
@@ -458,7 +468,7 @@ rather than `null' (an empty alist would)."
                      "name" (plist-get tool :name)
                      "description" (plist-get tool :description)
                      "inputSchema" (plist-get tool :schema)))
-                  mcp-emacs-server--tools))))
+                  (mcp-emacs-server--all-tools)))))
 
 (defun mcp-emacs-server--tools-call (params)
   "Execute a tools/call request described by PARAMS, return the result value."
