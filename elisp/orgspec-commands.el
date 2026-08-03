@@ -135,14 +135,13 @@ Returns an alist (ID (DONE . TOTAL) ...); as a command, messages it."
       (when (re-search-forward orgspec-clarification-regexp nil t)
         (user-error "Change %s has an unresolved [NEEDS CLARIFICATION] marker" id)))))
 
-;;;###autoload
-(defun orgspec-archive (id)
-  "Fold change ID's delta into the specs, then move the change to archive.
-Validate-all-then-write-all: every affected spec is rebuilt in memory and
-only written once all folds succeed, so a failure leaves specs/ untouched.
-Uses `git mv' to archive the change when the project is a git repo, else a
-plain rename.  Returns the list of spec files written."
-  (interactive "sChange id to archive: ")
+(defun orgspec-commands-fold-build (id)
+  "Fold change ID's delta in memory; return an alist (SPEC-FILE . NEW-TEXT).
+Every affected spec is rebuilt in a temp buffer (validate-all) and the
+whole set returned without writing anything, so callers can write it
+atomically (`orgspec-archive') or diff it before writing
+(`orgspec-review-fold').  Signals if the change has no delta
+requirements.  Order matches the change's area grouping."
   (orgspec-commands--assert-no-clarifications id)
   (let* ((change (orgspec-commands--read-change id))
          (reqs (orgspec-change-requirements change))
@@ -150,7 +149,6 @@ plain rename.  Returns the list of spec files written."
          built)
     (unless reqs
       (user-error "Change %s has no delta requirements" id))
-    ;; Build every target spec in memory first (validate-all).
     (dolist (group groups)
       (let* ((area (car group))
              (file (orgspec-commands--spec-file area))
@@ -158,13 +156,25 @@ plain rename.  Returns the list of spec files written."
                         (with-temp-buffer (insert-file-contents file)
                                           (buffer-string)))))
         (push (cons file (orgspec-fold-area current (cdr group))) built)))
+    (nreverse built)))
+
+;;;###autoload
+(defun orgspec-archive (id)
+  "Fold change ID's delta into the specs, then move the change to archive.
+Validate-all-then-write-all: every affected spec is rebuilt in memory
+via `orgspec-commands-fold-build' and only written once all folds
+succeed, so a failure leaves specs/ untouched.  Uses `git mv' to archive
+the change when the project is a git repo, else a plain rename.  Returns
+the list of spec files written."
+  (interactive "sChange id to archive: ")
+  (let ((built (orgspec-commands-fold-build id)))
     ;; Write every target (write-all) only after all folds succeeded.
     (dolist (cell built)
       (make-directory (file-name-directory (car cell)) t)
       (with-temp-file (car cell) (insert (cdr cell))))
     ;; Move the change into archive.
     (orgspec-commands--archive-move id)
-    (nreverse (mapcar #'car built))))
+    (mapcar #'car built)))
 
 (defun orgspec-commands--archive-move (id)
   "Move change ID's directory into changes/archive/, via `git mv' if possible."
