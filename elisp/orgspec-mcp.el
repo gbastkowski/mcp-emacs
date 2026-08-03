@@ -34,6 +34,7 @@
 (require 'orgspec-lifecycle)
 (require 'orgspec-agenda)
 (require 'orgspec-review)
+(require 'orgspec-validate)
 (require 'mcp-emacs-server)
 
 ;;;; Result formatting
@@ -83,6 +84,13 @@
     (format "reviewing (ediff, nothing written):\n%s"
             (mapconcat #'identity reviewed "\n"))))
 
+(defun orgspec-mcp--validate (args)
+  (let ((errors (orgspec-validate-change
+                 (orgspec-commands--read-change (alist-get 'id args)))))
+    (if errors
+        (format "invalid:\n- %s" (mapconcat #'identity errors "\n- "))
+      "valid")))
+
 (defun orgspec-mcp--advance (args)
   (let* ((id (alist-get 'id args))
          (name (alist-get 'requirement args))
@@ -129,6 +137,10 @@
          :description "Ediff a change's fold against the current specs before writing (writes nothing)"
          :schema (orgspec-mcp--id-schema "Change id to review")
          :handler #'orgspec-mcp--review)
+   (list :name "orgspec_validate"
+         :description "Run the hard-gate validator over a change; report problems or \"valid\""
+         :schema (orgspec-mcp--id-schema "Change id to validate")
+         :handler #'orgspec-mcp--validate)
    (list :name "orgspec_advance"
          :description "Set a delta requirement's lifecycle TODO keyword (active/blocked/removed/done)"
          :schema (mcp-emacs-server--obj

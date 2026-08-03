@@ -5,15 +5,16 @@
 (defun check (l g w) (princ (format "%s %s\n" (if (equal g w) "PASS" "FAIL") l)))
 
 ;; Registration: the six orgspec tools land on the server extra-tools var.
-(check "reg-count" (length mcp-emacs-server-extra-tools) 7)
+(check "reg-count" (length mcp-emacs-server-extra-tools) 8)
 (check "reg-names"
        (sort (mapcar (lambda (tl) (plist-get tl :name)) mcp-emacs-server-extra-tools)
              #'string<)
        '("orgspec_advance" "orgspec_agenda" "orgspec_archive"
-         "orgspec_new" "orgspec_parse" "orgspec_review" "orgspec_status"))
-;; Idempotent re-register keeps the count at seven.
+         "orgspec_new" "orgspec_parse" "orgspec_review"
+         "orgspec_status" "orgspec_validate"))
+;; Idempotent re-register keeps the count at eight.
 (orgspec-mcp-register)
-(check "reg-idempotent" (length mcp-emacs-server-extra-tools) 7)
+(check "reg-idempotent" (length mcp-emacs-server-extra-tools) 8)
 ;; Every descriptor has the required plist keys.
 (check "reg-well-formed"
        (seq-every-p (lambda (tl) (and (plist-get tl :name)

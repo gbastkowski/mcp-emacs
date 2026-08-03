@@ -29,6 +29,7 @@
 (require 'orgspec-model)
 (require 'orgspec-parse)
 (require 'orgspec-fold)
+(require 'orgspec-validate)
 
 (defcustom orgspec-root "orgspec"
   "Directory (relative to the project root) holding specs and changes."
@@ -147,8 +148,9 @@ requirements.  Order matches the change's area grouping."
          (reqs (orgspec-change-requirements change))
          (groups (orgspec-fold--group-by-area reqs))
          built)
-    (unless reqs
-      (user-error "Change %s has no delta requirements" id))
+    ;; Hard gate: run the full validator before folding anything, so all
+    ;; structural problems are reported up front (covers the no-delta case).
+    (orgspec-validate-change-or-signal change)
     (dolist (group groups)
       (let* ((area (car group))
              (file (orgspec-commands--spec-file area))
