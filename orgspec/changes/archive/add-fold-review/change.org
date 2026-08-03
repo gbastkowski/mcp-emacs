@@ -1,0 +1,54 @@
+#+TITLE: add-fold-review
+
+* Intent
+`archive' folds a change's delta into the spec files and writes them in one
+step.
+Until now the only way to see the result before committing was a `git diff'
+after the fact.
+Because the fold uses validate-all-then-write-all, the folded text for every
+area already exists in memory before anything is written — so it can be shown
+as an ediff first: see the fold, don't trust it.
+
+* Scope
+In scope: a review step that ediffs each affected on-disk spec against the
+folded result, writing nothing; exposed as `orgspec-review-fold', the
+`orgspec_review' MCP tool, and `/orgspec:review'.
+Extract the in-memory build shared with `archive' so the two never drift.
+
+Out of scope: changing any fold rule, or making `archive' call review
+automatically — review is a separate, opt-in step.
+
+* Approach
+- Extract the per-area in-memory build from `orgspec-archive' into
+  `orgspec-commands-fold-build', returning an alist ~(spec-file . new-text)~.
+- `orgspec-review-fold' builds that, then ediffs the on-disk spec against the
+  folded text per area, reusing the window-config save/restore convention from
+  the native diff review (#21) so the layout comes back on quit.
+- Add the `orgspec_review' MCP tool and the `/orgspec:review' command.
+
+* Tasks
+- [ ] Extract `orgspec-commands-fold-build'; `archive' uses it
+- [ ] Add `orgspec-review-fold' (ediff per area, restore layout, write nothing)
+- [ ] Add the `orgspec_review' MCP tool and `/orgspec:review' command
+- [ ] Tests: build returns folded pairs, archive still writes, review writes nothing
+
+* Delta
+** Fold can be reviewed as an ediff before it is written          :ADDED:
+:PROPERTIES:
+:AREA: orgspec
+:END:
+orgspec SHALL provide a fold review that, for each area a change touches,
+ediffs the current on-disk spec against the folded result the archive would
+write, and SHALL write nothing and move nothing, so the fold can be inspected
+before ~archive~ commits it.
+*** Review shows the fold without writing
+- GIVEN a change with delta requirements that has not been archived
+- WHEN the fold review is run for that change
+- THEN an ediff of on-disk spec versus folded result is shown for each area
+  and no spec file is written or moved
+*** Review shares the archive's build
+- GIVEN the same change
+- WHEN the review builds its folded result and when archive builds what it
+  writes
+- THEN both use the same in-memory build, so the reviewed result is exactly
+  what archive would write

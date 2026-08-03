@@ -33,6 +33,7 @@
 (require 'orgspec-commands)
 (require 'orgspec-lifecycle)
 (require 'orgspec-agenda)
+(require 'orgspec-review)
 (require 'mcp-emacs-server)
 
 ;;;; Result formatting
@@ -77,6 +78,11 @@
   (let ((written (orgspec-archive (alist-get 'id args))))
     (format "wrote:\n%s" (mapconcat #'identity written "\n"))))
 
+(defun orgspec-mcp--review (args)
+  (let ((reviewed (orgspec-review-fold (alist-get 'id args))))
+    (format "reviewing (ediff, nothing written):\n%s"
+            (mapconcat #'identity reviewed "\n"))))
+
 (defun orgspec-mcp--advance (args)
   (let* ((id (alist-get 'id args))
          (name (alist-get 'requirement args))
@@ -119,6 +125,10 @@
          :description "Fold a change's delta into specs/ and move the change to archive"
          :schema (orgspec-mcp--id-schema "Change id to archive")
          :handler #'orgspec-mcp--archive)
+   (list :name "orgspec_review"
+         :description "Ediff a change's fold against the current specs before writing (writes nothing)"
+         :schema (orgspec-mcp--id-schema "Change id to review")
+         :handler #'orgspec-mcp--review)
    (list :name "orgspec_advance"
          :description "Set a delta requirement's lifecycle TODO keyword (active/blocked/removed/done)"
          :schema (mcp-emacs-server--obj
