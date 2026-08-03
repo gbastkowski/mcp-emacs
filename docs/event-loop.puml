@@ -1,0 +1,52 @@
+@startuml event-loop
+' The cooperative loop as an event stream, and the case the model exists for:
+' the human adds a thought mid-flight, without waiting for a turn.
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName sans-serif
+skinparam sequenceArrowColor #555555
+skinparam sequence {
+  LifeLineBorderColor #888888
+  ParticipantBorderColor #4472A8
+  ParticipantBackgroundColor #EAF0F8
+  ActorBorderColor #4472A8
+}
+
+actor Human
+participant "Event Log" as Log
+participant "AI reactor" as AI
+participant "Files / Buffers" as FS
+
+== normal flow (today: tick token + poll wait) ==
+Human -> Log : NoteAdded("do X")
+Log -> AI : wake (tick advanced past baseline)
+activate AI
+note over Log,AI : wait = buffer-chars-modified-tick\n+ accept-process-output poll\n(org_task_wait_for_change)
+AI -> FS : edit
+FS -> Log : FileChanged
+AI -> Log : ToolInvoked, RequirementAdvanced(active)
+AI -> Log : awaiting (re-enters wait)
+deactivate AI
+
+== add a thought mid-flight (the point) ==
+Human -> Log : NoteAdded("also consider Y")
+activate AI
+note over AI : reactor is mid tool-call
+Log -> AI : interrupt signal (new user.note)
+alt safe point reached
+  AI -> AI : fold Y into the plan
+else must finish current op
+  AI -> FS : finish current edit
+  FS -> Log : FileChanged
+  AI -> AI : then re-plan with Y
+end
+deactivate AI
+
+== human edits the same file ==
+Human -> FS : edit buffer directly
+FS -> Log : FileChanged (source: human)
+Log -> AI : wake
+activate AI
+AI -> AI : reconcile against human edit\n(ordering / merge)
+deactivate AI
+@enduml

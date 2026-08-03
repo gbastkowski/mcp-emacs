@@ -1,0 +1,55 @@
+@startuml event-model
+' Domain map for the event-based workflow (DDD framing).
+' Bounded contexts group the aggregates already in the repo; the event log
+' is the shared spine both the human and the AI produce to and react from.
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName sans-serif
+skinparam ArrowColor #555555
+skinparam rectangle {
+  BorderColor #888888
+  BackgroundColor #F7F7F7
+}
+skinparam package {
+  BorderColor #4472A8
+  BackgroundColor #FFFFFF
+  FontColor #4472A8
+}
+
+package "Session context (org-task)" {
+  rectangle "Session\n<aggregate = live Org subtree>\nSESSION prop + TODO + checklist" as Session
+}
+package "Spec context (orgspec)" {
+  rectangle "Change\n<aggregate root>\nDelta of Requirements" as Change
+  rectangle "Requirement\nop + scenarios + TODO role" as Req
+  rectangle "Spec\naccumulating truth" as Spec
+  Change *-- Req
+}
+package "Runner context" {
+  rectangle "RunnerSession\n<aggregate = eat buffer>\n*claude:<project>:<n>*" as Runner
+}
+package "Review context" {
+  rectangle "DiffReview\n<aggregate>\nresult cell (nil|applied|rejected)" as Review
+}
+
+cloud "Event Log\n(append-only Org transcript — today: mcp-emacs-remote)" as Log #EAF0F8
+
+' Emitters: aggregates publish events (current source in parens)
+Session --> Log : SessionStatusChanged / ItemStatusChanged\nNoteAppended  (org_task_set_*/append_*)
+Change --> Log : ChangeProposed / FoldArchived  (orgspec-archive)
+Req --> Log : RequirementAdvanced  (orgspec-lifecycle-advance)
+Runner --> Log : RunnerStarted / RunnerQuit  (mcp-emacs-run-*)
+Review --> Log : DiffOpened / DiffResolved  (record-diff-outcome)
+
+actor Human
+rectangle "AI reactor\n(one subscriber among many)" as AI
+
+Human --> Log : NoteAdded (any time)
+Human --> Log : FileChanged (edits a buffer)
+AI --> Log : FileChanged / ToolInvoked  (record-tool-call tap)
+
+' Reactors: subscribers consume events (missing today = the gap)
+Log --> AI : consume since cursor, act, emit\n(** not wired: feed is write-only today **)
+Log --> Human : rendered transcript (exists)
+Log ..> Spec : FoldArchived applies the delta
+@enduml
