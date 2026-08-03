@@ -45,7 +45,13 @@ finished picture:
 - **An interactive (not headless) AI runner** — driving the assistant inside the
   live editor session, so it operates on real state rather than a detached copy.
 - **orgspec** — a spec that lives in the workspace next to the code, folded and
-  advanced in place, so intent and implementation stay wired together.
+  advanced in place, so intent and implementation stay wired together. It is
+  built out: propose → apply → review → validate → archive, driven by slash
+  commands and typed MCP tools, with an agenda view of in-flight requirements.
+  It was designed by dogfooding itself — its own feature changes were proposed,
+  validated, and archived through the running Emacs. (See
+  [`orgspec-vs-openspec.md`](orgspec-vs-openspec.md) for how it compares to the
+  OpenSpec workflow it ports.)
 
 ## What this is (and isn't)
 
