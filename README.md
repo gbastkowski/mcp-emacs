@@ -270,6 +270,14 @@ this folder?" prompt; answer it (press Enter / choose *Yes*) so the CLI proceeds
 to connect. Reviewing an edit: `C-c C-c` accepts (Claude Code writes the file),
 `C-c C-k` or `q` rejects (the file is left unchanged).
 
+The review captures your window configuration before it opens and restores it
+when it ends — however you resolve it — so side windows (Treemacs and the like)
+come back and your layout is left unchanged. This applies to both `apply_diff`
+and the IDE `openDiff` flow, which share the review. By default the diff uses
+ediff's plain full-frame layout; set `mcp-emacs-ediff-window-direction` (to
+`right` / `left` / `above` / `below`, mirroring `mcp-emacs-run-window-direction`)
+to place it in a predictable spot instead.
+
 If you are migrating from `claude-code-ide.el`, disable it for the workspace
 first so only one IDE lockfile is published.
 

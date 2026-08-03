@@ -955,6 +955,18 @@ When no live buffer visits PATH, report that the document is not open."
   :type 'integer
   :group 'mcp-emacs)
 
+(defcustom mcp-emacs-ediff-window-direction 'plain
+  "Where the ediff diff review is placed in the frame.
+`plain' keeps the historical behaviour: ediff's own single-frame plain
+layout, filling the current frame.  The directional values place the
+review with `display-buffer-in-direction' before ediff starts, mirroring
+`mcp-emacs-run-window-direction'.  In every case the pre-review window
+configuration is saved and restored when the review ends, so the user's
+layout — including side windows such as Treemacs — comes back."
+  :type '(choice (const plain) (const right) (const left)
+                 (const above) (const below))
+  :group 'mcp-emacs)
+
 (defun mcp-emacs--apply-diff-accept (buffer-a buffer-b entry-content result)
   "Record an accept decision for an apply-diff session.
 Apply the proposal in BUFFER-B to BUFFER-A when BUFFER-A is still at
@@ -999,20 +1011,35 @@ if that name is taken, ediff's own unique name is kept.
 Side windows (e.g. Treemacs) are deleted and ediff is forced into its
 plain, single-frame window layout before setup; otherwise `ediff-buffers'
 can abort when the selected window is a side or dedicated window, leaving
-no control buffer.
+no control buffer.  The window configuration in force before any of that
+is captured up front and restored once when the review ends (the single
+quit path), so the user's layout — side windows included — comes back;
+this holds for both callers.  `mcp-emacs-ediff-window-direction' selects
+placement; `plain' keeps the historical full-frame layout.
 
 Return the ediff control buffer (or nil) so callers can force-quit it on
 timeout."
-  ;; A side or dedicated window cannot be split, which aborts ediff setup
-  ;; before the control buffer exists.  Remove side windows first and pin
-  ;; ediff to its plain layout so the control panel lands in this frame.
-  (dolist (window (window-list))
-    (when (window-parameter window 'window-side)
-      (ignore-errors (delete-window window))))
-  (let (control
+  ;; Capture the layout before touching any window, so the quit hook can
+  ;; put it all back -- including side windows we are about to delete.
+  (let ((winconf (current-window-configuration))
+        control
         (ediff-window-setup-function 'ediff-setup-windows-plain)
         (ediff-split-window-function 'split-window-horizontally))
-    (ediff-buffers
+    ;; A side or dedicated window cannot be split, which aborts ediff setup
+    ;; before the control buffer exists.  Remove side windows first and pin
+    ;; ediff to its plain layout so the control panel lands in this frame.
+    (dolist (window (window-list))
+      (when (window-parameter window 'window-side)
+        (ignore-errors (delete-window window))))
+    ;; Optional predictable placement: give ediff a single window in the
+    ;; chosen direction to run in, instead of whatever the frame holds.
+    (unless (eq mcp-emacs-ediff-window-direction 'plain)
+      (ignore-errors
+        (select-window
+         (display-buffer-in-direction
+          buffer-a `((direction . ,mcp-emacs-ediff-window-direction))))))
+    (condition-case err
+        (ediff-buffers
      buffer-a buffer-b
      (list (lambda ()
              (setq control ediff-control-buffer)
@@ -1051,9 +1078,18 @@ timeout."
                         ;; (e.g. plain `q') is a rejection.
                         (unless (car result)
                           (setcar result 'rejected))
+                        ;; Restore the pre-review layout exactly once (this
+                        ;; hook is ediff's single quit path), bringing back
+                        ;; any side windows the setup removed.
+                        (ignore-errors (set-window-configuration winconf))
                         (when on-resolve (funcall on-resolve)))))
                (message
                 "mcp diff: C-c C-c to accept, C-c C-k (or q) to reject")))))
+      ;; If ediff setup itself failed (before the quit hook could ever
+      ;; run), restore the layout here so a failed review does not leave
+      ;; the user's side windows deleted, then re-signal.
+      (error (ignore-errors (set-window-configuration winconf))
+             (signal (car err) (cdr err))))
     control))
 
 (defun mcp-emacs-apply-diff (path new-content timeout)
@@ -1076,7 +1112,6 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
              (buffer-b (generate-new-buffer
                         (format "*mcp-apply-diff: %s*"
                                 (file-name-nondirectory file))))
-             (winconf (current-window-configuration))
              ;; Per-call result cell captured by the quit hook closure.
              (result (list nil))
              (secs (min mcp-emacs-apply-diff-max-timeout
@@ -1115,8 +1150,9 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
                         (ignore-errors (ediff-really-quit nil))
                       (kill-buffer control))))
                 "Status: timeout")))
-          (when (buffer-live-p buffer-b) (kill-buffer buffer-b))
-          (ignore-errors (set-window-configuration winconf))))
+          ;; The window configuration is saved and restored inside
+          ;; `mcp-emacs--ediff-review' now, for both callers.
+          (when (buffer-live-p buffer-b) (kill-buffer buffer-b))))
     (error (error-message-string err))))
 
 ;;; Project / workspace tools

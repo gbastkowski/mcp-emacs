@@ -1,0 +1,23 @@
+* Ediff review restores the pre-review window layout
+The ediff diff review SHALL capture the window configuration before it
+alters any windows and SHALL restore it exactly once when the review ends,
+for both the ~apply_diff~ tool and the IDE ~open-diff~ flow, so the user's
+layout — including side windows such as Treemacs — is unchanged afterwards.
+** Side windows come back after a review
+- GIVEN a frame with a Treemacs side window open
+- WHEN a diff review starts (removing the side window) and the user accepts,
+  rejects, or quits it
+- THEN the side window and the rest of the pre-review layout are restored
+** Restore happens once per review
+- GIVEN a diff review in progress
+- WHEN the user resolves it by any path (accept key, reject key, or bare ~q~)
+- THEN the window configuration is restored exactly once, not per keypress
+* Ediff review placement is configurable
+The review SHALL offer a ~mcp-emacs-ediff-window-direction~ defcustom,
+mirroring the runner and popup window customs, so the diff appears in a
+predictable, user-chosen location; the default MUST preserve the current
+plain full-frame behaviour.
+** Default keeps current behaviour
+- GIVEN a user who has not set the new defcustom
+- WHEN a diff review starts
+- THEN it uses the existing plain full-frame ediff layout
