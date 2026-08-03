@@ -203,7 +203,8 @@ Configure `mcp-emacs-run-executable` and `-flags`, then:
 
 - `M-x mcp-emacs-run` — start (or switch to) the runner for the current project.
 - `M-x mcp-emacs-run-start` — start the runner hidden (no window, no focus); reveal it later with `-toggle` or `-switch`.
-- `M-x mcp-emacs-run-continue` / `-resume` — pick up a prior conversation.
+- `M-x mcp-emacs-run-continue` / `-resume` — pick up a prior conversation (`-resume` uses the CLI's own in-terminal picker).
+- `M-x mcp-emacs-run-resume-select` — pick a past session from a native Emacs `completing-read` (most recent first, labelled with a relative time and the first real prompt) and resume it with `--resume <id>`. Reads the store under `mcp-emacs-run-resume-projects-root` (default `~/.claude/projects`).
 - `M-x mcp-emacs-run-toggle` — show/hide the runner window.
 - `M-x mcp-emacs-run-list` / `-switch` / `-kill` — manage sessions.
 - `M-x mcp-emacs-run-quit` — gracefully quit a session: sends the CLI quit (Ctrl-C twice), then force-kills the process and removes the buffer if it has not exited within `mcp-emacs-run-quit-timeout` seconds (default 10). Unlike `-kill`, it lets the CLI shut down cleanly first.
