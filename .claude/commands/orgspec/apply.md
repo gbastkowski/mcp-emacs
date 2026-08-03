@@ -8,7 +8,7 @@ tags: [orgspec, workflow]
 
 Implement a change: write the code that satisfies its delta requirements and tick off the `* Tasks` checklist as each step lands. This is the doing phase between `/orgspec:propose` and `/orgspec:archive`.
 
-**First-cut scope.** This implements tasks and updates the `- [ ]` → `- [x]` boxes only. It deliberately skips the org-leverage side effects #5 defers to MVP+: advancing the requirement's TODO keyword, and writing `:IMPL:` code↔spec links. Add those once that layer lands.
+**Scope.** This implements tasks, updates the `- [ ]` → `- [x]` boxes, and advances each delta requirement's TODO keyword through its lifecycle (`orgspec-lifecycle`). It still skips the `:IMPL:` code↔spec link writer #5 defers to a later MVP+ pass — add that when the traceability layer lands.
 
 **Input**: The argument after `/orgspec:apply` is the change id. Required.
 
@@ -24,12 +24,28 @@ Implement a change: write the code that satisfies its delta requirements and tic
 
 3. Read the change file (`orgspec/changes/<id>/change.org`) to get the Intent / Approach and the `* Tasks` checklist.
 
-4. For each unchecked task, in order:
+4. When you start working a requirement, mark it active in Emacs:
+   ```elisp
+   (progn (require 'orgspec-lifecycle)
+          (orgspec-lifecycle-advance "<change.org path>" "<requirement name>" 'active))
+   ```
+   This sets the requirement's TODO keyword to `orgspec-todo-active` (STRT), so it shows up in the `orgspec` agenda as in-flight. Use the requirement's exact headline text as the name.
+
+5. For each unchecked task, in order:
    - Implement it in the codebase (Read / Edit / Write; run the build or tests via Bash where it makes sense to verify).
    - Only after the task is actually done and verified, tick its box: edit that line's `- [ ]` to `- [x]` in `change.org`.
-   - If a task turns out to be blocked or ambiguous, leave it unchecked and note why — do NOT tick a box for work that isn't real.
+   - If a task turns out to be blocked or ambiguous, leave it unchecked and note why — do NOT tick a box for work that isn't real. If it is blocked on an open question, mark the requirement blocked and leave a marker:
+     ```elisp
+     (orgspec-lifecycle-advance "<change.org path>" "<requirement name>" 'blocked)
+     ```
+     (`orgspec-todo-blocked`, WAIT) and add a `[NEEDS CLARIFICATION: <question>]` to its body.
 
-5. Report progress with `/orgspec:status <id>`.
+6. When every task for a requirement is done and verified, mark it done:
+   ```elisp
+   (orgspec-lifecycle-advance "<change.org path>" "<requirement name>" 'done)
+   ```
+
+7. Report progress with `/orgspec:status <id>`.
 
 **Output**
 
