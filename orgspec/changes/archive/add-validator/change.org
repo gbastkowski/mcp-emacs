@@ -1,0 +1,52 @@
+#+TITLE: add-validator
+
+* Intent
+The fold enforced only a couple of rules implicitly (its scenario drop-guard,
+the no-delta check in `archive').
+Structural problems in a change's delta — a requirement with no normative
+keyword, no scenario, a duplicate name, or a cross-op conflict — were only
+caught late or not at all.
+A hard-gate validator reports them all up front, before any fold runs, and
+`archive' refuses on them.
+
+* Scope
+In scope: `orgspec-validate.el' with the ERROR rules from OpenSpec (messages
+adapted to org), gating `archive' via the shared build, and exposed as the
+`orgspec_validate' MCP tool and `/orgspec:validate'.
+
+Out of scope: warnings/lint beyond the ERROR rules, and validating spec files
+themselves (only change deltas).
+
+* Approach
+- `orgspec-validate-change' returns the list of ERROR messages for a parsed
+  change; `orgspec-validate-change-or-signal' turns a non-empty result into a
+  `user-error'.
+- Gate the shared `orgspec-commands-fold-build' on it, so both `archive' and
+  `review' refuse an invalid change.
+- Add the `orgspec_validate' MCP tool and `/orgspec:validate' command.
+
+* Tasks
+- [ ] Add `orgspec-validate.el' with the ERROR rules
+- [ ] Gate the shared fold build on the validator
+- [ ] Add the `orgspec_validate' MCP tool and `/orgspec:validate' command
+- [ ] Tests: valid change passes; each rule fires with its message
+
+* Delta
+** Changes are validated before they are folded                  :ADDED:
+:PROPERTIES:
+:AREA: orgspec
+:END:
+orgspec SHALL validate a change's delta before folding it, reporting every
+ERROR — a missing SHALL/MUST keyword, a missing scenario, a duplicate name
+within an op, or a cross-op conflict — and `archive` MUST refuse to fold a
+change that has any such error.
+*** Invalid change is refused
+- GIVEN a change whose ADDED requirement has no scenario
+- WHEN the change is archived
+- THEN the fold is refused and the scenario error is reported, and no spec
+  file is written
+*** Valid change passes the gate
+- GIVEN a change whose requirements all carry SHALL/MUST and a scenario with
+  no duplicate or cross-op conflict
+- WHEN the change is validated
+- THEN it reports as valid and archive proceeds

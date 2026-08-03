@@ -14,3 +14,18 @@ before ~archive~ commits it.
   writes
 - THEN both use the same in-memory build, so the reviewed result is exactly
   what archive would write
+* Changes are validated before they are folded
+orgspec SHALL validate a change's delta before folding it, reporting every
+ERROR — a missing SHALL/MUST keyword, a missing scenario, a duplicate name
+within an op, or a cross-op conflict — and `archive` MUST refuse to fold a
+change that has any such error.
+** Invalid change is refused
+- GIVEN a change whose ADDED requirement has no scenario
+- WHEN the change is archived
+- THEN the fold is refused and the scenario error is reported, and no spec
+  file is written
+** Valid change passes the gate
+- GIVEN a change whose requirements all carry SHALL/MUST and a scenario with
+  no duplicate or cross-op conflict
+- WHEN the change is validated
+- THEN it reports as valid and archive proceeds
