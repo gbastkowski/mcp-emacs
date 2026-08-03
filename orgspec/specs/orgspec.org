@@ -1,0 +1,16 @@
+* Fold can be reviewed as an ediff before it is written
+orgspec SHALL provide a fold review that, for each area a change touches,
+ediffs the current on-disk spec against the folded result the archive would
+write, and SHALL write nothing and move nothing, so the fold can be inspected
+before ~archive~ commits it.
+** Review shows the fold without writing
+- GIVEN a change with delta requirements that has not been archived
+- WHEN the fold review is run for that change
+- THEN an ediff of on-disk spec versus folded result is shown for each area
+  and no spec file is written or moved
+** Review shares the archive's build
+- GIVEN the same change
+- WHEN the review builds its folded result and when archive builds what it
+  writes
+- THEN both use the same in-memory build, so the reviewed result is exactly
+  what archive would write
