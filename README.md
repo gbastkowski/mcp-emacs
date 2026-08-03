@@ -52,8 +52,65 @@ observe the real buffers, windows, and Org state of the running session.
 | `org_task_append_item`            | Append a new TODO item as a child under the task heading                                   |
 | `org_task_wait_for_change`        | Block until the task file changes past a baseline token (or a timeout), then return it     |
 | `report_tooling_issue`            | File a bug report or feature request about mcp-emacs itself as a GitHub issue               |
+| `orgspec_new`                     | Scaffold a new orgspec change (`changes/<id>/change.org`)                                   |
+| `orgspec_status`                  | Report task-checkbox completion for one change or all active changes                       |
+| `orgspec_parse`                   | Read a change's delta as structured data (per-requirement op / area / scenarios)           |
+| `orgspec_archive`                 | Fold a change's delta into `specs/` and move the change to archive                         |
+| `orgspec_advance`                 | Set a delta requirement's lifecycle TODO keyword (active / blocked / removed / done)       |
+| `orgspec_agenda`                  | Register the in-flight-requirements agenda custom command                                  |
 
-### Org task session sync
+### orgspec — an org-native spec workflow
+
+orgspec is a thin, dependency-free port of the load-bearing core of
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) — a structure parser and a
+delta-fold — living natively in Org and Emacs Lisp instead of TypeScript over
+Markdown. A change is spec-of-intent first: you describe *what* should change,
+implement it, then fold that description into an accumulating source of truth.
+
+Layout under the orgspec root (`orgspec/` by default):
+
+- `specs/<area>.org` — the accumulating source of truth. Requirements are
+  level-1 headlines, scenarios level-2.
+- `changes/<id>/change.org` — one change: human sections (Intent / Scope /
+  Approach / Tasks) plus a `* Delta` subtree. Each delta requirement is a
+  level-2 headline tagged with its op (`:ADDED:` / `:MODIFIED:` / `:REMOVED:` /
+  `:RENAMED:`) and an `:AREA:` property naming its target spec; scenarios are
+  level-3.
+
+The workflow is exposed both as slash commands and as the typed `orgspec_*` MCP
+tools above:
+
+| Command | Does |
+|---|---|
+| `/orgspec:propose` | scaffold a change and draft the whole `change.org` from a description |
+| `/orgspec:new`     | scaffold an empty change from the template |
+| `/orgspec:apply`   | implement the tasks, tick the checklist, advance each requirement's TODO keyword |
+| `/orgspec:status`  | report `[x]`/`[ ]` task completion |
+| `/orgspec:parse`   | read a change's delta as structured data |
+| `/orgspec:archive` | fold the delta into `specs/` and `git mv` the change to archive |
+
+**The fold** is the load-bearing piece. It applies a change's delta in the fixed
+order `RENAMED → REMOVED → MODIFIED → ADDED` via Org subtree surgery (not text
+splicing), builds every affected spec in memory and validates the whole set
+before writing anything (so a late failure leaves `specs/` untouched), guards
+against a `MODIFIED` requirement silently dropping a scenario, and on re-level
+into `specs/` strips the TODO keyword, op tag, and `:AREA:` while keeping any
+`:IMPL:` drawer.
+
+**Why Emacs, not a CLI:** delta requirements carry your *existing* Org TODO
+keywords, so `apply` moves a requirement through its lifecycle (active / blocked
+on a `[NEEDS CLARIFICATION]` marker / done) and one agenda custom command
+becomes an in-flight-requirements dashboard — something a headless tool over
+flat Markdown can't do for free.
+
+orgspec deliberately drops what only serves multi-developer, multi-artifact
+scale (conflict-free parallel changes, artifact DAGs, bulk operations). If
+CI-enforced validation, many conflicting parallel changes, or team-enforced
+structure ever become the requirement, OpenSpec proper stays the heavier,
+battle-tested fallback. See [issue #5](https://github.com/gbastkowski/mcp-emacs/issues/5)
+for the full design.
+
+
 
 An AI coding harness and the human share one Org file as a live workspace: the
 harness reports status into it (via the `org_task_*` tools) while the human
@@ -313,7 +370,14 @@ Lifecycle commands: `mcp-emacs-server-start`, `mcp-emacs-server-ensure`
   (buffer, file, Org, diagnostics).
 - **`elisp/mcp-emacs-server.el`**: the MCP server. It uses `web-server` to
   listen on an HTTP port, parses each JSON-RPC request, and dispatches directly
-  to the helpers via the tool and resource registries.
+  to the helpers via the tool and resource registries. Optional modules register
+  extra tools by pushing descriptors onto `mcp-emacs-server-extra-tools`, so they
+  are exposed without editing the core tool list.
+- **`elisp/orgspec-*.el`**: the orgspec workflow — `orgspec.el` (marker table),
+  `-model` (structs), `-parse` (`org-element` extraction), `-fold` (the delta
+  fold), `-commands` (new / status / archive), `-lifecycle` + `-agenda` (the
+  TODO lifecycle and in-flight dashboard), and `-mcp` (the typed `orgspec_*`
+  tools, registered via the extra-tools hook).
 - **HTTP transport**: the MCP client connects to the URL directly; nothing is
   spawned. Requests are dispatched event-driven in the daemon, so the editor is
   never blocked and tools see real session state.
