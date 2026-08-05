@@ -316,6 +316,16 @@ rather than `null' (an empty alist would)."
                                 "new_content" (mcp-emacs-server--prop "string" "Proposed new content for the file")
                                 "timeout" (mcp-emacs-server--prop "integer" "Timeout in seconds (default 120, capped at 600)"))
                   "required" (vector "path" "new_content"))
+         ;; Async: the human has to answer this one, so the request is
+         ;; deferred rather than blocking the process filter (which would
+         ;; leave no command loop for the ediff panel).  `:handler' stays as
+         ;; the synchronous fallback for callers that dispatch directly.
+         :async-handler (lambda (args done)
+                          (mcp-emacs-apply-diff-async
+                           (alist-get 'path args)
+                           (alist-get 'new_content args)
+                           (alist-get 'timeout args)
+                           done))
          :handler (lambda (args)
                     (mcp-emacs-apply-diff
                      (alist-get 'path args)
@@ -470,6 +480,13 @@ they are exposed without editing the core tool list.")
                      "inputSchema" (plist-get tool :schema)))
                   (mcp-emacs-server--all-tools)))))
 
+(defun mcp-emacs-server--text-result (text)
+  "Wrap TEXT as a tools/call result value."
+  (mcp-emacs-server--obj
+   "content" (vector (mcp-emacs-server--obj
+                      "type" "text"
+                      "text" (format "%s" (or text ""))))))
+
 (defun mcp-emacs-server--tools-call (params)
   "Execute a tools/call request described by PARAMS, return the result value."
   (let* ((name (alist-get 'name params))
@@ -477,11 +494,29 @@ they are exposed without editing the core tool list.")
          (tool (mcp-emacs-server--find-tool name)))
     (unless tool
       (error "Unknown tool: %s" name))
-    (let ((text (funcall (plist-get tool :handler) args)))
-      (mcp-emacs-server--obj
-       "content" (vector (mcp-emacs-server--obj
-                          "type" "text"
-                          "text" (format "%s" (or text ""))))))))
+    (mcp-emacs-server--text-result
+     (funcall (plist-get tool :handler) args))))
+
+(defun mcp-emacs-server--tools-call-async (params id send)
+  "Start the async tools/call described by PARAMS for request ID.
+Call SEND with the finished JSON-RPC response object once the tool
+resolves.  Return non-nil when PARAMS named an async tool and the call was
+started, nil when the tool is synchronous and should be dispatched
+normally.
+
+Async tools are for reviews a human has to answer: blocking the process
+filter would leave Emacs without a command loop to answer them in."
+  (let* ((name (alist-get 'name params))
+         (args (alist-get 'arguments params))
+         (tool (mcp-emacs-server--find-tool name))
+         (async (and tool (plist-get tool :async-handler))))
+    (when async
+      (funcall
+       async args
+       (lambda (text)
+         (funcall send (mcp-emacs-server--result
+                        id (mcp-emacs-server--text-result text)))))
+      t)))
 
 (defun mcp-emacs-server--resources-list ()
   "Return the JSON value for a resources/list result."
@@ -571,14 +606,31 @@ Returns nil for notifications, which require no response."
       (cond
        ;; POST with a JSON-RPC body: the normal MCP request path.
        ((and is-post rpc)
-        (let* ((response (mcp-emacs-server--dispatch rpc)))
-          (if response
-              (let ((json (json-encode response)))
-                (ws-response-header process 200
-                                    '("Content-Type" . "application/json"))
-                (process-send-string process json))
-            ;; Notification: 202 Accepted, empty body.
-            (ws-response-header process 202 '("Content-Type" . "application/json")))))
+        ;; Async tools (human-answered reviews) must not block the filter:
+        ;; hold the connection open, return to the event loop, and write the
+        ;; response from the tool's callback.  `:keep-alive' tells
+        ;; `ws-filter' to leave this process undeleted.
+        (if (and (equal (alist-get 'method rpc) "tools/call")
+                 (alist-get 'id rpc)
+                 (mcp-emacs-server--tools-call-async
+                  (alist-get 'params rpc)
+                  (alist-get 'id rpc)
+                  (lambda (response)
+                    (when (process-live-p process)
+                      (let ((json (json-encode response)))
+                        (ws-response-header
+                         process 200 '("Content-Type" . "application/json"))
+                        (process-send-string process json))
+                      (delete-process process)))))
+            (throw 'close-connection :keep-alive)
+          (let* ((response (mcp-emacs-server--dispatch rpc)))
+            (if response
+                (let ((json (json-encode response)))
+                  (ws-response-header process 200
+                                      '("Content-Type" . "application/json"))
+                  (process-send-string process json))
+              ;; Notification: 202 Accepted, empty body.
+              (ws-response-header process 202 '("Content-Type" . "application/json"))))))
        ;; Anything else: minimal health response.
        (t
         (ws-response-header process 200 '("Content-Type" . "text/plain"))

@@ -1092,6 +1092,79 @@ timeout."
              (signal (car err) (cdr err))))
     control))
 
+(defun mcp-emacs-apply-diff-async (path new-content timeout on-done)
+  "Review NEW-CONTENT against the file at PATH via ediff, without blocking.
+Open the ediff session and return immediately; ON-DONE is called with one
+argument -- the outcome string, in the same format
+`mcp-emacs-apply-diff' returns -- once the human accepts or rejects, or
+when TIMEOUT elapses.
+
+This exists because the synchronous variant cannot be resolved by a human
+when it is served from a process filter: Emacs runs filters with
+`inhibit-quit' bound to t and no command loop for the ediff control
+panel, so the review is displayed but its keys are dead.  Returning to
+the event loop instead -- and answering the request from the ediff quit
+hook -- keeps the panel interactive.  See `mcp-emacs-server--handler' for
+the HTTP side of the deferral.
+
+TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
+`mcp-emacs-apply-diff-default-timeout'."
+  (condition-case err
+      (let* ((file (expand-file-name path))
+             (buffer-a (find-file-noselect file))
+             (entry-content (with-current-buffer buffer-a
+                              (buffer-substring-no-properties
+                               (point-min) (point-max))))
+             (buffer-b (generate-new-buffer
+                        (format "*mcp-apply-diff: %s*"
+                                (file-name-nondirectory file))))
+             (result (list nil))
+             (secs (min mcp-emacs-apply-diff-max-timeout
+                        (if (and (numberp timeout) (> timeout 0))
+                            timeout
+                          mcp-emacs-apply-diff-default-timeout)))
+             ;; Guards single delivery: the quit hook and the timeout timer
+             ;; race, and whichever arrives first must be the only answer.
+             (done (list nil))
+             control timer)
+        (with-current-buffer buffer-b
+          (insert new-content)
+          (let ((mode (assoc-default file auto-mode-alist 'string-match)))
+            (when (functionp mode) (ignore-errors (funcall mode)))))
+        (let ((finish
+               (lambda (outcome)
+                 (unless (car done)
+                   (setcar done t)
+                   (when timer (cancel-timer timer))
+                   (when (buffer-live-p buffer-b) (kill-buffer buffer-b))
+                   (funcall on-done outcome)))))
+          (setq control
+                (mcp-emacs--ediff-review
+                 buffer-a buffer-b entry-content result
+                 (lambda ()
+                   (funcall
+                    finish
+                    (if (eq (car result) 'applied)
+                        (format "Status: applied\n%s"
+                                (with-current-buffer buffer-a
+                                  (buffer-substring-no-properties
+                                   (point-min) (point-max))))
+                      "Status: rejected")))))
+          ;; Timeout arms only after setup succeeded, so a failed ediff
+          ;; cannot leave a timer pointing at a dead session.
+          (setq timer
+                (run-at-time
+                 secs nil
+                 (lambda ()
+                   (when (and control (buffer-live-p control))
+                     (with-current-buffer control
+                       (if (fboundp 'ediff-really-quit)
+                           (ignore-errors (ediff-really-quit nil))
+                         (kill-buffer control))))
+                   (funcall finish "Status: timeout")))))
+        nil)
+    (error (funcall on-done (error-message-string err)) nil)))
+
 (defun mcp-emacs-apply-diff (path new-content timeout)
   "Present NEW-CONTENT as a proposed change to the file at PATH via ediff.
 Open an `ediff-buffers' session comparing the file's current content
