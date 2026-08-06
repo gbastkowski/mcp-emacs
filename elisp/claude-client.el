@@ -32,7 +32,12 @@
 ;; model's context comes back -- the rendered log lives in the buffer, not on
 ;; disk.
 ;;
-;; Still to come: window management.
+;; The conversation window is an ordinary window placed with
+;; `display-buffer-in-direction' (`claude-client-window-direction'), matching
+;; the eat runner's placement.  It is also re-shown after an ediff review
+;; resolves: the review restores a window configuration captured before the
+;; conversation existed, which would otherwise hide it exactly when the
+;; result arrives (issue #44).
 
 ;;; Code:
 
@@ -97,6 +102,46 @@ re-planning an in-flight turn is a separate decision."
   :type 'boolean
   :group 'claude-client)
 
+(defcustom claude-client-window-direction 'right
+  "Direction in which the conversation window is placed.
+An ordinary window in this direction, so it can be split, navigated and
+closed like any other -- mirroring `mcp-emacs-run-window-direction' so
+both runners feel the same.  `nil' uses plain `pop-to-buffer' and lets
+`display-buffer-alist' decide."
+  :type '(choice (const right) (const left) (const above) (const below)
+                 (const :tag "Let display-buffer decide" nil))
+  :group 'claude-client)
+
+(defcustom claude-client-window-width 0.4
+  "Width of the conversation window, as a fraction of the frame.
+Used when `claude-client-window-direction' is `left' or `right'."
+  :type 'number
+  :group 'claude-client)
+
+(defcustom claude-client-window-height 0.4
+  "Height of the conversation window, as a fraction of the frame.
+Used when `claude-client-window-direction' is `above' or `below'."
+  :type 'number
+  :group 'claude-client)
+
+(defcustom claude-client-focus-on-show nil
+  "When non-nil, select the conversation window when it is shown.
+Off by default: the runner is something to watch while working
+elsewhere, so stealing point on every redisplay would be disruptive."
+  :type 'boolean
+  :group 'claude-client)
+
+(defcustom claude-client-restore-window-after-review t
+  "Re-show the conversation window after an ediff review resolves.
+The review captures the window configuration before it starts and
+restores it on quit (so side windows come back).  When the review was
+triggered by a tool call from this buffer, that snapshot predates the
+conversation window, so restoring it takes the conversation off screen
+exactly when its result arrives.  Re-displaying afterwards keeps it
+visible without touching the review's own restore."
+  :type 'boolean
+  :group 'claude-client)
+
 (defcustom claude-client-system-prompt
   "You are running inside Emacs. You have no Write or Edit tools.
 To change a file you must call mcp__emacs__apply_diff with the absolute
@@ -138,11 +183,12 @@ stays alive after emitting `result' (it waits on stdin for a follow-up
 turn), so `process-live-p' reports `run' long after the turn is over
 and cannot answer \"is the model working right now?\".")
 
-(defvar claude-client-event-functions nil
+(defvar claude-client-event-functions '(claude-client--reshow-after-review)
   "Abnormal hook run with (BUFFER EVENT) for every parsed event.
 Each EVENT is a plist as stored in `claude-client--events'.  This is
-the subscriber seam: rendering is one consumer, and issue #39's Org
-transcript can be another without touching this file.")
+the subscriber seam: rendering is one consumer, the Org transcript
+\(issue #39) another, and keeping the conversation window visible across
+an ediff review a third -- none of which the runner has to know about.")
 
 ;;;; Spawning
 
@@ -199,6 +245,42 @@ exists."
    (when claude-client-model (list "--model" claude-client-model))
    (when claude-client-disallowed-tools
      (cons "--disallowedTools" claude-client-disallowed-tools))))
+
+;;;; Windows
+
+(defun claude-client--display (buffer)
+  "Display BUFFER in the conversation window and return that window.
+Placed with `display-buffer-in-direction' so it stays an ordinary,
+splittable window rather than a dedicated side window -- the same shape
+`mcp-emacs-run--display' gives the eat runner."
+  (let* ((window
+          (if (null claude-client-window-direction)
+              (display-buffer buffer)
+            (let ((size (if (memq claude-client-window-direction '(left right))
+                            `(window-width . ,claude-client-window-width)
+                          `(window-height . ,claude-client-window-height))))
+              (display-buffer
+               buffer
+               `((display-buffer-in-direction)
+                 (direction . ,claude-client-window-direction)
+                 ,size))))))
+    (when (and window claude-client-focus-on-show)
+      (select-window window))
+    window))
+
+(defun claude-client--reshow-after-review (buffer event)
+  "Re-display BUFFER when EVENT reports a finished tool call.
+Subscriber for `claude-client-event-functions'.  An `apply_diff' review
+restores the window configuration it captured before it opened, which
+predates this conversation window when the review came from this
+buffer's own tool call -- so without this the conversation vanishes at
+the moment its result lands.  Only re-shows a buffer that was already
+displayed, so this never forces a hidden conversation on screen."
+  (when (and claude-client-restore-window-after-review
+             (eq (plist-get event :kind) 'tool-result)
+             (buffer-live-p buffer)
+             (not (get-buffer-window buffer t)))
+    (claude-client--display buffer)))
 
 ;;;; Event model
 
@@ -500,7 +582,7 @@ file change opens an ediff for the human to accept or reject."
                                                   :session resume-id)))
         (claude-client--push-event buffer (list :kind 'prompt :text prompt))
         (claude-client--send-turn proc text)))
-    (pop-to-buffer buffer)
+    (claude-client--display buffer)
     buffer))
 
 (declare-function mcp-emacs-run--project-root "mcp-emacs-run" ())
