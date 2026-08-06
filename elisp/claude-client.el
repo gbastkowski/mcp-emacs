@@ -26,7 +26,13 @@
 ;; lets a human note actually reach the model -- notes queued during a turn
 ;; are delivered as the next one (see `claude-client-deliver-notes').
 ;;
-;; Still to come: `--resume' of a past session, and window management.
+;; A past session can be reopened with `claude-client-resume' (`r'), which
+;; reuses the same on-disk session store the eat runner's picker reads, so a
+;; session started in either runner can be continued in the other.  Only the
+;; model's context comes back -- the rendered log lives in the buffer, not on
+;; disk.
+;;
+;; Still to come: window management.
 
 ;;; Code:
 
@@ -172,8 +178,13 @@ pointing at the running server's endpoint."
     (with-temp-file file (insert claude-client-system-prompt))
     file))
 
-(defun claude-client--command ()
-  "Return the full argument list for the Claude CLI subprocess."
+(defun claude-client--command (&optional resume-id)
+  "Return the full argument list for the Claude CLI subprocess.
+With RESUME-ID, continue that past session instead of starting a new
+one: the CLI reopens it with its history, keeping the same session id.
+Note `--session-id' is not the same thing -- that means \"create a new
+session with this id\" and fails outright if a transcript already
+exists."
   (append
    (list claude-client-executable
          "--print"
@@ -184,6 +195,7 @@ pointing at the running server's endpoint."
          "--strict-mcp-config"
          "--settings" (claude-client--settings-file)
          "--append-system-prompt-file" (claude-client--system-prompt-file))
+   (when resume-id (list "--resume" resume-id))
    (when claude-client-model (list "--model" claude-client-model))
    (when claude-client-disallowed-tools
      (cons "--disallowedTools" claude-client-disallowed-tools))))
@@ -370,6 +382,7 @@ Returns the drained notes, oldest first, and clears the queue."
          (format "  → %s"
                  (car (split-string text "\n"))))))
     ('finished (format "── %s ──" (or (plist-get event :subtype) "done")))
+    ('resumed (format "── resumed %s ──" (plist-get event :session)))
     ('prompt (format "\n>>> %s" (plist-get event :text)))
     ('note (format "> %s%s"
                    (plist-get event :text)
@@ -440,10 +453,16 @@ with the one being answered."
 ;;;; Entry point
 
 ;;;###autoload
-(defun claude-client-start (prompt)
+(defun claude-client-start (prompt &optional resume-id)
   "Run PROMPT through a headless Claude and render it in a buffer.
 Starts a fresh conversation, replacing any previous log in this buffer.
-Use `claude-client-send' to continue an existing one.
+Use `claude-client-send' to continue the one already running.
+
+With RESUME-ID, reopen that past session instead of starting a new one,
+so the model still has its history; `claude-client-resume' picks one
+interactively.  The log itself does not come back -- it lives in this
+buffer, not on disk -- so the rendered conversation restarts even though
+the model's context does not.
 
 Edits are routed through the mcp-emacs server's `apply_diff', so any
 file change opens an ediff for the human to accept or reject."
@@ -468,7 +487,7 @@ file change opens an ediff for the human to accept or reject."
             (proc (make-process
                    :name "claude-client"
                    :buffer nil
-                   :command (claude-client--command)
+                   :command (claude-client--command resume-id)
                    :connection-type 'pipe
                    :noquery t
                    :filter (lambda (p c) (claude-client--filter buffer p c))
@@ -476,10 +495,41 @@ file change opens an ediff for the human to accept or reject."
                                (claude-client--sentinel buffer p c)))))
         (setq claude-client--process proc
               claude-client--turn-active t)
+        (when resume-id
+          (claude-client--push-event buffer (list :kind 'resumed
+                                                  :session resume-id)))
         (claude-client--push-event buffer (list :kind 'prompt :text prompt))
         (claude-client--send-turn proc text)))
     (pop-to-buffer buffer)
     buffer))
+
+(declare-function mcp-emacs-run--project-root "mcp-emacs-run" ())
+(declare-function mcp-emacs-run-resume--session-files "mcp-emacs-run-resume" (root))
+(declare-function mcp-emacs-run-resume--session-id "mcp-emacs-run-resume" (file))
+(declare-function mcp-emacs-run-resume--label "mcp-emacs-run-resume" (file))
+
+;;;###autoload
+(defun claude-client-resume ()
+  "Pick a past Claude session for this project and reopen it here.
+Reuses the on-disk session store and the labels the eat runner's picker
+already builds -- the store is backend-agnostic, so a session started in
+either runner can be resumed in this one."
+  (interactive)
+  (require 'mcp-emacs-run)
+  (require 'mcp-emacs-run-resume)
+  (let* ((root (mcp-emacs-run--project-root))
+         (files (mcp-emacs-run-resume--session-files root)))
+    (unless files
+      (user-error "No past Claude sessions for this project"))
+    (let* ((alist (mapcar (lambda (f)
+                            (cons (mcp-emacs-run-resume--label f) f))
+                          files))
+           (pick (completing-read "Resume session: " alist nil t))
+           (file (cdr (assoc pick alist))))
+      (when file
+        (claude-client-start
+         (read-string "Prompt: ")
+         (mcp-emacs-run-resume--session-id file))))))
 
 (defun claude-client-quit ()
   "Kill the CLI subprocess for this buffer."
@@ -497,6 +547,7 @@ file change opens an ediff for the human to accept or reject."
     (define-key map (kbd "k") #'claude-client-quit)
     (define-key map (kbd "n") #'claude-client-add-note)
     (define-key map (kbd "s") #'claude-client-send)
+    (define-key map (kbd "r") #'claude-client-resume)
     map)
   "Keymap for `claude-client-mode'.")
 

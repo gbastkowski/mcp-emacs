@@ -577,3 +577,73 @@ stays alive after `result', so process liveness cannot stand in for it."
         (check "sentinel-clears-turn" claude-client--turn-active nil)
         (check "sentinel-clears-process" claude-client--process nil))
     (kill-buffer buf)))
+
+;;;; Resume
+;;
+;; `--resume' reopens a past session in a NEW process, keeping its id and
+;; history.  Verified against the CLI: a resumed session recalls what it was
+;; told before the first process exited.  Note `--session-id' is a different
+;; flag -- it means "create a new session with this id" and fails if a
+;; transcript already exists.
+
+(let ((cmd (claude-client--command "sess-abc")))
+  (check "resume-flag-present" (and (member "--resume" cmd) t) t)
+  (check "resume-id-follows-flag"
+         (cadr (member "--resume" cmd)) "sess-abc")
+  ;; --session-id would mean "create new with this id" and hard-fail on an
+  ;; existing transcript; resuming must not use it.
+  (check "resume-does-not-use-session-id"
+         (and (member "--session-id" cmd) t) nil))
+
+;; Without an id the flag is absent entirely, so a normal start is unchanged.
+(let ((cmd (claude-client--command)))
+  (check "no-resume-flag-by-default" (and (member "--resume" cmd) t) nil))
+
+;; Starting with a resume id logs it, so the transcript shows which session
+;; was reopened rather than looking like a fresh conversation.
+(let ((sent nil))
+  (cl-letf (((symbol-function 'make-process) (lambda (&rest _) 'fake-proc))
+            ((symbol-function 'process-send-string) (lambda (_p s) (setq sent s)))
+            ((symbol-function 'pop-to-buffer) #'ignore)
+            ((symbol-function 'claude-client--mcp-config-file) (lambda () "/tmp/m.json"))
+            ((symbol-function 'claude-client--settings-file) (lambda () "/tmp/s.json"))
+            ((symbol-function 'claude-client--system-prompt-file) (lambda () "/tmp/p.txt")))
+    (let ((buf (get-buffer-create "*claude-client*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (claude-client-mode)
+              (setq claude-client--process nil claude-client--turn-active nil))
+            (claude-client-start "carry on" "sess-xyz")
+            (with-current-buffer buf
+              (check "resume-logs-resumed-event"
+                     (plist-get (car claude-client--events) :kind) 'resumed)
+              (check "resume-event-carries-id"
+                     (plist-get (car claude-client--events) :session) "sess-xyz")
+              (check "resume-then-prompt"
+                     (mapcar (lambda (e) (plist-get e :kind)) claude-client--events)
+                     '(resumed prompt))))
+        (let ((kill-buffer-query-functions nil)) (kill-buffer buf))))))
+
+;; A plain start logs no `resumed' event.
+(let ((sent nil))
+  (cl-letf (((symbol-function 'make-process) (lambda (&rest _) 'fake-proc))
+            ((symbol-function 'process-send-string) (lambda (_p s) (setq sent s)))
+            ((symbol-function 'pop-to-buffer) #'ignore)
+            ((symbol-function 'claude-client--mcp-config-file) (lambda () "/tmp/m.json"))
+            ((symbol-function 'claude-client--settings-file) (lambda () "/tmp/s.json"))
+            ((symbol-function 'claude-client--system-prompt-file) (lambda () "/tmp/p.txt")))
+    (let ((buf (get-buffer-create "*claude-client*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (claude-client-mode)
+              (setq claude-client--process nil claude-client--turn-active nil))
+            (claude-client-start "fresh")
+            (with-current-buffer buf
+              (check "fresh-start-has-no-resumed"
+                     (memq 'resumed
+                           (mapcar (lambda (e) (plist-get e :kind))
+                                   claude-client--events))
+                     nil)))
+        (let ((kill-buffer-query-functions nil)) (kill-buffer buf))))))
