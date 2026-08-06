@@ -317,9 +317,11 @@ stays alive after `result', so process liveness cannot stand in for it."
 (let ((buf (claude-test--buffer)))
   (unwind-protect
       (with-current-buffer buf
-        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t)))
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string) (lambda (&rest _) nil)))
           ;; Process "alive", but the turn ended: the note must still drain.
-          (setq claude-client--turn-active nil)
+          (setq claude-client--process 'fake
+                claude-client--turn-active nil)
           (claude-client-add-note "after the turn")
           (check "live-process-is-not-an-active-turn"
                  claude-client--pending-notes nil)))
@@ -466,3 +468,112 @@ stays alive after `result', so process liveness cannot stand in for it."
             (with-current-buffer buf
               (check "restart-clears-queue" claude-client--pending-notes nil)))
         (let ((kill-buffer-query-functions nil)) (kill-buffer buf))))))
+
+;;;; Multi-turn stdin
+;;
+;; A follow-up turn reuses the running CLI, so the model keeps its session
+;; and context.  Verified against the real CLI: a second turn on the same
+;; process returns the same `session_id' and can recall the first turn.
+
+;; `claude-client-send' writes a well-formed user turn and marks the turn
+;; active, without respawning.
+(let ((buf (claude-test--buffer))
+      (sent nil))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s) (setq sent s)))
+                  ;; A respawn here would be the bug: the point is reuse.
+                  ((symbol-function 'make-process)
+                   (lambda (&rest _) (error "must not spawn"))))
+          (setq claude-client--process 'fake claude-client--turn-active nil)
+          (claude-client-send "second turn")
+          (let ((msg (json-parse-string sent :object-type 'alist
+                                        :array-type 'array)))
+            (check "send-type-user" (alist-get 'type msg) "user")
+            (check "send-text"
+                   (alist-get 'text
+                              (aref (alist-get 'content
+                                               (alist-get 'message msg)) 0))
+                   "second turn"))
+          (check "send-marks-turn-active" claude-client--turn-active t)
+          (check "send-logs-prompt"
+                 (plist-get (car (last claude-client--events)) :kind) 'prompt)))
+    (kill-buffer buf)))
+
+;; Sending while a turn is in flight is refused: the CLI reads one turn at a
+;; time, so a second write would interleave with the one being answered.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t)))
+          (setq claude-client--process 'fake claude-client--turn-active t)
+          (check "send-refused-mid-turn"
+                 (condition-case _ (progn (claude-client-send "x") nil)
+                   (user-error t))
+                 t)))
+    (kill-buffer buf)))
+
+;; With no live process there is nothing to continue.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (setq claude-client--process nil claude-client--turn-active nil)
+        (check "send-refused-without-process"
+               (condition-case _ (progn (claude-client-send "x") nil)
+                 (user-error t))
+               t))
+    (kill-buffer buf)))
+
+;; Notes drained at turn end are delivered to the model as the next turn --
+;; this is what makes a note change what the model does, not just the log.
+(let ((buf (claude-test--buffer))
+      (sent nil))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s) (setq sent s))))
+          (setq claude-client--process 'fake
+                claude-client-deliver-notes t)
+          (claude-test--with-running-turn
+           (claude-client-add-note "reconsider the approach"))
+          (setq claude-client--turn-active t)
+          (claude-test--feed buf (concat claude-test--result "\n"))
+          (check "notes-delivered-to-model"
+                 (and sent (string-match-p "reconsider the approach" sent) t) t)
+          (check "note-delivery-starts-a-turn" claude-client--turn-active t)))
+    (kill-buffer buf)))
+
+;; Delivery is opt-out: with it off the note is still recorded, but nothing
+;; is sent and no new turn begins.
+(let ((buf (claude-test--buffer))
+      (sent nil))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s) (setq sent s))))
+          (setq claude-client--process 'fake
+                claude-client-deliver-notes nil)
+          (claude-test--with-running-turn (claude-client-add-note "quiet note"))
+          (setq claude-client--turn-active t)
+          (claude-test--feed buf (concat claude-test--result "\n"))
+          (check "no-delivery-when-disabled" sent nil)
+          (check "no-turn-when-disabled" claude-client--turn-active nil)
+          (check "note-still-recorded"
+                 (and (memq 'notes-delivered (claude-test--kinds buf)) t) t)))
+    (kill-buffer buf)))
+
+;; A dead process ends the turn with it; otherwise the buffer would be
+;; wedged against ever starting another run.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (setq claude-client--turn-active t)
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) nil)))
+          (claude-client--sentinel buf 'fake "exited"))
+        (check "sentinel-clears-turn" claude-client--turn-active nil)
+        (check "sentinel-clears-process" claude-client--process nil))
+    (kill-buffer buf)))
