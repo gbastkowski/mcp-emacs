@@ -203,7 +203,7 @@ of use: `websocket`, `eat`, `markdown-mode`, `plz`, `flycheck`, `projectile`,
 >
 > You will also see `declare-function` near the top of files:
 >
-> ```elisp
+> ```commonlisp
 > (declare-function websocket-server "websocket" (port &rest plist))
 > ```
 >
@@ -253,7 +253,7 @@ a human, a wait-for-change subscription).
 
 `emacsclient` still has a role, but only to *start* the server:
 
-```elisp
+```commonlisp
 emacsclient --eval '(mcp-emacs-server-ensure)'
 ```
 
@@ -264,7 +264,7 @@ which returns the endpoint URL and is safe to call repeatedly.
 `mcp-emacs-server-ensure` (`mcp-emacs-server.el:666`) is the public entry
 point, and it is deliberately idempotent:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-server-ensure ()
   "Start the MCP server if it is not already running; return its URL."
   (interactive)
@@ -279,7 +279,7 @@ track whether the server is up.
 
 Note the small detail in `mcp-emacs-server-start`:
 
-```elisp
+```commonlisp
 (let ((proc (ws-process mcp-emacs-server--process)))
   (when (processp proc)
     (set-process-query-on-exit-flag proc nil)))
@@ -317,7 +317,7 @@ returns control to the event loop, and writes the response from the
 completion callback. The mechanism for holding the connection is a
 `web-server`-specific `throw`:
 
-```elisp
+```commonlisp
 (throw 'close-connection :keep-alive)
 ```
 
@@ -328,7 +328,7 @@ Chapter 5 walks through the code; Chapter 6 walks through the review itself.
 > A *process filter* is a function attached to an Emacs subprocess or network
 > connection, called whenever output arrives:
 >
-> ```elisp
+> ```commonlisp
 > (make-process :name "x" :command '("cat") :filter (lambda (proc chunk) ...))
 > ```
 >
@@ -353,7 +353,7 @@ Emacs's `json-encode` maps an *empty alist* to `null`, because an empty list
 and `nil` are the same object. MCP schemas need `{}`. The project's answer is
 a tiny constructor (`mcp-emacs-server.el:63`):
 
-```elisp
+```commonlisp
 (defun mcp-emacs-server--obj (&rest pairs)
   "Build a JSON object value from PAIRS preserving key order.
 With no PAIRS, return an empty hash table so it encodes as `{}'
@@ -379,7 +379,7 @@ server; the duplication is the price of the isolation.
 The second gotcha is in `web-server` itself, and `AGENTS.md` flags it: the
 HTTP verb is the *key* of the headers alist, not a `:method` entry. Hence:
 
-```elisp
+```commonlisp
 (let* ((is-post (assoc :POST headers)) ...)
 ```
 
@@ -394,7 +394,7 @@ editing a dispatcher.
 Optional modules extend the set without touching the core list by pushing onto
 a separate variable:
 
-```elisp
+```commonlisp
 (defvar mcp-emacs-server-extra-tools nil
   "Tool descriptors registered by optional modules (e.g. orgspec).")
 
@@ -411,7 +411,7 @@ entire integration: requiring the file exposes eight new tools.
 >
 > A **plist** ("property list") is a flat list of alternating keys and values:
 >
-> ```elisp
+> ```commonlisp
 > (list :name "open_file" :description "..." :handler (lambda (args) ...))
 > ```
 >
@@ -421,7 +421,7 @@ entire integration: requiring the file exposes eight new tools.
 >
 > An **alist** ("association list") is a list of cons cells:
 >
-> ```elisp
+> ```commonlisp
 > '((path . "/tmp/x.el") (save . t))
 > ```
 >
@@ -451,7 +451,7 @@ You can see this convention shaping helper signatures throughout
 explanation of why there is none, and the wrapping is done at the tool
 descriptor with `or`:
 
-```elisp
+```commonlisp
 :handler (lambda (_args)
            (or (mcp-emacs-get-selection) "No active selection"))
 ```
@@ -470,7 +470,7 @@ strings.
 Every buffer-reading tool starts from one three-line function
 (`mcp-emacs.el:40`):
 
-```elisp
+```commonlisp
 (defun mcp-emacs--current-buffer ()
   "Return the buffer associated with the currently selected window."
   (window-buffer (frame-selected-window (selected-frame))))
@@ -487,7 +487,7 @@ means when it says "the current buffer".
 
 Every helper then opens with:
 
-```elisp
+```commonlisp
 (with-current-buffer (mcp-emacs--current-buffer)
   ...)
 ```
@@ -499,7 +499,7 @@ Every helper then opens with:
 > implicitly. `with-current-buffer` is a macro that binds it for the duration of
 > a body and restores it afterwards, even on a non-local exit:
 >
-> ```elisp
+> ```commonlisp
 > (with-current-buffer some-buffer
 >   (buffer-substring-no-properties (point-min) (point-max)))
 > ```
@@ -509,7 +509,7 @@ Every helper then opens with:
 > information but must not disturb where the user's cursor is. You will see
 > both stacked constantly in this file:
 >
-> ```elisp
+> ```commonlisp
 > (with-current-buffer (mcp-emacs--current-buffer)
 >   (save-excursion
 >     (org-back-to-heading t)
@@ -525,7 +525,7 @@ Every helper then opens with:
 
 The read-only helpers are the simplest code in the project:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-get-buffer-content ()
   "Return the full text of the current buffer without properties."
   (with-current-buffer (mcp-emacs--current-buffer)
@@ -552,7 +552,7 @@ Agents speak in 1-based line and column numbers; Emacs speaks in buffer
 positions (1-based character offsets). The converter
 (`mcp-emacs.el:65`) is defensive about both:
 
-```elisp
+```commonlisp
 (defun mcp-emacs--line-column-position (line column)
   "Return buffer position for 1-based LINE and COLUMN."
   (let ((line (if (and (integerp line) (> line 0)) line 1))
@@ -581,7 +581,7 @@ Three defensive moves worth naming:
 `mcp-emacs-edit-file-region` (line 183) is the coordinate-based editor. Its
 shape is representative of the whole file:
 
-```elisp
+```commonlisp
 (let* ((buffer (or (get-file-buffer path) (find-file-noselect path)))
        ...)
   (with-current-buffer buffer
@@ -618,7 +618,7 @@ Emacs has two competing on-the-fly checkers: Flycheck (a package) and Flymake
 detects which is live and normalises both to lines of text
 (`mcp-emacs.el:298`):
 
-```elisp
+```commonlisp
 (defun mcp-emacs--buffer-diagnostics (buffer)
   (with-current-buffer buffer
     (cond
@@ -636,7 +636,7 @@ detects which is live and normalises both to lines of text
 Returning `nil` for "no diagnostics" *and* for "no checker" lets the caller
 distinguish the two cases and produce different messages:
 
-```elisp
+```commonlisp
 (or (mcp-emacs--buffer-diagnostics buffer)
     (with-current-buffer buffer
       (if (or (bound-and-true-p flycheck-mode) (bound-and-true-p flymake-mode))
@@ -653,7 +653,7 @@ run on — and documenting it beats pretending otherwise.
 
 > **Elisp Feature: `when-let`, `if-let`, and friends**
 >
-> ```elisp
+> ```commonlisp
 > (when-let ((lines (mcp-emacs--buffer-diagnostics buf)))
 >   (format "%s:\n%s" buffer-file-name lines))
 > ```
@@ -673,7 +673,7 @@ run on — and documenting it beats pretending otherwise.
 path goes through `imenu`, Emacs's language-agnostic symbol index
 (`mcp-emacs.el:87`):
 
-```elisp
+```commonlisp
 (defun mcp-emacs--find-imenu-position (target entries)
   "Find TARGET in imenu ENTRIES and return its position."
   (catch 'mcp-emacs--found
@@ -697,7 +697,7 @@ Two Elisp features carry this function.
 > Elisp has no `return`. `catch` establishes a labelled exit point; `throw`
 > jumps to it with a value:
 >
-> ```elisp
+> ```commonlisp
 > (catch 'found
 >   (dolist (x list)
 >     (when (good-p x) (throw 'found x))))
@@ -721,7 +721,7 @@ major mode's imenu backend, an entry's `cdr` may be an integer, a marker, an
 overlay, or a cons whose car is a position. Hence
 `mcp-emacs--normalize-position` (line 78):
 
-```elisp
+```commonlisp
 (cond
  ((markerp pos) (marker-position pos))
  ((overlayp pos) (overlay-start pos))
@@ -750,7 +750,7 @@ overlay, or a cons whose car is a position. Hence
 The Org functions are thin wrappers that mostly exist to handle the
 "not in an Org buffer" and "no task here" cases gracefully:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-get-current-clocked-task ()
   (when (org-clocking-p)
     (let ((marker (and (boundp 'org-clock-marker) org-clock-marker)))
@@ -783,7 +783,7 @@ fruitless code hunt.
 
 The LSP workspace collector is worth a look for its de-duplication idiom:
 
-```elisp
+```commonlisp
 (let ((seen (make-hash-table :test 'eq))
       (entries '()))
   (dolist (buf (buffer-list))
@@ -806,7 +806,7 @@ standard Elisp way to build a list in order without repeated `append`.
 API. The project helpers prefer projectile *when it is already loaded* and
 fall back to `project.el` otherwise (line 1254):
 
-```elisp
+```commonlisp
 (if (featurep 'projectile)
     (let ((root (projectile-project-root))) ...)
   (if (not (require 'project nil t))
@@ -824,7 +824,7 @@ in Emacs is not a well-defined operation — there is no global current project,
 only whatever `project-current` computes from the current buffer's
 `default-directory`. So the implementation opens the root in `dired`:
 
-```elisp
+```commonlisp
 (when (fboundp 'project-remember-project)
   (ignore-errors (project-remember-project (project-current nil dir))))
 (dired dir)
@@ -848,7 +848,7 @@ MCP tools advertise a JSON Schema for their inputs. Writing those by hand as
 nested alists is unreadable, so the file defines three combinators
 (`mcp-emacs-server.el:63–90`):
 
-```elisp
+```commonlisp
 (defun mcp-emacs-server--no-args ()
   (mcp-emacs-server--obj "type" "object" "properties" (mcp-emacs-server--obj)))
 
@@ -875,7 +875,7 @@ with `vector` or `vconcat`.
 
 A descriptor is a plist:
 
-```elisp
+```commonlisp
 (list :name "open_file"
       :description "Open a file in the current Emacs window"
       :schema (mcp-emacs-server--obj
@@ -903,7 +903,7 @@ Comparing to `t` explicitly avoids the trap.
 
 The `eval` tool is the one place where a handler is doing real work:
 
-```elisp
+```commonlisp
 :handler (lambda (args)
            (let* ((expr (alist-get 'expression args))
                   (form (car (read-from-string
@@ -924,7 +924,7 @@ MCP has a second concept alongside tools: *resources*, addressable
 read-only content identified by URI. The registry is smaller
 (`mcp-emacs-server.el:445`):
 
-```elisp
+```commonlisp
 (list :uri "org-tasks://all"
       :name "org-tasks"
       :description "All TODO items from org-mode agenda files"
@@ -940,7 +940,7 @@ on `:uri`, call `:reader`, wrap the string.
 
 `mcp-emacs-server--dispatch` (line 547) is a `cond` over the method name:
 
-```elisp
+```commonlisp
 (cond
  ((null method) nil)
  ((string= method "initialize") ...)
@@ -969,7 +969,7 @@ Three details:
 > Elisp's `try`/`catch` for *signals* (as opposed to `catch`/`throw`, which is
 > for control flow):
 >
-> ```elisp
+> ```commonlisp
 > (condition-case err
 >     (risky-thing)
 >   (user-error (message "user problem: %s" (error-message-string err)))
@@ -995,7 +995,7 @@ Three details:
 
 `mcp-emacs-server--handler` (line 601) is the `web-server` callback:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-server--handler (request)
   (with-slots (process headers) request
     (let* ((is-post (assoc :POST headers))
@@ -1042,7 +1042,7 @@ the process deleted.
 
 > **Elisp Feature: `with-slots` and EIEIO**
 >
-> ```elisp
+> ```commonlisp
 > (with-slots (process headers) request ...)
 > ```
 >
@@ -1053,14 +1053,14 @@ the process deleted.
 >
 > The single-slot accessor is `oref`:
 >
-> ```elisp
+> ```commonlisp
 > (oref request body)
 > ```
 >
 > and `slot-boundp` checks whether a slot has been assigned at all — which the
 > body parser needs, because a GET request has no body slot value:
 >
-> ```elisp
+> ```commonlisp
 > (let ((body (and (slot-boundp request 'body) (oref request body))))
 >   ...)
 > ```
@@ -1071,7 +1071,7 @@ the process deleted.
 
 ## Body parsing and the JSON decode configuration
 
-```elisp
+```commonlisp
 (defun mcp-emacs-server--parse-body (request)
   (let ((body (and (slot-boundp request 'body) (oref request body))))
     (when (and body (not (string-empty-p body)))
@@ -1140,7 +1140,7 @@ The complications are all in the plumbing:
 `mcp-emacs--ediff-review` (line 990) takes five required arguments plus two
 optional ones:
 
-```elisp
+```commonlisp
 (defun mcp-emacs--ediff-review (buffer-a buffer-b entry-content result
                                          &optional on-resolve tab-name)
 ```
@@ -1154,7 +1154,7 @@ optional ones:
 
 > **Elisp Feature: a cons cell as a mutable box**
 >
-> ```elisp
+> ```commonlisp
 > (let ((result (list nil)))
 >   ...
 >   (setcar result 'applied)
@@ -1182,7 +1182,7 @@ optional ones:
 
 The first thing the function does, before touching any window:
 
-```elisp
+```commonlisp
 (let ((winconf (current-window-configuration))
       control
       (ediff-window-setup-function 'ediff-setup-windows-plain)
@@ -1194,7 +1194,7 @@ the frame — sizes, buffers, point positions — as an opaque object.
 `set-window-configuration` restores it. Capturing *first* is essential,
 because the very next thing the function does is destroy windows:
 
-```elisp
+```commonlisp
 (dolist (window (window-list))
   (when (window-parameter window 'window-side)
     (ignore-errors (delete-window window))))
@@ -1207,7 +1207,7 @@ resolve the review. Deleting side windows up front prevents that.
 
 The optional directional placement follows:
 
-```elisp
+```commonlisp
 (unless (eq mcp-emacs-ediff-window-direction 'plain)
   (ignore-errors
     (select-window
@@ -1228,7 +1228,7 @@ The optional directional placement follows:
 > rules), then a list of *action functions* to try in order. Passing an action
 > explicitly:
 >
-> ```elisp
+> ```commonlisp
 > (display-buffer buf `((display-buffer-in-direction)
 >                       (direction . right)
 >                       (window-width . 120)))
@@ -1248,7 +1248,7 @@ The optional directional placement follows:
 completes and the control buffer exists. Everything interesting is installed
 there:
 
-```elisp
+```commonlisp
 (ediff-buffers
  buffer-a buffer-b
  (list (lambda ()
@@ -1273,7 +1273,7 @@ name is kept rather than erroring.
 
 The accept binding is the interesting one, because it does not blindly copy:
 
-```elisp
+```commonlisp
 (defun mcp-emacs--apply-diff-accept (buffer-a buffer-b entry-content result)
   (when (buffer-live-p buffer-a)
     (with-current-buffer buffer-a
@@ -1296,7 +1296,7 @@ agent proposed".
 
 The quit hook is the linchpin:
 
-```elisp
+```commonlisp
 (setq-local
  ediff-quit-hook
  (list (lambda ()
@@ -1339,7 +1339,7 @@ runs the hook. Nothing else calls `on-resolve`.
 
 The whole `ediff-buffers` call is wrapped:
 
-```elisp
+```commonlisp
 (condition-case err
     (ediff-buffers ...)
   (error (ignore-errors (set-window-configuration winconf))
@@ -1356,7 +1356,7 @@ original error rather than wrapping it in a new one.
 `mcp-emacs-apply-diff` (line 1168) is the version used when the tool is
 dispatched directly rather than over HTTP. It polls:
 
-```elisp
+```commonlisp
 (let ((deadline (+ (float-time) secs)))
   (while (and (null (car result))
               (< (float-time) deadline))
@@ -1382,7 +1382,7 @@ dispatched directly rather than over HTTP. It polls:
 
 On timeout, the session is force-quit:
 
-```elisp
+```commonlisp
 (when (and control (buffer-live-p control))
   (with-current-buffer control
     (if (fboundp 'ediff-really-quit)
@@ -1407,7 +1407,7 @@ codebase:
 
 The structure is a `finish` closure guarded by a `done` cell:
 
-```elisp
+```commonlisp
 (let ((finish
        (lambda (outcome)
          (unless (car done)
@@ -1437,7 +1437,7 @@ a failed setup cannot leave a timer pointing at a session that never existed.
 
 > **Elisp Feature: timers**
 >
-> ```elisp
+> ```commonlisp
 > (run-at-time SECS REPEAT FUNCTION &rest ARGS)   ; one-shot when REPEAT is nil
 > (run-with-timer SECS REPEAT FUNCTION &rest ARGS) ; same thing, older name
 > (cancel-timer TIMER)
@@ -1481,7 +1481,7 @@ No tool is defined to save. The human owns the file.
 
 ## The change token
 
-```elisp
+```commonlisp
 (defun mcp-emacs-org-task--token ()
   "Return the change token for the current buffer."
   (buffer-chars-modified-tick))
@@ -1508,14 +1508,14 @@ No tool is defined to save. The human owns the file.
 
 Two helpers do the addressing:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-org-task--item-id ()
   "Return the ID or CUSTOM_ID property of the heading at point, or nil."
   (or (org-entry-get (point) "ID")
       (org-entry-get (point) "CUSTOM_ID")))
 ```
 
-```elisp
+```commonlisp
 (defun mcp-emacs-org-task--find-item (ref)
   (when (and (stringp ref) (not (string-empty-p ref))
              (mcp-emacs-org-task--goto-task))
@@ -1544,7 +1544,7 @@ children* — a nested sub-item with the same text is not a match.
 > `org-map-entries` walks headings and calls a function at each one with point
 > positioned on the heading:
 >
-> ```elisp
+> ```commonlisp
 > (org-map-entries FUNC MATCH SCOPE)
 > ```
 >
@@ -1568,7 +1568,7 @@ children* — a nested sub-item with the same text is not a match.
 `mcp-emacs-org-task-append-note` (line 808) has to insert into the task's body
 *after* whatever the human wrote and *before* the first child heading:
 
-```elisp
+```commonlisp
 (let ((task-level (org-current-level))
       (limit (save-excursion (org-end-of-subtree t t) (point))))
   (org-end-of-meta-data t)
@@ -1589,7 +1589,7 @@ line predicate" — avoids gluing the note onto the end of an existing line.
 `mcp-emacs-org-task-append-item` (line 835) is simpler: go to the end of the
 subtree and insert a heading one level deeper.
 
-```elisp
+```commonlisp
 (org-end-of-subtree t t)
 (unless (bolp) (insert "\n"))
 (insert (make-string (1+ task-level) ?*) " " kw " " text "\n")
@@ -1602,7 +1602,7 @@ subtree and insert a heading one level deeper.
 
 Every status-setting function checks:
 
-```elisp
+```commonlisp
 (unless (member status org-todo-keywords-1)
   (user-error "Unrecognized status keyword: %s" status))
 ```
@@ -1632,7 +1632,7 @@ user's first keyword is, not a hardcoded `TODO`.
 `mcp-emacs-org-task-wait-for-change` (line 878) is what turns this from a set
 of file operations into a *protocol*:
 
-```elisp
+```commonlisp
 (let* ((baseline (cond ((integerp token) token)
                        ((and (stringp token) (not (string-empty-p token)))
                         (string-to-number token))
@@ -1717,7 +1717,7 @@ approved content and the CLI performs the write.
 
 The whole surface is opt-in:
 
-```elisp
+```commonlisp
 (defcustom mcp-emacs-ide-enabled nil
   "When non-nil, allow the IDE integration surface to start.
 Off by default: the Claude Code IDE protocol is unofficial and
@@ -1727,7 +1727,7 @@ version-fragile, so it is opt-in and isolated from the HTTP MCP server."
 
 ## Session state as a struct
 
-```elisp
+```commonlisp
 (cl-defstruct (mcp-emacs-ide-session (:constructor mcp-emacs-ide--make-session))
   "State for one IDE WebSocket server and its connected client."
   server           ; websocket server process
@@ -1771,7 +1771,7 @@ the moment the response is sent, while the diff entry survives until cleanup.
 
 ## The discovery lockfile
 
-```elisp
+```commonlisp
 (defun mcp-emacs-ide--write-lockfile (port project-dir)
   (let ((path (mcp-emacs-ide--lockfile-path port)))
     (make-directory (file-name-directory path) t)
@@ -1802,7 +1802,7 @@ on `kill-emacs-hook`.
 
 ## Binding a port
 
-```elisp
+```commonlisp
 (defun mcp-emacs-ide--start-server ()
   (let ((min (car mcp-emacs-ide--port-range))
         (max (cdr mcp-emacs-ide--port-range))
@@ -1823,7 +1823,7 @@ available strategy.
 
 The server is created with three callbacks:
 
-```elisp
+```commonlisp
 :on-open    (lambda (ws) (setf (mcp-emacs-ide-session-client ...) ws))
 :on-message (lambda (ws frame)
               (mcp-emacs-ide--handle-message
@@ -1840,7 +1840,7 @@ a stop is ignored rather than erroring.
 `tools/call`, notifications, and unknown methods. The `tools/call` branch has
 the interesting shape:
 
-```elisp
+```commonlisp
 (let* ((res (condition-case err
                 (mcp-emacs-ide--call-tool session name args id)
               (error (mcp-emacs-ide--result
@@ -1857,7 +1857,7 @@ always a cons, never a symbol.
 
 `getDiagnostics` is honestly stubbed:
 
-```elisp
+```commonlisp
 ((string= name "getDiagnostics")
  ;; Stubbed: Claude Code blocks until this is answered, but an empty
  ;; result is acceptable.  A future version can wire Flycheck/Flymake.
@@ -1869,7 +1869,7 @@ comment marks the shortcut rather than hiding it.
 
 ## The deferred `openDiff`
 
-```elisp
+```commonlisp
 (puthash tab-name id (mcp-emacs-ide-session-deferred session))
 (let ((control
        (mcp-emacs--ediff-review
@@ -1897,7 +1897,7 @@ completion would find no id and silently drop the response.
 
 Completion itself is defensive:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-ide--complete-open-diff (session tab-name status &rest extra)
   (let* ((deferred (mcp-emacs-ide-session-deferred session))
          (id (gethash tab-name deferred)))
@@ -1934,7 +1934,7 @@ only by the popup output window.
 
 Buffers are named `*claude:<project>:<n>*`, and that name *is* the registry:
 
-```elisp
+```commonlisp
 (defconst mcp-emacs-run--buffer-name-regexp
   "\\`\\*claude:\\(.+\\):\\([0-9]+\\)\\*\\'"
   "Regexp matching a runner buffer name `*claude:<project>:<n>*'.")
@@ -1949,7 +1949,7 @@ Buffers are named `*claude:<project>:<n>*`, and that name *is* the registry:
 A session's project is not stored either — it is recomputed from the buffer's
 own `default-directory`:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--buffer-project (buf)
   "Return the project root that runner buffer BUF belongs to.
 Derived from BUF's own `default-directory' via `mcp-emacs-run--project-root',
@@ -1986,7 +1986,7 @@ query, which at this scale is free.
 
 Session numbers refill gaps:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--next-number (root)
   "Return the lowest positive session number not in use for project ROOT."
   (let ((used ...) (n 1))
@@ -2000,7 +2000,7 @@ When the user runs a send command, which of possibly several sessions should
 receive it? `mcp-emacs-run--resolve-session` (line 235) ranks candidates into
 four tiers and takes the first non-empty one:
 
-```elisp
+```commonlisp
 (let* ((visible (lambda (buf) (get-buffer-window buf t)))
        (same (seq-filter (lambda (b) (string= (mcp-emacs-run--buffer-project b) root))
                          all))
@@ -2018,7 +2018,7 @@ does it prompt.
 
 ## Window placement: an ordinary window, deliberately
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--display (buffer)
   (let* ((horizontal (memq mcp-emacs-run-window-direction '(left right)))
          (size (if horizontal
@@ -2045,7 +2045,7 @@ alternative. Passing `'strong` instead would make it refuse.
 
 > **Elisp Feature: backquote and unquote**
 >
-> ```elisp
+> ```commonlisp
 > `((display-buffer-in-direction)
 >   (direction . ,mcp-emacs-run-window-direction)
 >   ,size)
@@ -2062,7 +2062,7 @@ alternative. Passing `'strong` instead would make it refuse.
 
 The width computation is a small piece of care:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--resolved-width ()
   (let ((cap (truncate (* mcp-emacs-run-window-max-width-fraction (frame-width))))
         (cols (or mcp-emacs-run-window-width-columns
@@ -2080,7 +2080,7 @@ The popup output window has a harder problem: Doom Emacs's `+popup` module
 installs rules in `display-buffer-alist` that would turn this window into a
 transient, auto-hiding thing. The fix (line 414):
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--display-popup (buffer)
   (let* ((rule `(,(regexp-quote (buffer-name buffer))
                  (display-buffer-reuse-window display-buffer-in-direction)
@@ -2100,7 +2100,7 @@ predictably inside someone else's framework.
 
 ## Passing the IDE port through the environment
 
-```elisp
+```commonlisp
 (let* ((ide-port (mcp-emacs-run--ide-port))
        (process-environment
         (if ide-port
@@ -2119,7 +2119,7 @@ searched front to back.
 
 The port resolution degrades gracefully:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--ide-port ()
   (when mcp-emacs-run-ide-integration
     (condition-case err
@@ -2138,7 +2138,7 @@ An optional feature failing should not stop the main thing from working.
 
 This one cost someone real debugging time, and the docstring says so:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--send-to-buffer (buf string)
   "Send STRING to runner buffer BUF's terminal.
 `eat-term-send-string' resolves the input process from the current
@@ -2158,7 +2158,7 @@ buffer current unconditionally.
 
 > **Elisp Feature: `buffer-local-value`**
 >
-> ```elisp
+> ```commonlisp
 > (buffer-local-value 'eat-terminal buf)
 > ```
 >
@@ -2175,7 +2175,7 @@ buffer current unconditionally.
 
 ## Quitting with a deadline
 
-```elisp
+```commonlisp
 (defconst mcp-emacs-run--quit-sequence "\003\003"
   "Sequence that makes the Claude CLI exit: two Ctrl-C characters.")
 
@@ -2194,7 +2194,7 @@ immediately; Emacs is never blocked waiting for a CLI to notice a signal.
 
 ## Selection references
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--selection-reference ()
   (let* ((beg (if (use-region-p) (region-beginning) (point)))
          (end (if (use-region-p) (region-end) (point)))
@@ -2225,7 +2225,7 @@ line too many.
 
 ## Headless one-shot queries
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--query-headless (prompt callback)
   (let* ((default-directory (file-name-as-directory (mcp-emacs-run--project-root)))
          (out (generate-new-buffer " *mcp-emacs-query-out*"))
@@ -2246,7 +2246,7 @@ so the CLI runs in the project root.
 > A *sentinel* is the state-change counterpart to a filter — called when a
 > process exits, is signalled, or otherwise changes status:
 >
-> ```elisp
+> ```commonlisp
 > :sentinel (lambda (proc event)
 >             (when (memq (process-status proc) '(exit signal))
 >               (let ((code (process-exit-status proc)))
@@ -2315,7 +2315,7 @@ why. That saves the next person a day.
 
 ## Constructing the command line
 
-```elisp
+```commonlisp
 (defun claude-client--command ()
   (append
    (list claude-client-executable
@@ -2334,7 +2334,7 @@ why. That saves the next person a day.
 
 Three temp files are generated per run:
 
-```elisp
+```commonlisp
 (defun claude-client--mcp-config-file ()
   (or claude-client-mcp-config
       (let ((file (make-temp-file "claude-client-mcp-" nil ".json"))
@@ -2356,7 +2356,7 @@ required here because the compiler cannot know the symbol is bound.
 
 The security model is expressed in two defcustoms:
 
-```elisp
+```commonlisp
 (defcustom claude-client-disallowed-tools
   '("Write" "Edit" "MultiEdit" "NotebookEdit")
   "Claude built-in tools to disable so edits route through mcp-emacs.
@@ -2379,7 +2379,7 @@ list.
 
 ## The event log and the subscriber hook
 
-```elisp
+```commonlisp
 (defvar-local claude-client--events nil
   "Parsed conversation events, oldest first.
 Each is a plist: :kind, plus kind-specific keys.  This is the render
@@ -2406,7 +2406,7 @@ consumer* that happens to be built in.
 > A **normal hook** is a variable holding a list of functions called with no
 > arguments, by convention named `*-hook`:
 >
-> ```elisp
+> ```commonlisp
 > (add-hook 'after-save-hook #'my-function)
 > (run-hooks 'after-save-hook)
 > ```
@@ -2414,7 +2414,7 @@ consumer* that happens to be built in.
 > An **abnormal hook** takes arguments and/or interprets return values, and by
 > convention is named `*-functions`:
 >
-> ```elisp
+> ```commonlisp
 > (add-hook 'claude-client-event-functions #'my-subscriber)
 > (run-hook-with-args 'claude-client-event-functions buffer event)
 > ```
@@ -2439,7 +2439,7 @@ Publishing beats advising. Adding a reader costs the writer nothing.
 
 ## Framing NDJSON
 
-```elisp
+```commonlisp
 (defun claude-client--filter (buffer proc chunk)
   "Frame CHUNK from PROC as NDJSON lines and dispatch them to BUFFER."
   (ignore proc)
@@ -2477,7 +2477,7 @@ up to the last delimiter and keeping the tail handles both.
 > Lisp `json.el` reader. It takes keyword arguments instead of dynamic
 > variables:
 >
-> ```elisp
+> ```commonlisp
 > (json-parse-string str
 >                    :object-type 'alist   ; or 'hash-table (default), 'plist
 >                    :array-type 'list     ; or 'array (default)
@@ -2498,7 +2498,7 @@ up to the last delimiter and keeping the tail handles both.
 
 ## Turning messages into events
 
-```elisp
+```commonlisp
 (defun claude-client--handle-message (buffer msg)
   (let ((type (alist-get 'type msg)))
     (cond
@@ -2524,7 +2524,7 @@ compatibility with a CLI that adds message types.
 
 Rendering is a `pcase` over `:kind`:
 
-```elisp
+```commonlisp
 (defun claude-client--render-event (event)
   (pcase (plist-get event :kind)
     ('started (format "── claude %s ──" (or (plist-get event :model) "")))
@@ -2552,7 +2552,7 @@ Rendering is a `pcase` over `:kind`:
 
 ## Full re-render on every event
 
-```elisp
+```commonlisp
 (defun claude-client--render ()
   (let ((at-end (eobp))
         (inhibit-read-only t))
@@ -2578,7 +2578,7 @@ sign that it was a deliberate choice rather than an accident.
 
 ## Guarding against a second run
 
-```elisp
+```commonlisp
 (when (process-live-p claude-client--process)
   (user-error "A Claude run is already active here; `k' to kill it first"))
 ```
@@ -2595,7 +2595,7 @@ answer".
 
 ## The major mode
 
-```elisp
+```commonlisp
 (define-derived-mode claude-client-mode special-mode "claude"
   "Major mode for the terminal-free Claude conversation buffer."
   (setq-local truncate-lines nil))
@@ -2603,7 +2603,7 @@ answer".
 
 > **Elisp Feature: `define-derived-mode` and `special-mode`**
 >
-> ```elisp
+> ```commonlisp
 > (define-derived-mode CHILD PARENT LIGHTER DOCSTRING &rest BODY)
 > ```
 >
@@ -2616,7 +2616,7 @@ answer".
 > from it is why these buffers need `(let ((inhibit-read-only t)) ...)` around
 > every insertion, and why `g` and `k` can be rebound simply:
 >
-> ```elisp
+> ```commonlisp
 > (defvar claude-client-mode-map
 >   (let ((map (make-sparse-keymap)))
 >     (define-key map (kbd "g") #'claude-client-start)
@@ -2638,7 +2638,7 @@ Two smaller modules that show off two different integration techniques.
 
 The straightforward half of `mcp-emacs-remote.el`:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-remote-prompt (&optional initial)
   (interactive
    (list (when (use-region-p)
@@ -2669,7 +2669,7 @@ The straightforward half of `mcp-emacs-remote.el`:
 The other half records what the agent is doing into an Org buffer. For the
 IDE surface it does so with **advice**:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-remote-enable ()
   (interactive)
   (setq mcp-emacs-remote-enabled t)
@@ -2686,7 +2686,7 @@ IDE surface it does so with **advice**:
 >
 > Advice wraps an existing function without editing its definition:
 >
-> ```elisp
+> ```commonlisp
 > (advice-add 'target :before  #'my-fn)   ; run my-fn first, ignore its value
 > (advice-add 'target :after   #'my-fn)   ; run my-fn after
 > (advice-add 'target :around  #'my-fn)   ; my-fn receives the original as its
@@ -2712,7 +2712,7 @@ IDE surface it does so with **advice**:
 
 Every tap is wrapped in `ignore-errors`, with the reasoning stated:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-remote--tap-runner-event (buffer event)
   "Subscriber for `claude-client-event-functions'.
 Errors are swallowed: a transcript problem must never take down the
@@ -2730,7 +2730,7 @@ name it `_buffer`; both appear in this codebase.
 
 ## Quiet tools
 
-```elisp
+```commonlisp
 (defconst mcp-emacs-remote--quiet-tools '("getDiagnostics" "closeAllDiffTabs")
   "Tool names whose calls are recorded compactly rather than as full entries.
 These fire before every edit and would otherwise dominate the transcript.")
@@ -2752,7 +2752,7 @@ sessions, which live at:
 
 where the slug is the project path with `/` and `.` replaced by `-`:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run-resume--slug (root)
   (let ((path (directory-file-name (expand-file-name root))))
     (replace-regexp-in-string "[/.]" "-" path)))
@@ -2762,7 +2762,7 @@ The interesting part is extracting a *useful label*. A transcript's literal
 first `type:user` entry is usually not the human's prompt — it is an injected
 `<command-message>` block, a caveat, or a tool result. So:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run-resume--noise-p (text)
   "Return non-nil when TEXT is an injected block, not a human prompt."
   (let ((s (string-trim (or text ""))))
@@ -2774,7 +2774,7 @@ first `type:user` entry is usually not the human's prompt — it is an injected
 
 and the scan is bounded:
 
-```elisp
+```commonlisp
 (with-temp-buffer
   (insert-file-contents file nil 0)
   ...
@@ -2786,7 +2786,7 @@ and the scan is bounded:
 
 > **Elisp Feature: bounded `insert-file-contents`**
 >
-> ```elisp
+> ```commonlisp
 > (insert-file-contents FILENAME VISIT BEG END REPLACE)
 > ```
 >
@@ -2801,7 +2801,7 @@ and the scan is bounded:
 
 Content normalisation handles the two shapes a message content field can take:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run-resume--content-text (content)
   (cond
    ((stringp content) content)
@@ -2864,7 +2864,7 @@ The system SHALL notify the user on account lockout.
 
 `orgspec.el` (95 lines) exists so that no downstream file hardcodes a marker:
 
-```elisp
+```commonlisp
 (defconst orgspec-op-tags
   '(("ADDED" . added)
     ("MODIFIED" . modified)
@@ -2887,7 +2887,7 @@ The system SHALL notify the user on account lockout.
 
 Two accessors bridge the string/symbol boundary:
 
-```elisp
+```commonlisp
 (defun orgspec-op-from-tags (tags)
   (seq-some (lambda (cell) (and (member (car cell) tags) (cdr cell)))
             orgspec-op-tags))
@@ -2906,7 +2906,7 @@ changes these three variables rather than patching code.
 
 ## The model: three structs
 
-```elisp
+```commonlisp
 (cl-defstruct (orgspec-scenario (:constructor orgspec-scenario-create))
   name    ; headline text — its identity
   body)   ; raw GIVEN/WHEN/THEN text, verbatim
@@ -2968,7 +2968,7 @@ heading lines. Org's parser does both.
 > `(org-element-parse-buffer)` returns an abstract syntax tree of the whole
 > buffer. Each node is a list whose car is the element type:
 >
-> ```elisp
+> ```commonlisp
 > (headline (:raw-value "Notify on lockout" :level 2 :tags ("ADDED") ...) CHILDREN...)
 > ```
 >
@@ -2990,7 +2990,7 @@ heading lines. Org's parser does both.
 > `(org-element-property :AREA headline)`. This code computes the keyword rather
 > than hardcoding it:
 >
-> ```elisp
+> ```commonlisp
 > (org-element-property (intern (concat ":" orgspec-area-property)) headline)
 > ```
 >
@@ -3001,7 +3001,7 @@ heading lines. Org's parser does both.
 
 This is the one thing that trips everyone up, and it is documented:
 
-```elisp
+```commonlisp
 (defun orgspec-parse--section-elements (headline)
   "Return the elements in HEADLINE's own section (its direct prose/drawers).
 `org-element' nests a headline's non-headline content under a `section'
@@ -3020,7 +3020,7 @@ nothing. You must descend into the `section` first.
 
 With that in hand the extractors are direct:
 
-```elisp
+```commonlisp
 (defun orgspec-parse--body (headline)
   (let ((parts '()))
     (dolist (el (orgspec-parse--section-elements headline))
@@ -3036,7 +3036,7 @@ With that in hand the extractors are direct:
 Only `paragraph` and `plain-list` count as body — drawers, property drawers,
 and child headlines are excluded by construction.
 
-```elisp
+```commonlisp
 (defun orgspec-parse--impl (headline)
   (let (lines)
     (dolist (el (orgspec-parse--section-elements headline))
@@ -3054,7 +3054,7 @@ strings from the result.
 
 Scenarios are simply the child headlines:
 
-```elisp
+```commonlisp
 (defun orgspec-parse--scenarios (headline)
   (let (scenarios)
     (dolist (child (org-element-contents headline))
@@ -3068,7 +3068,7 @@ Scenarios are simply the child headlines:
 
 ## The two entry points
 
-```elisp
+```commonlisp
 (defun orgspec-parse-change (&optional id)
   (let ((tree (org-element-parse-buffer))
         requirements)
@@ -3088,7 +3088,7 @@ wrapper and without ops: L1 headlines are requirements, L2 are scenarios.
 
 Note that `orgspec-parse--requirement` also captures the raw source region:
 
-```elisp
+```commonlisp
 :source (buffer-substring-no-properties
          (org-element-property :begin headline)
          (org-element-property :end headline))
@@ -3134,7 +3134,7 @@ The fold test asserts exactly this (`test/orgspec-fold-test.el`).
 
 The paste operation:
 
-```elisp
+```commonlisp
 (defun orgspec-fold--paste-requirement (req)
   "Paste delta requirement REQ into the current spec buffer at L1, cleaned."
   (org-paste-subtree 1 (orgspec-requirement-source req))
@@ -3166,7 +3166,7 @@ The paste operation:
 
 The cleanup after a paste:
 
-```elisp
+```commonlisp
 (defun orgspec-fold--clean-pasted ()
   "Strip the TODO keyword, the op tag, and the `:AREA:' routing property;
 keep the `:IMPL:' drawer."
@@ -3182,7 +3182,7 @@ Provenance (`:IMPL:`) is durable and survives.
 
 ## The four operations
 
-```elisp
+```commonlisp
 (defun orgspec-fold--apply-renamed (req)
   (let ((from (orgspec-requirement-from req))
         (to (orgspec-requirement-name req)))
@@ -3209,20 +3209,20 @@ spec have diverged, and that is worth stopping for.
 
 > **Elisp Feature: custom error types**
 >
-> ```elisp
+> ```commonlisp
 > (define-error 'orgspec-fold-error "orgspec fold error")
 > ```
 >
 > defines a new error symbol with a human-readable message, optionally with a
 > parent (defaulting to `error`). It is signalled with data:
 >
-> ```elisp
+> ```commonlisp
 > (signal 'orgspec-fold-error (list "renamed source \"X\" not found"))
 > ```
 >
 > and caught specifically:
 >
-> ```elisp
+> ```commonlisp
 > (condition-case _
 >     (orgspec-fold-area spec reqs)
 >   (orgspec-fold-error 'that-specific-failure))
@@ -3237,7 +3237,7 @@ spec have diverged, and that is worth stopping for.
 
 The one operation with real logic:
 
-```elisp
+```commonlisp
 (defun orgspec-fold--apply-modified (req)
   (let ((name (orgspec-requirement-name req)))
     (unless (orgspec-fold--find-requirement name)
@@ -3265,7 +3265,7 @@ the single most valuable rule in the system.
 
 ## The pure core
 
-```elisp
+```commonlisp
 (defun orgspec-fold-area (spec-text requirements)
   "Return the new spec text for one area.
 Pure: builds the result in a temp buffer and returns the string; writes
@@ -3296,7 +3296,7 @@ irrelevant to a temp buffer and measurably slow.
 
 `orgspec-commands-fold-build` is where purity meets the filesystem:
 
-```elisp
+```commonlisp
 (defun orgspec-commands-fold-build (id)
   "Fold change ID's delta in memory; return an alist (SPEC-FILE . NEW-TEXT)."
   (orgspec-commands--assert-no-clarifications id)
@@ -3318,7 +3318,7 @@ irrelevant to a temp buffer and measurably slow.
 Gates first (clarifications, then the full validator), then build everything
 in memory, then return. And `orgspec-archive` writes:
 
-```elisp
+```commonlisp
 (defun orgspec-archive (id)
   (let ((built (orgspec-commands-fold-build id)))
     (dolist (cell built)
@@ -3403,7 +3403,7 @@ This is worth doing yourself rather than taking on trust. Take a delta
 requirement in this project's own format, parse it, interpret it back, and
 compare:
 
-```elisp
+```commonlisp
 (with-temp-buffer
   (let ((org-inhibit-startup t)) (org-mode))
   (insert src)
@@ -3475,7 +3475,7 @@ The AST is Org's vocabulary: `headline`, `section`, `paragraph`, `drawer`.
 Your domain has a different one: requirement, scenario, op, area. Build the
 latter (§12.3):
 
-```elisp
+```commonlisp
 (cl-defstruct (orgspec-requirement (:constructor orgspec-requirement-create))
   name op area from body scenarios impl source)
 ```
@@ -3494,7 +3494,7 @@ everything.
 
 The slot that makes the whole thing work:
 
-```elisp
+```commonlisp
 :source (buffer-substring-no-properties
          (org-element-property :begin headline)
          (org-element-property :end headline))
@@ -3519,7 +3519,7 @@ The struct docstring says this outright:
 
 Write by replaying the human's own editing commands programmatically:
 
-```elisp
+```commonlisp
 (org-paste-subtree 1 (orgspec-requirement-source req))
 (org-todo 'none)
 (org-set-tags nil)
@@ -3550,7 +3550,7 @@ inherited properties. Your regexp does not.
 
 Do all of it in a temp buffer and return a string:
 
-```elisp
+```commonlisp
 (defun orgspec-fold-area (spec-text requirements)
   "Return the new spec text for one area.
 Pure: builds the result in a temp buffer and returns the string; writes
@@ -3667,7 +3667,7 @@ The remaining orgspec files, briefly.
 `orgspec-validate.el` runs the ERROR rules over a parsed change and returns
 *all* problems, not just the first:
 
-```elisp
+```commonlisp
 (cl-flet ((err (fmt &rest args) (push (apply #'format fmt args) errors)))
   (unless reqs (err "Change must have at least one delta"))
   (dolist (r (append added modified))
@@ -3685,7 +3685,7 @@ The remaining orgspec files, briefly.
 >
 > `cl-flet` defines local functions, lexically scoped to its body:
 >
-> ```elisp
+> ```commonlisp
 > (cl-flet ((err (fmt &rest args) (push (apply #'format fmt args) errors)))
 >   (err "problem with %s" name))
 > ```
@@ -3695,7 +3695,7 @@ The remaining orgspec files, briefly.
 >
 > Contrast with a `let`-bound lambda, which would require `funcall`:
 >
-> ```elisp
+> ```commonlisp
 > (let ((err (lambda (msg) (push msg errors))))
 >   (funcall err "..."))
 > ```
@@ -3708,7 +3708,7 @@ The remaining orgspec files, briefly.
 
 The two-tier interface:
 
-```elisp
+```commonlisp
 (defun orgspec-validate-change (change) ...)          ; returns a list
 (defun orgspec-validate-change-or-signal (change)      ; signals or returns t
   (let ((errors (orgspec-validate-change change)))
@@ -3722,7 +3722,7 @@ the signalling version backs `archive` (gate). Same rules, two behaviours.
 
 ## The lifecycle and the agenda payoff
 
-```elisp
+```commonlisp
 (defun orgspec-lifecycle--keyword-for-role (role)
   (pcase role
     ('active  orgspec-todo-active)
@@ -3738,7 +3738,7 @@ timestamps, repeaters — instead of setting a keyword directly.
 
 And then the payoff, which is the entire argument for doing this in Emacs:
 
-```elisp
+```commonlisp
 (defun orgspec-agenda-install (changes-dir)
   (let* ((tag-match (mapconcat #'car orgspec-op-tags "|"))
          (entry `(,orgspec-agenda-key "orgspec in-flight requirements"
@@ -3764,7 +3764,7 @@ idempotent: remove any prior entry under the same key, then add.
 Because `orgspec-commands-fold-build` returns `(FILE . NEW-TEXT)` pairs
 without writing, the review is nearly free:
 
-```elisp
+```commonlisp
 (defun orgspec-review-fold (id)
   "Ediff the fold of change ID against the current specs, before writing."
   (interactive "sChange id to review: ")
@@ -3787,7 +3787,7 @@ this review writes nothing, so there is nothing to accept.
 
 `orgspec-mcp.el` wraps the verbs as MCP tools and registers them:
 
-```elisp
+```commonlisp
 (defun orgspec-mcp-register ()
   "Register the orgspec tools onto `mcp-emacs-server-extra-tools'.
 Idempotent: replaces any previously registered orgspec descriptors."
@@ -3807,7 +3807,7 @@ reloading the file during development does not accumulate duplicates.
 A schema helper removes repetition, since six of the eight tools take just an
 id:
 
-```elisp
+```commonlisp
 (defun orgspec-mcp--id-schema (desc)
   (mcp-emacs-server--obj
    "type" "object"
@@ -3817,7 +3817,7 @@ id:
 
 Handlers are thin adapters that format a value into text:
 
-```elisp
+```commonlisp
 (defun orgspec-mcp--validate (args)
   (let ((errors (orgspec-validate-change
                  (orgspec-commands--read-change (alist-get 'id args)))))
@@ -3839,7 +3839,7 @@ chapter that lets you do it with confidence.
 The first surprise is that the tests do not use ERT, Emacs's built-in test
 framework. Every test file opens with the same four lines:
 
-```elisp
+```commonlisp
 (add-to-list 'load-path (expand-file-name "elisp"))
 (require 'mcp-emacs)
 
@@ -3900,7 +3900,7 @@ three distinct techniques for it.
 
 The workhorse. From `mcp-emacs-apply-diff-test.el`:
 
-```elisp
+```commonlisp
 (cl-letf (((symbol-function 'ediff-buffers)
            (lambda (_a _b setup-hooks &rest _)
              ;; ediff would bind `ediff-control-buffer' and run the
@@ -3924,7 +3924,7 @@ The workhorse. From `mcp-emacs-apply-diff-test.el`:
 > `let` binds a *variable*. `cl-letf` binds any **place** — anything `setf` can
 > assign to — and restores it on exit:
 >
-> ```elisp
+> ```commonlisp
 > (cl-letf (((symbol-function 'foo) (lambda () 42))
 >           ((symbol-value 'some-var) 7)
 >           ((buffer-local-value 'x buf) 1))
@@ -3958,7 +3958,7 @@ which means if that assumption ever changes, the test is where you find out.
 
 From `mcp-emacs-ide-test.el`:
 
-```elisp
+```commonlisp
 (defvar mcp-ide-test--sent nil
   "List of JSON strings the stubbed client \"sent\", newest last.")
 
@@ -3978,7 +3978,7 @@ messages accumulate in a variable each test resets.
 
 The readback helper parses the most recent message:
 
-```elisp
+```commonlisp
 (defun mcp-ide-test--last ()
   (json-parse-string (car mcp-ide-test--sent) :object-type 'alist))
 ```
@@ -3991,7 +3991,7 @@ is a real failure mode given the empty-alist-becomes-`null` trap from §3.5.
 
 `mcp-emacs-server` hard-requires `web-server`, which may not be installed. So:
 
-```elisp
+```commonlisp
 (unless (require 'web-server nil t)
   (defun ws-response-header (&rest _) nil)
   (defun ws-start (&rest _) nil)
@@ -4014,7 +4014,7 @@ loadable.
 `orgspec-fold-test.el` needs none of the above, because `orgspec-fold-area`
 is pure. The whole harness is:
 
-```elisp
+```commonlisp
 (defun fold-test--reqs (change)
   (with-temp-buffer
     (let ((org-inhibit-startup t)) (org-mode))
@@ -4024,7 +4024,7 @@ is pure. The whole harness is:
 
 and a test is a literal Org string in, assertions on a string out:
 
-```elisp
+```commonlisp
 (let* ((delta "* Delta
 ** TODO New thing                                    :ADDED:
 :PROPERTIES:
@@ -4058,7 +4058,7 @@ Two idioms worth copying:
 
 Testing the error path uses the custom error type from §14.4:
 
-```elisp
+```commonlisp
 (check "modified-drop-guard-signals"
        (condition-case _
            (progn (orgspec-fold-area spec (fold-test--reqs delta)) nil)
@@ -4077,7 +4077,7 @@ The async apply-diff tests need to prove three timing properties: the call
 returns immediately, the timeout fires, and the timer is cancelled on early
 resolution. The last one is the clever bit:
 
-```elisp
+```commonlisp
 ;; Assert on `timer-list' directly.  The single-delivery guard would
 ;; suppress a second callback even if the timer were never cancelled,
 ;; so counting calls cannot tell the two mechanisms apart -- only an
@@ -4098,7 +4098,7 @@ about what the assertion actually proves.
 
 The timeout test does use real time, kept short:
 
-```elisp
+```commonlisp
 (mcp-emacs-apply-diff-async file "new\n" 1 (lambda (out) (push out calls)))
 (check "async-timeout-not-yet" calls nil)
 (sleep-for 2)
@@ -4117,7 +4117,7 @@ whole suite stays fast enough that nobody is tempted to skip it.
 
 The async tests share setup, factored into a macro:
 
-```elisp
+```commonlisp
 (defmacro mcp--with-async-review (bindings &rest body)
   "Run BODY with `ediff-buffers' stubbed for an async apply-diff test.
 BINDINGS is a list of (VAR . INIT) forms evaluated before the stub is
@@ -4172,7 +4172,7 @@ Noticing that, and writing the more verbose version, is the right call.
 
 `mcp-emacs-server-async-test.el` drives the JSON-RPC layer directly:
 
-```elisp
+```commonlisp
 (let* ((sent nil)
        (tool (list :name "fake_async"
                    :async-handler (lambda (_args done) (setq mcp-srv-test--done done))))
@@ -4200,7 +4200,7 @@ Two things make this work:
 
 The registry tests are worth noting for what they assert:
 
-```elisp
+```commonlisp
 (let ((tool (mcp-emacs-server--find-tool "apply_diff")))
   (check "apply-diff-has-async" (functionp (plist-get tool :async-handler)) t)
   (check "apply-diff-keeps-sync" (functionp (plist-get tool :handler)) t))
@@ -4261,7 +4261,7 @@ emacs --batch \
 Interactively, from your running Emacs — which is the fastest loop while
 developing:
 
-```elisp
+```commonlisp
 M-x load-file RET test/orgspec-fold-test.el RET
 ```
 
@@ -4292,7 +4292,7 @@ For the MCP server specifically, a tool descriptor lives inside a `defconst`,
 so re-evaluating one function is not enough. Reload the file and bounce the
 server:
 
-```elisp
+```commonlisp
 (load-file "elisp/mcp-emacs-server.el")
 (mcp-emacs-server-stop)
 (mcp-emacs-server-start)
@@ -4336,7 +4336,7 @@ The rule from `AGENTS.md`: put the work in a helper, keep the descriptor thin.
 handle its own empty and error cases, and touch live state through
 `mcp-emacs--current-buffer` if it is buffer-relative:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-count-words ()
   "Return the word count of the current buffer, or a status message."
   (with-current-buffer (mcp-emacs--current-buffer)
@@ -4348,7 +4348,7 @@ handle its own empty and error cases, and touch live state through
 
 **Step 2 — append a descriptor** to `mcp-emacs-server--tools`:
 
-```elisp
+```commonlisp
 (list :name "count_words"
       :description "Count the words in the current Emacs buffer"
       :schema (mcp-emacs-server--no-args)
@@ -4357,7 +4357,7 @@ handle its own empty and error cases, and touch live state through
 
 With arguments:
 
-```elisp
+```commonlisp
 (list :name "count_words_in"
       :description "Count the words in a named buffer"
       :schema (mcp-emacs-server--obj
@@ -4394,7 +4394,7 @@ it **must** be async or it will not work over HTTP. Re-read §3.4.
 
 Write two entry points:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-my-thing (args) ...)            ; synchronous, polls
 (defun mcp-emacs-my-thing-async (args on-done)   ; returns nil immediately,
   ...                                            ; calls ON-DONE later
@@ -4403,7 +4403,7 @@ Write two entry points:
 
 and register both:
 
-```elisp
+```commonlisp
 (list :name "my_thing"
       :description "..."
       :schema ...
@@ -4453,7 +4453,7 @@ If you want something to happen whenever the terminal-free runner sees an
 event — logging, a modeline indicator, a notification — do not use advice.
 Subscribe:
 
-```elisp
+```commonlisp
 (defun my-runner-watcher (buffer event)
   (when (eq (plist-get event :kind) 'tool-use)
     (message "claude called %s" (plist-get event :name))))
@@ -4639,7 +4639,7 @@ generally.
 
 Optional functionality never prevents the main path from working:
 
-```elisp
+```commonlisp
 (defun mcp-emacs-run--ide-port ()
   (when mcp-emacs-run-ide-integration
     (condition-case err
@@ -4655,7 +4655,7 @@ message, and a session that still launches.
 
 ## Guard cells for single delivery
 
-```elisp
+```commonlisp
 (let ((done (list nil)))
   (lambda (outcome)
     (unless (car done)
@@ -4702,18 +4702,18 @@ control the producer.
 The comments that earn their space in this codebase all have the same shape:
 they describe a failure mode, not a mechanism.
 
-```elisp
+```commonlisp
 ;; A side or dedicated window cannot be split, which aborts ediff setup
 ;; before the control buffer exists.  Remove side windows first and pin
 ;; ediff to its plain layout so the control panel lands in this frame.
 ```
 
-```elisp
+```commonlisp
 ;; Register the deferred id before opening ediff so a very fast resolve
 ;; still finds it.
 ```
 
-```elisp
+```commonlisp
 ;; Assert on `timer-list' directly.  The single-delivery guard would
 ;; suppress a second callback even if the timer were never cancelled,
 ;; so counting calls cannot tell the two mechanisms apart.
@@ -4753,7 +4753,7 @@ version number in their commentary.
 
 **1. As a full-screen TUI** (`mcp-emacs-run.el`, Chapter 9):
 
-```elisp
+```commonlisp
 (apply #'eat-make name mcp-emacs-run-executable nil switches)
 ```
 
@@ -4764,7 +4764,7 @@ nothing about the content — it is a terminal.
 
 **2. As a headless one-shot** (`mcp-emacs-run--query-headless`):
 
-```elisp
+```commonlisp
 :command (list mcp-emacs-run-executable "-p" prompt "--output-format" "text")
 ```
 
@@ -4776,7 +4776,7 @@ markdown popup. No session, no state.
 
 **3. As a structured stream** (`claude-client.el`, Chapter 10):
 
-```elisp
+```commonlisp
 (list claude-client-executable
       "--print"
       "--output-format" "stream-json"
@@ -4881,7 +4881,7 @@ Output is NDJSON — one complete JSON object per line, framed on newlines
 The `content` of a `tool_result` is either a string or an array of blocks,
 which is why the handler normalises both:
 
-```elisp
+```commonlisp
 :text (if (stringp content)
           content
         (mapconcat (lambda (c) (or (alist-get 'text c) "")) content "\n"))
@@ -4977,7 +4977,7 @@ Three version numbers are recorded in the source:
 
 The IDE constant carries an instruction for the next person:
 
-```elisp
+```commonlisp
 (defconst mcp-emacs-ide-protocol-version "2025-11-25"
   "MCP protocol version advertised to Claude Code.
 Verified against Claude Code 2.1.212; echo whatever the client offers
