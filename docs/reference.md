@@ -26,11 +26,11 @@ The document is organised as follows.
 - Chapters 8–11 cover the agent-facing surfaces: the Claude Code IDE
   integration, the terminal runner, the terminal-free runner, and the opencode
   client.
-- Chapters 12–15 cover `orgspec`, the org-native spec workflow, which is
+- Chapters 12–16 cover `orgspec`, the org-native spec workflow, which is
   effectively a second project sharing the same host.
-- Chapters 16–19 cover the test suite, how to modify the code safely, the
+- Chapters 17–20 cover the test suite, how to modify the code safely, the
   packaging, and a set of cross-cutting idioms worth learning from here.
-- Chapters 20–21 cover the Claude Code CLI surface the project depends on,
+- Chapters 21–22 cover the Claude Code CLI surface the project depends on,
   and the event model the project is moving toward.
 
 Diagrams are rendered from the PlantUML sources in `docs/`; each is named in
@@ -143,35 +143,35 @@ the order one file requires another.
 
 | File | Lines | Role |
 |---|---:|---|
-| `mcp-emacs.el` | 1318 | Every helper that touches editor state. No HTTP, no protocol. |
-| `mcp-emacs-report.el` | 144 | Files GitHub issues about the tooling itself, via `gh`. |
-| `mcp-emacs-server.el` | 686 | The HTTP server, tool/resource registries, JSON-RPC dispatch. |
+| `mcp-emacs.el` | 1319 | Every helper that touches editor state. No HTTP, no protocol. |
+| `mcp-emacs-report.el` | 145 | Files GitHub issues about the tooling itself, via `gh`. |
+| `mcp-emacs-server.el` | 687 | The HTTP server, tool/resource registries, JSON-RPC dispatch. |
 
 **Group 2 — agent-facing surfaces.**
 
 | File | Lines | Role |
 |---|---:|---|
-| `mcp-emacs-ide.el` | 468 | A WebSocket server speaking Claude Code's unofficial IDE protocol. |
-| `mcp-emacs-run.el` | 678 | Launches the Claude CLI in an `eat` terminal buffer; window management. |
-| `mcp-emacs-run-resume.el` | 172 | A native picker over past Claude sessions on disk. |
-| `mcp-emacs-remote.el` | 304 | Sends prompts to a running session; records activity as an Org transcript. |
-| `claude-client.el` | 346 | A terminal-free runner: subprocess + NDJSON stream + rendered buffer. |
-| `opencode-client.el` | 553 | An HTTP + SSE client for the opencode agent server. |
+| `mcp-emacs-ide.el` | 469 | A WebSocket server speaking Claude Code's unofficial IDE protocol. |
+| `mcp-emacs-run.el` | 679 | Launches the Claude CLI in an `eat` terminal buffer; window management. |
+| `mcp-emacs-run-resume.el` | 173 | A native picker over past Claude sessions on disk. |
+| `mcp-emacs-remote.el` | 305 | Sends prompts to a running session; records activity as an Org transcript. |
+| `claude-client.el` | 347 | A terminal-free runner: subprocess + NDJSON stream + rendered buffer. |
+| `opencode-client.el` | 554 | An HTTP + SSE client for the opencode agent server. |
 
 **Group 3 — orgspec, the org-native spec workflow.**
 
 | File | Lines | Role |
 |---|---:|---|
-| `orgspec.el` | 95 | The marker table: op tags, property names, regexes, TODO roles. |
-| `orgspec-model.el` | 61 | Three `cl-defstruct`s: scenario, requirement, change. |
-| `orgspec-parse.el` | 129 | `org-element` extraction of the model from buffers. |
-| `orgspec-fold.el` | 173 | The delta fold — the load-bearing algorithm. |
-| `orgspec-validate.el` | 112 | The hard-gate validator. |
-| `orgspec-commands.el` | 196 | The verbs: `new`, `status`, `archive`. |
-| `orgspec-lifecycle.el` | 81 | Moving a delta requirement through TODO states. |
-| `orgspec-agenda.el` | 60 | One `org-agenda` custom command as an in-flight dashboard. |
-| `orgspec-review.el` | 79 | Ediff the fold before it writes. |
-| `orgspec-mcp.el` | 178 | Typed MCP tools over the orgspec verbs. |
+| `orgspec.el` | 96 | The marker table: op tags, property names, regexes, TODO roles. |
+| `orgspec-model.el` | 62 | Three `cl-defstruct`s: scenario, requirement, change. |
+| `orgspec-parse.el` | 130 | `org-element` extraction of the model from buffers. |
+| `orgspec-fold.el` | 174 | The delta fold — the load-bearing algorithm. |
+| `orgspec-validate.el` | 113 | The hard-gate validator. |
+| `orgspec-commands.el` | 197 | The verbs: `new`, `status`, `archive`. |
+| `orgspec-lifecycle.el` | 82 | Moving a delta requirement through TODO states. |
+| `orgspec-agenda.el` | 61 | One `org-agenda` custom command as an in-flight dashboard. |
+| `orgspec-review.el` | 80 | Ediff the fold before it writes. |
+| `orgspec-mcp.el` | 179 | Typed MCP tools over the orgspec verbs. |
 
 ## What is deliberately *not* here
 
@@ -778,7 +778,7 @@ This exists because the single most common class of "the AI can't help me"
 problem is an Emacs environment problem — a GUI Emacs launched from Finder
 with a `PATH` that lacks `~/.local/bin`, so no LSP starts, so no diagnostics
 exist, so every tool returns "nothing found". The `diagnose-emacs` skill
-(Chapter 17) exists to route that class of problem here rather than into a
+(Chapter 18) exists to route that class of problem here rather than into a
 fruitless code hunt.
 
 The LSP workspace collector is worth a look for its de-duplication idiom:
@@ -3229,7 +3229,7 @@ spec have diverged, and that is worth stopping for.
 > ```
 >
 > Defining a type rather than calling `(error "...")` lets callers — and, as
-> Chapter 16 shows, tests — distinguish "the fold rejected this" from "something
+> Chapter 17 shows, tests — distinguish "the fold rejected this" from "something
 > else went wrong".
 
 
@@ -3285,8 +3285,8 @@ nothing."
 
 This is the whole fold: nested loops over ops and requirements, in a temp
 buffer, returning a string. No I/O. That purity is what makes the review
-feature (§15.3) possible *and* what makes the function trivially testable —
-Chapter 16 shows the tests exercising it with literal Org strings.
+feature (§16.3) possible *and* what makes the function trivially testable —
+Chapter 17 shows the tests exercising it with literal Org strings.
 
 `(let ((org-inhibit-startup t)) (org-mode))` skips Org's per-buffer startup
 work (agenda file scanning, visibility restoration, hook chains) which is
@@ -3336,6 +3336,328 @@ That is the "validate-all-then-write-all" discipline, and it is the reason
 
 \newpage
 
+# Building a Domain Model on Org
+
+Chapters 13 and 14 describe what `orgspec` does. This chapter is about *why
+it is shaped that way*, because the shape is not obvious and the obvious
+alternative does not work. If you ever want to build something structured on
+top of Org — a spec workflow, a task system, a knowledge base with
+invariants — this is the pattern, and this is the reasoning behind it.
+
+## The question
+
+You have Org documents. You want to treat them as domain objects: parse them
+into a model, apply operations with real invariants, write them back. The
+natural instinct, coming from XML or JSON or a database, is:
+
+```
+load → object graph → mutate objects → serialise → save
+```
+
+Org appears to offer exactly this. `org-element-parse-buffer` gives you a
+tree. `org-element-interpret-data` turns a tree back into text. Emacs 29
+added mutators — `org-element-set`, `org-element-put-property`,
+`org-element-insert-before`, `org-element-extract`, `org-element-adopt`,
+`org-element-create`. All of them exist and all of them work:
+
+```
+org-element-set                    YES
+org-element-put-property           YES
+org-element-insert-before          YES
+org-element-extract                YES
+org-element-interpret-data         YES
+org-element-create                 YES
+org-element-adopt                  YES
+```
+
+(verified on Emacs 30.2 / Org 9.7.11)
+
+So the round-trip is available. **This project uses none of it.** Not one call
+to `org-element-interpret-data` or any mutator appears in `elisp/`. That is a
+deliberate choice, and the rest of this chapter is the argument for it.
+
+## Why Org is not a DOM
+
+The decisive difference: **in Org, the buffer text is the model.** There is no
+canonical in-memory document that the text is a serialisation of. The AST is a
+*derived, cached view* of the text — the opposite relationship to a DOM, where
+the tree is authoritative and the text is one rendering of it.
+
+Everything else follows from that inversion:
+
+- The AST goes stale the moment the buffer is edited. `org-element` maintains
+  a cache with invalidation precisely because of this.
+- Elements carry `:begin` / `:end` buffer positions, which are meaningful only
+  against the buffer they came from.
+- Org's own editing commands — `org-todo`, `org-set-tags`, `org-promote` —
+  operate on **point in a live buffer**, not on element objects. Org itself
+  does not use the AST as a write path.
+
+And the practical consequence: `interpret-data` is a *formatter*, not a
+serialiser. It renders an AST according to Org's current formatting
+preferences. It does not reproduce the input.
+
+## Measuring the round-trip
+
+This is worth doing yourself rather than taking on trust. Take a delta
+requirement in this project's own format, parse it, interpret it back, and
+compare:
+
+```elisp
+(with-temp-buffer
+  (let ((org-inhibit-startup t)) (org-mode))
+  (insert src)
+  (let* ((tree (org-element-parse-buffer))
+         (out (org-element-interpret-data tree)))
+    (string= src out)))
+```
+
+Result: `nil`. The input:
+
+```org
+* TODO Notify on lockout                             :ADDED:
+:PROPERTIES:
+:AREA: auth
+:END:
+:IMPL:
+[[file:auth.el::x][x]]
+:END:
+The system SHALL notify.
+
+** Lockout triggered
+- GIVEN three failed logins
+```
+
+and what comes back:
+
+```org
+* TODO Notify on lockout                                              :ADDED:
+:PROPERTIES:
+:AREA:     auth
+:END:
+:IMPL:
+[[file:auth.el::x][x]]
+:END:
+The system SHALL notify.
+** Lockout triggered
+- GIVEN three failed logins
+```
+
+257 characters in, 277 out. Three changes, none of them requested:
+
+1. **The tag column moved.** Org re-aligned `:ADDED:` to its own preferred
+   column.
+2. **The property value was re-padded.** `:AREA: auth` became
+   `:AREA:     auth`.
+3. **A blank line vanished** — the one separating the requirement body from
+   its first scenario.
+
+Semantically identical. Textually different, in a file under version control,
+touched by a human who chose that formatting.
+
+Now consider what that means for `orgspec`. The fold rewrites `specs/*.org`
+on every archive. If each fold reflowed every requirement in the file — not
+just the ones the change touched — every archive would produce a diff full of
+whitespace noise, the ediff review from §15.3 would be unreadable, and
+`git blame` on a spec would point at whoever last archived anything.
+
+The fidelity loss is not a bug in Org. Interpreting an AST *has* to make
+formatting decisions, because the AST does not record the ones the author
+made. It is simply the wrong tool for "preserve what the human wrote".
+
+## The pattern: four rules
+
+What `orgspec` does instead, stated as rules you can apply elsewhere.
+
+### Rule 1 — Parse into your own structs, not the AST
+
+The AST is Org's vocabulary: `headline`, `section`, `paragraph`, `drawer`.
+Your domain has a different one: requirement, scenario, op, area. Build the
+latter (§12.3):
+
+```elisp
+(cl-defstruct (orgspec-requirement (:constructor orgspec-requirement-create))
+  name op area from body scenarios impl source)
+```
+
+Use `org-element` as an *extraction* tool and then leave it behind. The rest
+of your system — validator, fold, MCP handlers, tests — never sees an
+`org-element` node. It sees requirements.
+
+This buys three things. Your invariants are expressible in your own terms
+("an ADDED requirement must contain SHALL"). Your code is testable without a
+buffer. And Org's parse representation becomes an implementation detail of one
+file, `orgspec-parse.el`, rather than a dependency threaded through
+everything.
+
+### Rule 2 — Carry the raw source
+
+The slot that makes the whole thing work:
+
+```elisp
+:source (buffer-substring-no-properties
+         (org-element-property :begin headline)
+         (org-element-property :end headline))
+```
+
+`:begin` and `:end` span the entire subtree — headline, drawers, body,
+children. Capturing that text verbatim means you never have to reconstruct it.
+
+The parsed fields (`body`, `scenarios`, `op`) exist for *decisions*: does this
+validate, does this drop a scenario, which area does it route to. The `source`
+field exists for *writing*. Two representations, two jobs, and the fidelity
+problem disappears because the write path never round-trips through the parse
+path.
+
+The struct docstring says this outright:
+
+> SOURCE is the requirement's raw org subtree text, used verbatim by the
+> fold's `org-paste-subtree` (so the pasted content matches the change file
+> exactly, drawers and all).
+
+### Rule 3 — Mutate with Org's buffer API, in a temp buffer
+
+Write by replaying the human's own editing commands programmatically:
+
+```elisp
+(org-paste-subtree 1 (orgspec-requirement-source req))
+(org-todo 'none)
+(org-set-tags nil)
+(org-entry-delete (point) orgspec-area-property)
+```
+
+Note what `org-paste-subtree` is doing here. The requirement was stored at
+level 2 (under `* Delta`) with level-3 scenarios. Pasting at level 1
+**re-levels the whole subtree**, giving the L1/L2 shape specs use. You do not
+count stars. Org does the arithmetic, correctly, including for content that
+merely looks like a heading.
+
+The other structural operations follow the same principle:
+
+| Instead of | Use |
+|---|---|
+| regexp for the next `^\*` | `org-end-of-subtree` |
+| deleting a line range | `org-cut-subtree` |
+| rewriting the headline line | `org-edit-headline` |
+| regexp on `:PROP: value` | `org-entry-get` / `-put` / `-delete` |
+| counting stars | `org-paste-subtree` with a level |
+| scanning for children | `org-map-entries` with `'tree` scope |
+
+Every one of these knows about drawers, inline tasks, code blocks, and
+inherited properties. Your regexp does not.
+
+### Rule 4 — Keep the transformation pure
+
+Do all of it in a temp buffer and return a string:
+
+```elisp
+(defun orgspec-fold-area (spec-text requirements)
+  "Return the new spec text for one area.
+Pure: builds the result in a temp buffer and returns the string; writes
+nothing."
+  (with-temp-buffer
+    (let ((org-inhibit-startup t)) (org-mode))
+    (insert (or spec-text ""))
+    (dolist (op orgspec-fold-order)
+      (dolist (req requirements)
+        (when (eq (orgspec-requirement-op req) op)
+          (goto-char (point-min))
+          (orgspec-fold--apply-one req))))
+    (buffer-string)))
+```
+
+Strings in, string out. The buffer is a *computation device*, not a document
+being edited — which is a genuinely useful way to think about
+`with-temp-buffer` in Elisp generally.
+
+Three things fall out of this purity, and they are the payoff for the whole
+pattern:
+
+- **Testability.** A fold test is a literal Org string and a set of
+  assertions on the returned string. No fixtures on disk, no mocks, no
+  cleanup (§16.6).
+- **Preview.** Because the transformation produces a value rather than an
+  effect, `orgspec-review-fold` can ediff the result against the on-disk file
+  and write nothing (§15.3). "See the fold, not trust the fold" is free.
+- **Transactionality.** All areas are built in memory and only written once
+  every fold has succeeded, so a late failure leaves `specs/` untouched
+  (§14.7).
+
+None of those are available if your fold mutates a file buffer in place.
+
+## Where the model actually lives
+
+Worth being explicit, because it is unusual: `orgspec` has **no persistent
+model**. There is no database, no cache file, no serialised index. The structs
+exist only for the duration of one operation.
+
+```
+change.org  ──parse──▶  orgspec-change  ──fold──▶  new spec text  ──write──▶  spec.org
+   (truth)              (transient)                 (transient)               (truth)
+```
+
+Org files on disk are the only durable state. The model is a lens you look
+through, briefly.
+
+That is why `orgspec-status` counts checkboxes with a regexp over the file
+rather than consulting an index, and why the agenda dashboard (§15.2) is a
+*query over the change files themselves*, not over a projection. Nothing can
+be stale because nothing is stored — the same "derive, do not store" idiom
+the runner uses for its session registry (§19.4), applied to the domain model.
+
+## What you give up, and when to reconsider
+
+The pattern has real costs.
+
+**Re-parsing every time.** `orgspec-commands--read-change` re-reads and
+re-parses the change file for every operation. At this scale — one file, a few
+dozen requirements — that is microseconds. At thousands of files it would not
+be.
+
+**No incremental update.** The fold rewrites a whole spec file. Fine for
+documents a human reads; wrong for a log that only ever grows.
+
+**Cross-file invariants are awkward.** "No requirement name may repeat across
+areas" would mean parsing every spec on every validate. The current validator
+scopes itself to one change deliberately (§15.1).
+
+If you hit those limits, the escape hatch is a *cache*, not a change of model:
+keep the Org files authoritative and derive an index from them, with the
+files' modification ticks as the invalidation signal. What you should not do
+is make the model authoritative and the text a rendering — at that point you
+have stopped using Org and started using a database that happens to write
+`.org` files, and you lose the property that made Org worth choosing: **a
+human can open the file and edit it with ordinary commands, and your system
+picks that up as a matter of course.**
+
+That property is the entire reason this project stores its specs in Org rather
+than in JSON beside the code. It is the same bet as Chapter 7's task sessions
+and Chapter 21's event log: the human's editor is the interface, and the file
+is the API.
+
+## Applying this elsewhere
+
+If you want a structured workflow over Org, the checklist:
+
+1. Define `cl-defstruct`s in your domain's vocabulary, not Org's.
+2. Write one parse module using `org-element`. Remember the `section` gotcha
+   (§13.2) — a headline's paragraphs and drawers hide under a `section` child.
+3. Capture `:begin`/`:end` source text for anything you will write back.
+4. Put every marker — tag names, property names, regexes, keyword mappings —
+   in one table, as `orgspec.el` does (§12.2), so nothing downstream
+   hardcodes a string.
+5. Write transformations as pure functions over strings, in temp buffers.
+6. Mutate with `org-paste-subtree`, `org-cut-subtree`, `org-todo`,
+   `org-entry-*` — never with regexps over headline syntax.
+7. Build everything, validate everything, then write everything.
+8. Let TODO keywords be your state machine. They are already the user's
+   vocabulary, `org-agenda` already queries them, and you get a dashboard for
+   free (§15.2).
+
+Roughly 300 lines of `orgspec-parse.el` plus `orgspec-fold.el` implement all
+eight. It is a small pattern with a good ratio.
+
+\newpage
 # orgspec — Validator, Lifecycle, Review, Tools
 
 The remaining orgspec files, briefly.
@@ -4184,7 +4506,7 @@ for convenience. (§14.5.)
 **Advice depends on private names and arities.** If you must advise, expect it
 to break; prefer a published hook. (§11.2.)
 
-**A test file not listed in `ci.yml` never runs.** (§16.1.)
+**A test file not listed in `ci.yml` never runs.** (§17.1.)
 
 ## Style conventions to match
 
@@ -4746,7 +5068,7 @@ makes the design plausible rather than speculative:
 | Review | the `(list nil)` result cell | ediff tab name | accept / reject / timeout, resolved once in `ediff-quit-hook` |
 
 Every one of those is a chapter of this document. The Session aggregate is
-Chapter 7; the Spec aggregates are Chapters 12–15; the Runner is Chapters 9
+Chapter 7; the Spec aggregates are Chapters 12–16; the Runner is Chapters 9
 and 10; the Review is Chapter 6. Nothing new needs to be built to have
 aggregates — they are already here, and each already has a well-defined
 transition vocabulary.
@@ -4878,7 +5200,7 @@ The direction has practical consequences right now, independent of whether the
 log is ever built.
 
 **Prefer publishing to advising.** If you add a producer, publish an event on
-a hook (§17.5). The IDE taps are advice because they predate the pattern, not
+a hook (§18.5). The IDE taps are advice because they predate the pattern, not
 because advice is right. Every hook-based producer is one that will not need
 rewriting.
 
@@ -4892,7 +5214,7 @@ need "wake when X changes", the tick-token pattern from §7.6 is the one to
 copy — it is the one the design expects to generalise.
 
 **Assume your consumer is one of several.** Swallow your own errors
-(§17.5), never assume you are the only reader, and never mutate the event you
+(§18.5), never assume you are the only reader, and never mutate the event you
 were handed.
 
 Following those four while writing ordinary features is what makes the eventual
@@ -4939,9 +5261,9 @@ Every feature explained in this document, with the section that covers it.
 | `org-element` | The Org AST and the `section` gotcha | 13.1, 13.2 |
 | Org subtree operations | `org-paste-subtree` and re-levelling | 14.3 |
 | custom error types | `define-error` and specific catches | 14.4 |
-| `cl-flet` / `cl-labels`, Lisp-2 | Local functions and the two namespaces | 15.1 |
-| `cl-letf` | Binding places; the standard mocking mechanism | 16.3 |
-| `defmacro`, `declare`, anaphora | Test-harness macros | 16.8 |
+| `cl-flet` / `cl-labels`, Lisp-2 | Local functions and the two namespaces | 16.1 |
+| `cl-letf` | Binding places; the standard mocking mechanism | 17.3 |
+| `defmacro`, `declare`, anaphora | Test-harness macros | 17.8 |
 
 # Appendix B: File Index {-}
 
@@ -4949,7 +5271,7 @@ Every feature explained in this document, with the section that covers it.
 |---|---|---|
 | `elisp/mcp-emacs.el` | 4, 6, 7 | Helpers, the ediff review, the Org task protocol |
 | `elisp/mcp-emacs-server.el` | 5 | HTTP server, registries, JSON-RPC dispatch |
-| `elisp/mcp-emacs-report.el` | 18.3 | File GitHub issues about the tooling via `gh` |
+| `elisp/mcp-emacs-report.el` | 19.3 | File GitHub issues about the tooling via `gh` |
 | `elisp/mcp-emacs-ide.el` | 8 | Claude Code IDE WebSocket protocol |
 | `elisp/mcp-emacs-run.el` | 9 | `eat`-based CLI runner and window management |
 | `elisp/mcp-emacs-run-resume.el` | 11.4 | Native picker over past sessions |
@@ -4958,14 +5280,14 @@ Every feature explained in this document, with the section that covers it.
 | `elisp/opencode-client.el` | — | HTTP + SSE client for opencode |
 | `elisp/orgspec.el` | 12.2 | The marker table |
 | `elisp/orgspec-model.el` | 12.3 | Three structs |
-| `elisp/orgspec-parse.el` | 13 | `org-element` extraction |
-| `elisp/orgspec-fold.el` | 14 | The delta fold |
-| `elisp/orgspec-validate.el` | 15.1 | The hard-gate validator |
+| `elisp/orgspec-parse.el` | 13, 15 | `org-element` extraction; the domain-model pattern |
+| `elisp/orgspec-fold.el` | 14, 15 | The delta fold; the pure-transformation rule |
+| `elisp/orgspec-validate.el` | 16.1 | The hard-gate validator |
 | `elisp/orgspec-commands.el` | 14.7 | `new`, `status`, `archive` |
-| `elisp/orgspec-lifecycle.el` | 15.2 | TODO state transitions |
-| `elisp/orgspec-agenda.el` | 15.2 | The in-flight dashboard |
-| `elisp/orgspec-review.el` | 15.3 | Ediff the fold before writing |
-| `elisp/orgspec-mcp.el` | 15.4 | Typed `orgspec_*` MCP tools |
+| `elisp/orgspec-lifecycle.el` | 16.2 | TODO state transitions |
+| `elisp/orgspec-agenda.el` | 16.2 | The in-flight dashboard |
+| `elisp/orgspec-review.el` | 16.3 | Ediff the fold before writing |
+| `elisp/orgspec-mcp.el` | 16.4 | Typed `orgspec_*` MCP tools |
 
 # Appendix C: Diagram Index {-}
 
@@ -4974,14 +5296,14 @@ Every diagram, its PlantUML source in `docs/`, and where it appears.
 | Source | § | Shows |
 |---|---|---|
 | `architecture.puml` | 3.1 | The HTTP transport and the one-time launch |
-| `ref-cli-surface.puml` | 20 | Three CLI invocation surfaces, two editor-tool channels |
-| `ref-stream-events.puml` | 20.4 | stream-json messages mapped to internal events |
-| `ref-edit-gate.puml` | 20.6 | The two independent gates on an agent write |
-| `ref-ide-handshake.puml` | 20.7 | The blocking three-call sequence before a native edit |
-| `ref-event-today.puml` | 21.3 | Three hand-rolled wait/wake primitives; the write-only feed |
-| `event-model.puml` | 21.2 | Bounded contexts, aggregates, the shared log |
-| `ref-event-target.puml` | 21.4 | One log, many readers |
-| `event-loop.puml` | 21.5 | The cooperative loop, and the mid-flight note |
+| `ref-cli-surface.puml` | 21 | Three CLI invocation surfaces, two editor-tool channels |
+| `ref-stream-events.puml` | 21.4 | stream-json messages mapped to internal events |
+| `ref-edit-gate.puml` | 21.6 | The two independent gates on an agent write |
+| `ref-ide-handshake.puml` | 21.7 | The blocking three-call sequence before a native edit |
+| `ref-event-today.puml` | 22.3 | Three hand-rolled wait/wake primitives; the write-only feed |
+| `event-model.puml` | 22.2 | Bounded contexts, aggregates, the shared log |
+| `ref-event-target.puml` | 22.4 | One log, many readers |
+| `event-loop.puml` | 22.5 | The cooperative loop, and the mid-flight note |
 
 Regenerate all of them with:
 
