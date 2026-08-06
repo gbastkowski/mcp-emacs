@@ -277,3 +277,192 @@
         (check "mode-is-special" (derived-mode-p 'special-mode) 'special-mode)
         (check "buffer-read-only" buffer-read-only t))
     (kill-buffer buf)))
+
+;;;; Human notes (issue #39, `NoteAdded')
+;;
+;; A note is the second writer to the log.  It must be recorded immediately
+;; -- that is the whole point, the human can add a thought at any time --
+;; but in this slice it reaches the model only when the turn ends.
+;;
+;; Whether a turn is running changes the behaviour, so most of these tests
+;; have to fake a live process: with none, a note has nothing to wait for
+;; and drains at once.
+
+(defmacro claude-test--with-running-turn (&rest body)
+  "Run BODY with this buffer marked as having a turn in flight.
+Turn state is tracked from the stream, not the process: `claude --print'
+stays alive after `result', so process liveness cannot stand in for it."
+  `(let ((claude-client--turn-active t))
+     ,@body))
+
+;; The note lands in the log as soon as it is written, and waits while a
+;; turn is running.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (claude-test--with-running-turn
+         (claude-client-add-note "look at the error handling"))
+        (check "note-logged-immediately" (claude-test--kinds buf) '(note))
+        (check "note-text"
+               (plist-get (car claude-client--events) :text)
+               "look at the error handling")
+        (check "note-queued"
+               claude-client--pending-notes '("look at the error handling")))
+    (kill-buffer buf)))
+
+;; Turn state must not be inferred from the process.  `claude --print' stays
+;; alive after emitting `result' (it waits on stdin), so a live process is
+;; not evidence of a turn in flight -- reading it that way left notes queued
+;; forever once a run had finished.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t)))
+          ;; Process "alive", but the turn ended: the note must still drain.
+          (setq claude-client--turn-active nil)
+          (claude-client-add-note "after the turn")
+          (check "live-process-is-not-an-active-turn"
+                 claude-client--pending-notes nil)))
+    (kill-buffer buf)))
+
+;; The stream is what starts and ends a turn.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (setq claude-client--turn-active t)
+        (claude-test--feed buf (concat claude-test--result "\n"))
+        (check "result-clears-turn-active" claude-client--turn-active nil))
+    (kill-buffer buf)))
+
+;; With no turn running the note has nothing to wait for, so it is delivered
+;; straight away rather than sitting queued for a turn that may never come.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (claude-client-add-note "idle note")
+        (check "idle-note-drains-now" claude-client--pending-notes nil)
+        (check "idle-note-delivery-event"
+               (claude-test--kinds buf) '(note notes-delivered)))
+    (kill-buffer buf)))
+
+;; Empty and whitespace notes are rejected rather than logged as blanks.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (check "empty-note-errors"
+               (condition-case _ (progn (claude-client-add-note "   ") nil)
+                 (user-error t))
+               t)
+        (check "empty-note-not-logged" (claude-test--kinds buf) nil))
+    (kill-buffer buf)))
+
+;; Notes keep their order and all of them are queued.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (claude-test--with-running-turn
+         (claude-client-add-note "first")
+         (claude-client-add-note "second"))
+        (check "notes-ordered" claude-client--pending-notes '("first" "second")))
+    (kill-buffer buf)))
+
+;; Notes are drained when the turn's `result' arrives -- after the
+;; `finished' event, so the log reads in the order things happened.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (claude-test--feed buf (concat claude-test--init "\n"))
+        (claude-test--with-running-turn
+         (claude-client-add-note "mid-turn thought"))
+        (check "note-pending-during-turn"
+               claude-client--pending-notes '("mid-turn thought"))
+        (claude-test--feed buf (concat claude-test--result "\n"))
+        (check "notes-drained-at-turn-end" claude-client--pending-notes nil)
+        (check "drain-order"
+               (claude-test--kinds buf)
+               '(started note finished notes-delivered))
+        (check "delivered-carries-notes"
+               (plist-get (car (last claude-client--events)) :notes)
+               '("mid-turn thought")))
+    (kill-buffer buf)))
+
+;; A turn that ends with no notes produces no delivery event.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (progn
+        (claude-test--feed buf
+                           (concat claude-test--init "\n")
+                           (concat claude-test--result "\n"))
+        (check "no-notes-no-delivery-event"
+               (claude-test--kinds buf) '(started finished)))
+    (kill-buffer buf)))
+
+;; Notes are announced on the subscriber hook like any other event, so the
+;; transcript sees the human's writes on the same channel as the runner's.
+(let* ((buf (claude-test--buffer))
+       (seen nil)
+       (claude-client-event-functions
+        (list (lambda (_b e) (push (plist-get e :kind) seen)))))
+  (unwind-protect
+      (with-current-buffer buf
+        (claude-test--with-running-turn
+         (claude-client-add-note "via hook"))
+        (check "note-reaches-subscribers" seen '(note)))
+    (kill-buffer buf)))
+
+;; Notes render, and a note added while a turn is running is marked pending.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (claude-test--with-running-turn
+         (claude-client-add-note "rendered note"))
+        (check "note-rendered"
+               (and (string-match-p "> rendered note" (claude-test--text buf)) t) t)
+        (check "note-pending-marked"
+               (plist-get (car claude-client--events) :pending) t))
+    (kill-buffer buf)))
+
+;; A note outside a conversation buffer is refused rather than silently lost.
+(with-temp-buffer
+  (check "note-outside-conversation-errors"
+         (condition-case _ (progn (claude-client-add-note "x") nil)
+           (user-error t))
+         t))
+
+;; Starting a run resets the event log, so a note queued beforehand has to be
+;; carried into the outgoing prompt or the human's words are silently lost.
+;; Stub the subprocess and capture what would be written to its stdin.
+(let ((sent nil))
+  (cl-letf (((symbol-function 'make-process) (lambda (&rest _) 'fake-proc))
+            ((symbol-function 'process-send-string)
+             (lambda (_p s) (setq sent s)))
+            ((symbol-function 'pop-to-buffer) #'ignore)
+            ;; Keep the real buffer out of the way of an interactive session.
+            ((symbol-function 'claude-client--mcp-config-file) (lambda () "/tmp/m.json"))
+            ((symbol-function 'claude-client--settings-file) (lambda () "/tmp/s.json"))
+            ((symbol-function 'claude-client--system-prompt-file) (lambda () "/tmp/p.txt")))
+    (let ((buf (get-buffer-create "*claude-client*")))
+      (unwind-protect
+          (progn
+            (with-current-buffer buf
+              (claude-client-mode)
+              (setq claude-client--process nil)
+              (claude-test--with-running-turn
+               (claude-client-add-note "remember the timeout")))
+            (claude-client-start "do the thing")
+            (let ((text (alist-get
+                         'text
+                         (aref (alist-get
+                                'content
+                                (alist-get 'message
+                                           (json-parse-string
+                                            sent :object-type 'alist
+                                            :array-type 'array)))
+                               0))))
+              (check "restart-carries-note"
+                     (and (string-match-p "remember the timeout" text) t) t)
+              (check "restart-keeps-prompt"
+                     (and (string-match-p "do the thing" text) t) t))
+            (with-current-buffer buf
+              (check "restart-clears-queue" claude-client--pending-notes nil)))
+        (let ((kill-buffer-query-functions nil)) (kill-buffer buf))))))

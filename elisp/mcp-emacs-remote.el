@@ -260,6 +260,19 @@ degrades to silence instead of a malformed entry."
       (format "  - %s runner %s"
               (mcp-emacs-remote--timestamp)
               (or (plist-get event :subtype) "done"))))
+    ;; The human writing to the log, not the runner.  Recorded on the same
+    ;; channel and in the same order as everything else -- that is the point
+    ;; of one shared log rather than two side-by-side records.
+    ('note
+     (mcp-emacs-remote--append
+      (format "  - %s human :: %s"
+              (mcp-emacs-remote--timestamp)
+              (or (plist-get event :text) ""))))
+    ('notes-delivered
+     (mcp-emacs-remote--append
+      (format "  - %s carried %d note(s) forward"
+              (mcp-emacs-remote--timestamp)
+              (length (plist-get event :notes)))))
     (_ nil)))
 
 (defun mcp-emacs-remote--tap-runner-event (buffer event)
