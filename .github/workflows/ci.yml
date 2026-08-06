@@ -29,6 +29,9 @@ jobs:
             --eval "(package-install 'web-server)" \
             --eval "(package-install 'websocket)"
 
+      # Globbed rather than listed: the explicit lists silently fell behind as
+      # files were added, so claude-client.el, mcp-emacs-run.el and
+      # opencode-client.el were never compiled or tested here at all.
       - name: Byte-compile
         run: |
           emacs --batch \
@@ -36,18 +39,28 @@ jobs:
             --eval "(package-initialize)" \
             -L elisp \
             -f batch-byte-compile \
-            elisp/mcp-emacs.el elisp/mcp-emacs-report.el elisp/mcp-emacs-server.el elisp/mcp-emacs-ide.el elisp/mcp-emacs-remote.el \
-            elisp/orgspec-model.el elisp/orgspec.el elisp/orgspec-parse.el elisp/orgspec-fold.el elisp/orgspec-validate.el elisp/orgspec-commands.el \
-            elisp/orgspec-lifecycle.el elisp/orgspec-agenda.el elisp/orgspec-review.el elisp/orgspec-mcp.el \
-            elisp/mcp-emacs-run-resume.el
+            elisp/*.el
 
       - name: Run tests
         run: |
-          for t in test/mcp-emacs-apply-diff-test.el test/mcp-emacs-ide-test.el test/mcp-emacs-report-test.el test/mcp-emacs-remote-test.el test/orgspec-fold-spike-test.el test/orgspec-parse-test.el test/orgspec-fold-test.el test/orgspec-lifecycle-test.el test/orgspec-agenda-test.el test/orgspec-review-test.el test/orgspec-validate-test.el test/orgspec-mcp-test.el test/mcp-emacs-run-resume-test.el; do
+          status=0
+          for t in test/*.el; do
             echo "== $t =="
-            emacs --batch \
-              --eval "(require 'package)" \
-              --eval "(package-initialize)" \
-              -L elisp -l "$t" 2>&1 | tee "/tmp/out.txt"
-            grep -q FAIL "/tmp/out.txt" && { echo "TESTS FAILED in $t"; exit 1; } || true
+            # A suite that dies before printing anything used to pass, because
+            # the check only grepped for FAIL.  Require the run to exit clean
+            # AND to have produced at least one PASS.
+            if emacs --batch \
+                 --eval "(require 'package)" \
+                 --eval "(package-initialize)" \
+                 -L elisp -l "$t" 2>&1 | tee /tmp/out.txt; then
+              :
+            else
+              echo "ERRORED: $t"; status=1; continue
+            fi
+            if grep -q '^FAIL' /tmp/out.txt; then
+              echo "TESTS FAILED in $t"; status=1
+            elif ! grep -q '^PASS' /tmp/out.txt; then
+              echo "NO ASSERTIONS RAN in $t"; status=1
+            fi
           done
+          exit $status
