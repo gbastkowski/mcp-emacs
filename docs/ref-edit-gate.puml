@@ -1,0 +1,52 @@
+@startuml ref-edit-gate
+title Two independent gates on an agent file write
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName sans-serif
+skinparam ArrowColor #555555
+skinparam activity {
+  BorderColor #888888
+  BackgroundColor #F7F7F7
+  DiamondBorderColor #4472A8
+  DiamondBackgroundColor #EAF0F8
+}
+
+start
+:model wants to change a file;
+
+if (which runner?) then (claude-client\nheadless stream)
+  :built-in Edit/Write/MultiEdit\ndisabled via --disallowedTools;
+  :only path left is\nmcp__emacs__apply_diff;
+  if (tool in\nclaude-client-allowed-mcp-tools?) then (yes)
+    :apply_diff over MCP HTTP;
+  else (no)
+    :refused before the human\never sees an ediff;
+    stop
+  endif
+else (mcp-emacs-run\nTUI + IDE integration)
+  :CLI uses its native Edit/Write;
+  if (CLAUDE_CODE_SSE_PORT set\nand IDE connected?) then (yes)
+    :routed through openDiff;
+  else (no)
+    :CLI writes the file directly\n-- NO gate;
+    stop
+  endif
+endif
+
+:mcp-emacs--ediff-review;
+:window config captured,\nside windows deleted;
+
+if (human decision) then (C-c C-c accept)
+  if (buffer A still at entry content?) then (yes)
+    :copy proposal into buffer A;
+  else (hand-edited)
+    :keep the human's edit,\ndiscard the proposal;
+  endif
+  :result = applied;
+else (C-c C-k / q / timeout)
+  :result = rejected or timeout;
+endif
+
+:ediff-quit-hook fires once\n-> restore layout, resolve;
+stop
+@enduml

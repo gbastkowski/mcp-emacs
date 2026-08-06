@@ -1,0 +1,48 @@
+@startuml ref-stream-events
+title stream-json messages to claude-client events
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName sans-serif
+skinparam sequenceArrowColor #555555
+skinparam sequence {
+  LifeLineBorderColor #888888
+  ParticipantBorderColor #4472A8
+  ParticipantBackgroundColor #EAF0F8
+}
+
+participant "CLI stdout\n(NDJSON)" as Out
+participant "--filter\n(line framing)" as Filter
+participant "--handle-message\n(message -> events)" as Handle
+participant "--push-event\n(log + hook + render)" as Push
+participant "subscribers\n(render, transcript)" as Sub
+
+Out -> Filter : {"type":"system","subtype":"init",...}
+Filter -> Handle : parsed alist
+Handle -> Push : (:kind started :session ID :model M)
+Push -> Sub : run-hook-with-args
+
+Out -> Filter : {"type":"assistant","message":{"content":[...]}}
+Filter -> Handle : parsed alist
+note right of Handle
+  one message -> N events
+  content block "text"     -> (:kind text :text ...)
+  content block "tool_use" -> (:kind tool-use :name :input)
+end note
+Handle -> Push : (:kind text ...)
+Handle -> Push : (:kind tool-use ...)
+Push -> Sub : per event
+
+Out -> Filter : {"type":"user","message":{"content":[tool_result]}}
+Filter -> Handle : parsed alist
+Handle -> Push : (:kind tool-result :text ...)
+
+Out -> Filter : {"type":"result","subtype":...,"permission_denials":[...]}
+Filter -> Handle : parsed alist
+Handle -> Push : (:kind finished :subtype :denials)
+
+note over Filter
+  chunk boundaries are arbitrary:
+  accumulate, consume up to the
+  last newline, keep the tail
+end note
+@enduml

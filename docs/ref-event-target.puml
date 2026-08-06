@@ -1,0 +1,48 @@
+@startuml ref-event-target
+title Target: one log, many readers -- the AI is one reactor among several
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName sans-serif
+skinparam ArrowColor #555555
+skinparam rectangle {
+  BorderColor #888888
+  BackgroundColor #F7F7F7
+}
+
+actor Human
+rectangle "Session\n(org-task subtree)" as Session
+rectangle "Change / Requirement\n(orgspec)" as Change
+rectangle "RunnerSession\n(eat or claude-client)" as Runner
+rectangle "DiffReview\n(result cell)" as Review
+
+cloud "**Event Log**\nappend-only, ordered, cursored" as Log #EAF0F8
+
+rectangle "AI reactor\nconsume since cursor,\nact, emit" as AI
+rectangle "Rendered transcript\n(exists today)" as Render
+rectangle "Agenda refresh" as Agenda
+rectangle "Lint / CI trigger" as Lint
+
+Human --> Log : NoteAdded, FileChanged
+Session --> Log : SessionStatusChanged\nItemStatusChanged, NoteAppended
+Change --> Log : ChangeProposed, RequirementAdvanced\nFoldArchived
+Runner --> Log : RunnerStarted, RunnerQuit\nToolInvoked
+Review --> Log : DiffOpened, DiffResolved
+
+Log --> AI
+Log --> Render
+Log --> Agenda
+Log --> Lint
+
+AI --> Log : FileChanged, ToolInvoked\n(the AI is also a producer)
+
+note right of AI #FFF6E0
+  **Open question 1: interruption**
+  NoteAdded arrives mid tool-call.
+  finish / abort / re-plan?
+end note
+
+note bottom of Log #FFF6E0
+  **Open question 2: ordering**  two writers on one file
+  **Open question 3: backpressure**  queue / coalesce / latest-wins
+end note
+@enduml

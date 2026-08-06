@@ -1,0 +1,55 @@
+@startuml ref-ide-handshake
+title The IDE native-edit handshake (verified against Claude Code 2.1.212)
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName sans-serif
+skinparam sequenceArrowColor #555555
+skinparam sequence {
+  LifeLineBorderColor #888888
+  ParticipantBorderColor #4472A8
+  ParticipantBackgroundColor #EAF0F8
+  ActorBorderColor #4472A8
+}
+
+participant "Claude Code CLI" as CLI
+participant "mcp-emacs-ide\n(WebSocket server)" as IDE
+participant "mcp-emacs--ediff-review" as Review
+actor Human
+
+== connect ==
+CLI -> IDE : initialize
+IDE -> CLI : protocolVersion "2025-11-25"
+CLI -> IDE : tools/list
+IDE -> CLI : openDiff, close_tab,\ncloseAllDiffTabs, getDiagnostics
+CLI -> IDE : notifications (no id, no reply)
+
+== before every native edit ==
+CLI -> IDE : tools/call closeAllDiffTabs
+activate CLI #DDDDDD
+IDE -> CLI : CLOSED_n_DIFF_TABS
+CLI -> IDE : tools/call getDiagnostics
+IDE -> CLI : "[]"  (stubbed, but must answer)
+deactivate CLI
+note right of CLI
+  the CLI BLOCKS on each of these;
+  serving only openDiff hangs it
+end note
+
+== the edit ==
+CLI -> IDE : tools/call openDiff\n(old_file_path, new_file_contents, tab_name)
+activate IDE
+IDE -> IDE : puthash tab_name -> request id\n(deferred BEFORE ediff opens)
+IDE -> Review : ediff buffer-a vs buffer-b
+note over IDE : no response sent
+Review -> Human : ediff panel\nC-c C-c accept / C-c C-k or q reject
+Human -> Review : decision
+Review -> IDE : on-resolve (ediff-quit-hook, fires once)
+alt accepted
+  IDE -> CLI : result(id) FILE_SAVED + final content
+  note right of CLI : the CLI writes the file
+else rejected / plain q
+  IDE -> CLI : result(id) DIFF_REJECTED + tab_name
+end
+IDE -> IDE : cleanup-diff (kill buffer-b, remhash)
+deactivate IDE
+@enduml

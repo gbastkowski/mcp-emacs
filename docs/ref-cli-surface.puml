@@ -1,0 +1,52 @@
+@startuml ref-cli-surface
+title Claude Code CLI surfaces used by mcp-emacs
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName sans-serif
+skinparam ArrowColor #555555
+skinparam rectangle {
+  BorderColor #888888
+  BackgroundColor #F7F7F7
+}
+skinparam package {
+  BorderColor #4472A8
+  BackgroundColor #FFFFFF
+  FontColor #4472A8
+}
+
+rectangle "claude (CLI)" as CLI #EAF0F8
+
+package "1. TUI runner (mcp-emacs-run)" {
+  rectangle "eat terminal buffer\n*claude:<project>:<n>*" as Eat
+}
+package "2. Headless one-shot (mcp-emacs-run)" {
+  rectangle "make-process\n-p PROMPT --output-format text" as Headless
+}
+package "3. Stream runner (claude-client)" {
+  rectangle "make-process\n--print --output-format stream-json\n--input-format stream-json" as Stream
+}
+
+package "Editor-tool channels" {
+  rectangle "MCP over HTTP\nlocalhost:8765/mcp\n(mcp-emacs-server)" as MCP
+  rectangle "IDE over WebSocket\n127.0.0.1:<random>\n(mcp-emacs-ide)" as IDE
+}
+
+Eat --> CLI : ANSI TUI, keystrokes in
+Headless --> CLI : stdout text
+Stream --> CLI : NDJSON both ways
+
+CLI --> MCP : tools/list, tools/call\n(--mcp-config / user config)
+CLI --> IDE : openDiff, getDiagnostics,\ncloseAllDiffTabs, close_tab\n(CLAUDE_CODE_SSE_PORT env)
+
+note bottom of IDE
+  Only reached when the CLI is launched with
+  CLAUDE_CODE_SSE_PORT + ENABLE_IDE_INTEGRATION.
+  Gates the CLI's *native* Edit/Write.
+end note
+
+note bottom of MCP
+  Always available to any MCP client.
+  Gates edits via apply_diff when the CLI's
+  own Edit/Write are disallowed.
+end note
+@enduml

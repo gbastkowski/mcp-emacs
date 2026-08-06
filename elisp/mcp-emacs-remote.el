@@ -52,6 +52,12 @@
 (require 'mcp-emacs-run)
 (require 'mcp-emacs-ide)
 
+;; Declared rather than required: the transcript subscribes to the runner's
+;; event hook, but neither module needs the other loaded.  That is the point
+;; of publishing events instead of advising -- adding a reader costs nothing
+;; on the writer's side.
+(defvar claude-client-event-functions)
+
 (defgroup mcp-emacs-remote nil
   "Remote-control an interactive Claude session from Emacs."
   :group 'tools)
@@ -215,6 +221,56 @@ returns nothing, so the wrapped completion runs unchanged."
   (when mcp-emacs-remote-enabled
     (mcp-emacs-remote-record-session-end)))
 
+;;;; Runner subscriber (claude-client)
+
+;; The IDE taps above are advice: the transcript only learns what the IDE
+;; surface happens to be asked.  `claude-client' instead *publishes* an
+;; append-only event log and announces each event on a hook, so this is a
+;; plain subscriber -- no advice, and rendering stays one consumer among
+;; several.  That is the direction issue #39 wants: one log, many readers.
+
+(defun mcp-emacs-remote--record-runner-event (event)
+  "Record a `claude-client' EVENT into the transcript.
+EVENT is a plist as published on `claude-client-event-functions'.
+Unknown kinds are ignored rather than guessed at, so a new event kind
+degrades to silence instead of a malformed entry."
+  (pcase (plist-get event :kind)
+    ('started
+     (mcp-emacs-remote--append
+      (format "* Runner  %s\n:PROPERTIES:\n:SESSION: %s\n:MODEL: %s\n:END:"
+              (mcp-emacs-remote--timestamp)
+              (or (plist-get event :session) "?")
+              (or (plist-get event :model) "?"))))
+    ('text
+     (mcp-emacs-remote--append
+      (format "  - %s assistant :: %s"
+              (mcp-emacs-remote--timestamp)
+              (car (split-string (or (plist-get event :text) "") "\n")))))
+    ('tool-use
+     (mcp-emacs-remote-record-tool-call
+      (or (plist-get event :name) "?")
+      (plist-get event :input)))
+    ('tool-result
+     (mcp-emacs-remote--append
+      (format "  - %s result :: %s"
+              (mcp-emacs-remote--timestamp)
+              (car (split-string (or (plist-get event :text) "") "\n")))))
+    ('finished
+     (mcp-emacs-remote--append
+      (format "  - %s runner %s"
+              (mcp-emacs-remote--timestamp)
+              (or (plist-get event :subtype) "done"))))
+    (_ nil)))
+
+(defun mcp-emacs-remote--tap-runner-event (buffer event)
+  "Subscriber for `claude-client-event-functions'.
+Records EVENT from conversation BUFFER when recording is enabled.
+Errors are swallowed: a transcript problem must never take down the
+runner whose events it is observing."
+  (ignore buffer)
+  (when mcp-emacs-remote-enabled
+    (ignore-errors (mcp-emacs-remote--record-runner-event event))))
+
 ;;;###autoload
 (defun mcp-emacs-remote-enable ()
   "Install the transcript taps on the IDE surface (idempotent).
@@ -226,7 +282,9 @@ Also sets `mcp-emacs-remote-enabled'."
               #'mcp-emacs-remote--tap-complete-open-diff)
   (advice-add 'mcp-emacs-ide-start :after #'mcp-emacs-remote--tap-start)
   (when (fboundp 'mcp-emacs-ide-stop)
-    (advice-add 'mcp-emacs-ide-stop :before #'mcp-emacs-remote--tap-stop)))
+    (advice-add 'mcp-emacs-ide-stop :before #'mcp-emacs-remote--tap-stop))
+  (add-hook 'claude-client-event-functions
+            #'mcp-emacs-remote--tap-runner-event))
 
 ;;;###autoload
 (defun mcp-emacs-remote-disable ()
@@ -238,7 +296,9 @@ Also sets `mcp-emacs-remote-enabled'."
                  #'mcp-emacs-remote--tap-complete-open-diff)
   (advice-remove 'mcp-emacs-ide-start #'mcp-emacs-remote--tap-start)
   (when (fboundp 'mcp-emacs-ide-stop)
-    (advice-remove 'mcp-emacs-ide-stop #'mcp-emacs-remote--tap-stop)))
+    (advice-remove 'mcp-emacs-ide-stop #'mcp-emacs-remote--tap-stop))
+  (remove-hook 'claude-client-event-functions
+               #'mcp-emacs-remote--tap-runner-event))
 
 (provide 'mcp-emacs-remote)
 ;;; mcp-emacs-remote.el ends here
