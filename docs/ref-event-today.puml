@@ -1,0 +1,50 @@
+@startuml ref-event-today
+title Today: three wait/wake primitives, each hand-rolled, and a write-only feed
+skinparam backgroundColor white
+skinparam shadowing false
+skinparam defaultFontName sans-serif
+skinparam ArrowColor #555555
+skinparam rectangle {
+  BorderColor #888888
+  BackgroundColor #F7F7F7
+}
+skinparam package {
+  BorderColor #4472A8
+  BackgroundColor #FFFFFF
+  FontColor #4472A8
+}
+
+package "Wait/wake, reinvented three times" {
+  rectangle "org_task_wait_for_change\nbuffer-chars-modified-tick baseline\n+ accept-process-output poll" as Tick
+  rectangle "apply_diff review\n(list nil) cell\n+ single-fire ediff-quit-hook" as Cell
+  rectangle "claude-client\nNDJSON filter\n+ claude-client-event-functions" as Hook
+}
+
+package "Feeds" {
+  rectangle "mcp-emacs-remote\nOrg transcript buffer\n*claude: <project>*" as Transcript #EAF0F8
+}
+
+rectangle "IDE surface\nmcp-emacs-ide--call-tool\nmcp-emacs-ide--complete-open-diff" as IDE
+rectangle "Runner\nclaude-client--push-event" as Runner
+
+IDE -[#B03030]-> Transcript : :before ADVICE\n(fragile: private name + arity)
+Runner --> Transcript : HOOK subscriber\n(published seam)
+
+actor Human
+Human --> Transcript : reads it
+Transcript -[#B03030]-> Human : rendered only
+
+note right of Transcript #FFE9E9
+  **The gap**
+  append-only but WRITE-ONLY:
+  nothing reads it back,
+  no cursor, no subscribers,
+  no replay.
+end note
+
+note bottom of Tick
+  each aggregate polls
+  its own thing; no shared
+  notion of "something happened"
+end note
+@enduml
