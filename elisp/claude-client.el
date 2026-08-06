@@ -100,6 +100,19 @@ model, and the append-only log issue #39 wants to subscribe to.")
 (defvar-local claude-client--session-id nil
   "Claude session id, from the `system'/`init' event.")
 
+(defvar-local claude-client--pending-notes nil
+  "Notes added by the human that the model has not been shown yet.
+Oldest first.  A note is logged the moment it is written -- it is part
+of the shared record immediately -- but it is only handed to the model
+when the current turn ends.  See `claude-client-add-note'.")
+
+(defvar-local claude-client--turn-active nil
+  "Non-nil while a turn is in flight, i.e. between spawn and `result'.
+Tracked from the stream rather than from the process: `claude --print'
+stays alive after emitting `result' (it waits on stdin for a follow-up
+turn), so `process-live-p' reports `run' long after the turn is over
+and cannot answer \"is the model working right now?\".")
+
 (defvar claude-client-event-functions nil
   "Abnormal hook run with (BUFFER EVENT) for every parsed event.
 Each EVENT is a plist as stored in `claude-client--events'.  This is
@@ -217,8 +230,66 @@ pointing at the running server's endpoint."
       (claude-client--push-event
        buffer (list :kind 'finished
                     :subtype (alist-get 'subtype msg)
-                    :denials (alist-get 'permission_denials msg))))
+                    :denials (alist-get 'permission_denials msg)))
+      ;; Turn over: anything the human wrote while it ran is surfaced now.
+      ;; Drained after `finished' so the log reads in the order things
+      ;; actually happened.
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer (setq claude-client--turn-active nil)))
+      (claude-client--drain-notes buffer))
      (t nil))))
+
+;;;; Notes from the human (issue #39, `NoteAdded')
+
+;; The second writer.  Until now the log had one producer (the runner) and
+;; readers; a note is the human producing to the same log, which is what the
+;; event-stream direction is actually for.
+;;
+;; Delivery is deliberately conservative in this slice: the note is logged
+;; and visible *immediately*, but it is only handed to the model when the
+;; current turn ends.  Nothing is aborted mid tool-call.  That is not a
+;; claim that queueing is the right interruption rule -- it is the honest
+;; behaviour for a one-shot runner that has no way to steer a turn in
+;; flight (no multi-turn stdin, no `--resume').  Deciding finish/abort/
+;; re-plan is still the open question in #39, and it needs a runner that
+;; can act on the answer.
+
+;;;###autoload
+(defun claude-client-add-note (text)
+  "Add TEXT to this conversation's log as a human note.
+The note is recorded at once, so it is part of the shared record the
+moment it is written and every subscriber sees it.  If a turn is
+running the model is shown the note when that turn ends; if nothing is
+running it is queued for the next one."
+  (interactive "sNote: ")
+  (unless (derived-mode-p 'claude-client-mode)
+    (user-error "Not in a Claude conversation buffer"))
+  (let ((note (string-trim text))
+        (running (and claude-client--turn-active t)))
+    (when (string-empty-p note)
+      (user-error "Empty note"))
+    (setq claude-client--pending-notes
+          (append claude-client--pending-notes (list note)))
+    (claude-client--push-event
+     (current-buffer)
+     (list :kind 'note :text note :pending running))
+    ;; With no turn running there is nothing to wait for: the drain fires on
+    ;; `result', so a note added while idle would otherwise sit queued until
+    ;; some later turn happened to end -- or forever, if none did.
+    (unless running
+      (claude-client--drain-notes (current-buffer)))))
+
+(defun claude-client--drain-notes (buffer)
+  "Surface BUFFER's pending notes now that its turn has ended.
+Returns the drained notes, oldest first, and clears the queue."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let ((notes claude-client--pending-notes))
+        (setq claude-client--pending-notes nil)
+        (when notes
+          (claude-client--push-event
+           buffer (list :kind 'notes-delivered :notes notes)))
+        notes))))
 
 ;;;; Streaming
 
@@ -266,6 +337,13 @@ pointing at the running server's endpoint."
          (format "  → %s"
                  (car (split-string text "\n"))))))
     ('finished (format "── %s ──" (or (plist-get event :subtype) "done")))
+    ('note (format "> %s%s"
+                   (plist-get event :text)
+                   (if (plist-get event :pending) "  (pending)" "")))
+    ('notes-delivered
+     (format "── %d note%s to carry forward ──"
+             (length (plist-get event :notes))
+             (if (= 1 (length (plist-get event :notes))) "" "s")))
     (_ nil)))
 
 (defun claude-client--render ()
@@ -294,30 +372,41 @@ file change opens an ediff for the human to accept or reject."
       ;; One conversation buffer, one subprocess.  Silently restarting would
       ;; orphan the running CLI -- and any ediff it is blocked on, which then
       ;; waits for a human whose answer no longer goes anywhere.
-      (when (process-live-p claude-client--process)
+      (when claude-client--turn-active
         (user-error "A Claude run is already active here; `k' to kill it first"))
       (let ((inhibit-read-only t)) (erase-buffer))
-      (setq claude-client--events nil
-            claude-client--stdout ""
-            claude-client--session-id nil)
-      (let ((proc (make-process
-                   :name "claude-client"
-                   :buffer nil
-                   :command (claude-client--command)
-                   :connection-type 'pipe
-                   :noquery t
-                   :filter (lambda (p c) (claude-client--filter buffer p c))
-                   :sentinel (lambda (p c)
-                               (claude-client--sentinel buffer p c)))))
-        (setq claude-client--process proc)
-        (process-send-string
-         proc
-         (concat (json-encode
-                  `((type . "user")
-                    (message . ((role . "user")
-                                (content . [((type . "text")
-                                             (text . ,prompt))])))))
-                 "\n"))))
+      ;; Notes queued before this run (or left over from the last one) are
+      ;; carried into the prompt rather than dropped -- a note the human
+      ;; wrote must not vanish just because the log was reset.
+      (let ((carried claude-client--pending-notes))
+        (setq claude-client--events nil
+              claude-client--stdout ""
+              claude-client--session-id nil
+              claude-client--pending-notes nil)
+        (let ((text (if carried
+                        (concat prompt "\n\nNotes from the human:\n"
+                                (mapconcat (lambda (n) (concat "- " n))
+                                           carried "\n"))
+                      prompt))
+              (proc (make-process
+                     :name "claude-client"
+                     :buffer nil
+                     :command (claude-client--command)
+                     :connection-type 'pipe
+                     :noquery t
+                     :filter (lambda (p c) (claude-client--filter buffer p c))
+                     :sentinel (lambda (p c)
+                                 (claude-client--sentinel buffer p c)))))
+          (setq claude-client--process proc
+                claude-client--turn-active t)
+          (process-send-string
+           proc
+           (concat (json-encode
+                    `((type . "user")
+                      (message . ((role . "user")
+                                  (content . [((type . "text")
+                                               (text . ,text))])))))
+                   "\n")))))
     (pop-to-buffer buffer)
     buffer))
 
@@ -326,7 +415,8 @@ file change opens an ediff for the human to accept or reject."
   (interactive)
   (when (process-live-p claude-client--process)
     (delete-process claude-client--process))
-  (setq claude-client--process nil))
+  (setq claude-client--process nil
+        claude-client--turn-active nil))
 
 ;;;; Major mode
 
@@ -334,6 +424,7 @@ file change opens an ediff for the human to accept or reject."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "g") #'claude-client-start)
     (define-key map (kbd "k") #'claude-client-quit)
+    (define-key map (kbd "n") #'claude-client-add-note)
     map)
   "Keymap for `claude-client-mode'.")
 

@@ -211,6 +211,27 @@
   (mcp-emacs-remote--tap-runner-event nil (list :kind 'text :text "should not appear"))
   (check "runner-disabled-silent" (remote--transcript-text) nil))
 
+;; The human's own writes land in the same transcript, on the same channel
+;; as the runner's events -- one shared record, not two.
+(remote--kill-transcripts)
+(let ((mcp-emacs-remote-enabled t))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+    (mcp-emacs-remote--tap-runner-event
+     nil (list :kind 'note :text "check the error path" :pending t))
+    (check "runner-note-recorded"
+           (and (string-match-p "human :: check the error path"
+                                (remote--transcript-text))
+                t)
+           t)))
+
+(remote--kill-transcripts)
+(let ((mcp-emacs-remote-enabled t))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+    (mcp-emacs-remote--tap-runner-event
+     nil (list :kind 'notes-delivered :notes '("a" "b")))
+    (check "runner-notes-delivered-recorded"
+           (and (string-match-p "carried 2 note" (remote--transcript-text)) t) t)))
+
 ;; An unknown event kind is ignored rather than guessed at, so adding a new
 ;; kind to the runner cannot produce a malformed transcript entry.
 (remote--kill-transcripts)
