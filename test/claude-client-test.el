@@ -647,3 +647,111 @@ stays alive after `result', so process liveness cannot stand in for it."
                                    claude-client--events))
                      nil)))
         (let ((kill-buffer-query-functions nil)) (kill-buffer buf))))))
+
+;;;; Window management
+;;
+;; Placement mirrors the eat runner: an ordinary window in a configurable
+;; direction, not a dedicated side window.
+
+(let ((captured nil))
+  (cl-letf (((symbol-function 'display-buffer)
+             (lambda (_buf &optional action) (setq captured action) nil)))
+    (let ((claude-client-window-direction 'right)
+          (claude-client-window-width 0.4))
+      (claude-client--display (current-buffer))
+      (check "display-uses-in-direction"
+             (and (memq 'display-buffer-in-direction (car captured)) t) t)
+      (check "display-honours-direction"
+             (alist-get 'direction captured) 'right)
+      (check "display-sets-width"
+             (alist-get 'window-width captured) 0.4))
+    ;; Vertical placement sizes by height instead.
+    (let ((claude-client-window-direction 'below)
+          (claude-client-window-height 0.3))
+      (claude-client--display (current-buffer))
+      (check "display-vertical-uses-height"
+             (alist-get 'window-height captured) 0.3))
+    ;; nil hands the decision to display-buffer-alist: no action argument at
+    ;; all, rather than an in-direction action.
+    (let ((claude-client-window-direction nil))
+      (setq captured 'untouched)
+      (claude-client--display (current-buffer))
+      (check "display-nil-direction-plain" captured nil))))
+
+;; Focus is not stolen by default.
+(let ((selected nil))
+  (cl-letf (((symbol-function 'display-buffer) (lambda (&rest _) 'win))
+            ((symbol-function 'select-window) (lambda (w) (setq selected w))))
+    (let ((claude-client-focus-on-show nil))
+      (claude-client--display (current-buffer))
+      (check "no-focus-by-default" selected nil))
+    (let ((claude-client-focus-on-show t))
+      (claude-client--display (current-buffer))
+      (check "focus-when-requested" selected 'win))))
+
+;;;; Re-show after an ediff review (#44)
+;;
+;; `mcp-emacs--ediff-review' restores the window configuration it captured
+;; before the review, and does so BEFORE calling its on-resolve callback
+;; (mcp-emacs.el: set-window-configuration then on-resolve).  When the review
+;; came from this buffer's own tool call that snapshot predates the
+;; conversation window, so by the time the tool result arrives the
+;; conversation is already off screen.
+
+(let ((buf (claude-test--buffer))
+      (shown nil))
+  (unwind-protect
+      (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) nil))
+                ((symbol-function 'claude-client--display)
+                 (lambda (b) (setq shown b))))
+        (let ((claude-client-restore-window-after-review t))
+          (claude-client--reshow-after-review
+           buf (list :kind 'tool-result :text "Status: applied"))
+          (check "reshow-after-tool-result" shown buf)))
+    (kill-buffer buf)))
+
+;; Only tool results trigger it; ordinary text must not fight the user's
+;; window layout on every streamed message.
+(let ((buf (claude-test--buffer))
+      (shown nil))
+  (unwind-protect
+      (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) nil))
+                ((symbol-function 'claude-client--display)
+                 (lambda (b) (setq shown b))))
+        (let ((claude-client-restore-window-after-review t))
+          (claude-client--reshow-after-review buf (list :kind 'text :text "hi"))
+          (check "no-reshow-on-text" shown nil)))
+    (kill-buffer buf)))
+
+;; A conversation that is already visible is left alone.
+(let ((buf (claude-test--buffer))
+      (shown nil))
+  (unwind-protect
+      (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) 'win))
+                ((symbol-function 'claude-client--display)
+                 (lambda (b) (setq shown b))))
+        (let ((claude-client-restore-window-after-review t))
+          (claude-client--reshow-after-review
+           buf (list :kind 'tool-result :text "x"))
+          (check "no-reshow-when-visible" shown nil)))
+    (kill-buffer buf)))
+
+;; Opt-out respected.
+(let ((buf (claude-test--buffer))
+      (shown nil))
+  (unwind-protect
+      (cl-letf (((symbol-function 'get-buffer-window) (lambda (&rest _) nil))
+                ((symbol-function 'claude-client--display)
+                 (lambda (b) (setq shown b))))
+        (let ((claude-client-restore-window-after-review nil))
+          (claude-client--reshow-after-review
+           buf (list :kind 'tool-result :text "x"))
+          (check "reshow-opt-out" shown nil)))
+    (kill-buffer buf)))
+
+;; The re-show is installed as a subscriber, not wired into the runner: the
+;; log stays the seam, and this is just one more reader of it.
+(check "reshow-is-a-subscriber"
+       (and (memq #'claude-client--reshow-after-review
+                  claude-client-event-functions) t)
+       t)
