@@ -416,10 +416,13 @@ stays alive after `result', so process liveness cannot stand in for it."
 (let ((buf (claude-test--buffer)))
   (unwind-protect
       (with-current-buffer buf
-        (claude-test--with-running-turn
-         (claude-client-add-note "rendered note"))
+        (let ((claude-client-note-interrupts nil))
+          (claude-test--with-running-turn
+           (claude-client-add-note "rendered note")))
         (check "note-rendered"
                (and (string-match-p "> rendered note" (claude-test--text buf)) t) t)
+        ;; `pending' means the model has not seen it.  Only true when the
+        ;; note waits; an interrupting note is about to be delivered.
         (check "note-pending-marked"
                (plist-get (car claude-client--events) :pending) t))
     (kill-buffer buf)))
@@ -557,7 +560,8 @@ stays alive after `result', so process liveness cannot stand in for it."
                    (lambda (_p s) (setq sent s))))
           (setq claude-client--process 'fake
                 claude-client-deliver-notes nil)
-          (claude-test--with-running-turn (claude-client-add-note "quiet note"))
+          (let ((claude-client-note-interrupts nil))
+            (claude-test--with-running-turn (claude-client-add-note "quiet note")))
           (setq claude-client--turn-active t)
           (claude-test--feed buf (concat claude-test--result "\n"))
           (check "no-delivery-when-disabled" sent nil)
@@ -755,3 +759,125 @@ stays alive after `result', so process liveness cannot stand in for it."
        (and (memq #'claude-client--reshow-after-review
                   claude-client-event-functions) t)
        t)
+
+;;;; Interruption (issue #39)
+;;
+;; The CLI advertises `interrupt_receipt_v1' and accepts a control request
+;; that abandons the turn in flight.  Verified against the real CLI: the turn
+;; ends promptly as `error_during_execution' and the session still answers a
+;; following turn, so an interrupt costs the in-flight work and nothing else.
+
+;; The wire shape is a control_request, not a user turn.
+(let ((buf (claude-test--buffer))
+      (sent nil))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s) (setq sent s))))
+          (setq claude-client--process 'fake claude-client--turn-active t)
+          (claude-client-interrupt)
+          (let ((msg (json-parse-string sent :object-type 'alist)))
+            (check "interrupt-is-control-request"
+                   (alist-get 'type msg) "control_request")
+            (check "interrupt-subtype"
+                   (alist-get 'subtype (alist-get 'request msg)) "interrupt")
+            (check "interrupt-has-request-id"
+                   (stringp (alist-get 'request_id msg)) t))
+          (check "interrupt-logged"
+                 (memq 'interrupted (claude-test--kinds buf)) '(interrupted))))
+    (kill-buffer buf)))
+
+;; Interrupting with nothing running is refused rather than sent blindly.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (setq claude-client--turn-active nil)
+        (check "interrupt-refused-when-idle"
+               (condition-case _ (progn (claude-client-interrupt) nil)
+                 (user-error t))
+               t))
+    (kill-buffer buf)))
+
+;; A note written mid-turn interrupts it, rather than waiting.
+(let ((buf (claude-test--buffer))
+      (sent nil))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s) (setq sent s))))
+          (setq claude-client--process 'fake
+                claude-client-note-interrupts t)
+          (claude-test--with-running-turn
+           (claude-client-add-note "stop, do the other thing"))
+          (check "note-interrupts-turn"
+                 (and sent (string-match-p "interrupt" sent) t) t)
+          (check "note-logs-interrupted"
+                 (and (memq 'interrupted (claude-test--kinds buf)) t) t)
+          ;; Still queued: it is delivered when `result' arrives for the
+          ;; turn being abandoned, not written into a dying turn.
+          (check "note-still-queued-until-result"
+                 claude-client--pending-notes '("stop, do the other thing"))))
+    (kill-buffer buf)))
+
+;; Opting out restores the queueing behaviour: nothing is abandoned.
+(let ((buf (claude-test--buffer))
+      (sent nil))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s) (setq sent s))))
+          (setq claude-client--process 'fake
+                claude-client-note-interrupts nil)
+          (claude-test--with-running-turn (claude-client-add-note "later"))
+          (check "no-interrupt-when-opted-out" sent nil)
+          (check "opted-out-note-queues"
+                 claude-client--pending-notes '("later"))))
+    (kill-buffer buf)))
+
+;; After an interrupt the delivered turn tells the model not to resume, so it
+;; re-plans around the note instead of carrying on with abandoned work.
+(let ((buf (claude-test--buffer))
+      (sent nil))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s) (setq sent s))))
+          (setq claude-client--process 'fake
+                claude-client-note-interrupts t
+                claude-client-deliver-notes t)
+          (claude-test--with-running-turn (claude-client-add-note "change course"))
+          (setq sent nil)
+          ;; The interrupted turn's result arrives; the note goes out now.
+          (setq claude-client--turn-active t)
+          (claude-test--feed buf (concat claude-test--result "\n"))
+          (check "replan-mentions-interruption"
+                 (and sent (string-match-p "interrupted" sent) t) t)
+          (check "replan-says-do-not-resume"
+                 (and sent (string-match-p "Do not resume" sent) t) t)
+          (check "replan-carries-note"
+                 (and sent (string-match-p "change course" sent) t) t)))
+    (kill-buffer buf)))
+
+;; A turn that ended on its own is not framed as a re-plan.
+(let ((buf (claude-test--buffer))
+      (sent nil))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s) (setq sent s))))
+          (setq claude-client--process 'fake
+                claude-client-note-interrupts nil
+                claude-client-deliver-notes t)
+          (claude-test--with-running-turn (claude-client-add-note "fyi"))
+          (setq sent nil claude-client--turn-active t)
+          (claude-test--feed buf (concat claude-test--result "\n"))
+          (check "uninterrupted-has-no-replan-framing"
+                 (and sent (string-match-p "Do not resume" sent)) nil)
+          (check "uninterrupted-still-carries-note"
+                 (and sent (string-match-p "fyi" sent) t) t)))
+    (kill-buffer buf)))

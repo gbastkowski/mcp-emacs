@@ -96,9 +96,24 @@ of a turn can be sent straight back as the next one, so \"add a thought
 at any time\" changes what the model does rather than only what the log
 says.  Set to nil to keep notes as a record the human relays by hand.
 
-This is the conservative half of the interruption question (#39): notes
-are delivered between turns, never mid tool-call.  Aborting or
-re-planning an in-flight turn is a separate decision."
+Delivery timing is `claude-client-note-interrupts'."
+  :type 'boolean
+  :group 'claude-client)
+
+(defcustom claude-client-note-interrupts t
+  "When non-nil, a note written mid-turn abandons that turn immediately.
+This is the answer to the interruption question in #39.
+
+With this on, writing a note is how the human redirects the model *now*:
+the in-flight turn is interrupted, and the note is re-sent as the next
+turn along with the fact that the previous one was cut short, so the
+model re-plans rather than resuming.  The partial work of the abandoned
+turn is lost -- that is the price of acting immediately, and it is the
+whole point of \"add a thought at any time\".
+
+With it off, notes queue and are delivered when the turn ends on its
+own; nothing is ever abandoned.  `claude-client-interrupt' is still
+available either way for a deliberate stop."
   :type 'boolean
   :group 'claude-client)
 
@@ -175,6 +190,12 @@ model, and the append-only log issue #39 wants to subscribe to.")
 Oldest first.  A note is logged the moment it is written -- it is part
 of the shared record immediately -- but it is only handed to the model
 when the current turn ends.  See `claude-client-add-note'.")
+
+(defvar-local claude-client--interrupted nil
+  "Non-nil when the turn now ending was abandoned on purpose.
+Set when an interrupt is sent, cleared when the next turn starts.  The
+model is told its previous turn was cut short, so it re-plans around the
+note that caused the interrupt instead of resuming what it was doing.")
 
 (defvar-local claude-client--turn-active nil
   "Non-nil while a turn is in flight, i.e. between spawn and `result'.
@@ -371,9 +392,13 @@ displayed, so this never forces a hidden conversation on screen."
 (defun claude-client-add-note (text)
   "Add TEXT to this conversation's log as a human note.
 The note is recorded at once, so it is part of the shared record the
-moment it is written and every subscriber sees it.  If a turn is
-running the model is shown the note when that turn ends; if nothing is
-running it is queued for the next one."
+moment it is written and every subscriber sees it.
+
+What happens next depends on `claude-client-note-interrupts'.  By
+default a note written while a turn is running abandons that turn and
+is delivered immediately, so the model re-plans around it; otherwise it
+waits until the turn ends on its own.  With nothing running it is
+delivered straight away either way."
   (interactive "sNote: ")
   (unless (derived-mode-p 'claude-client-mode)
     (user-error "Not in a Claude conversation buffer"))
@@ -385,12 +410,24 @@ running it is queued for the next one."
           (append claude-client--pending-notes (list note)))
     (claude-client--push-event
      (current-buffer)
-     (list :kind 'note :text note :pending running))
-    ;; With no turn running there is nothing to wait for: the drain fires on
-    ;; `result', so a note added while idle would otherwise sit queued until
-    ;; some later turn happened to end -- or forever, if none did.
-    (unless running
-      (claude-client--drain-notes (current-buffer)))))
+     (list :kind 'note :text note
+           ;; `pending' means "the model has not seen this yet".  When the
+           ;; note interrupts, it is about to be delivered, so it is not.
+           :pending (and running (not claude-client-note-interrupts))))
+    (cond
+     ;; Redirect now: abandon the turn.  The drain happens when `result'
+     ;; arrives for the interrupted turn, which also marks the turn over --
+     ;; draining here would race that and deliver into a dying turn.
+     ((and running claude-client-note-interrupts
+           (process-live-p claude-client--process))
+      (setq claude-client--interrupted t)
+      (claude-client--push-event (current-buffer) (list :kind 'interrupted))
+      (claude-client--send-interrupt claude-client--process))
+     ;; Nothing running: there is nothing to wait for, and the drain fires on
+     ;; `result', so a queued note would otherwise sit until some later turn
+     ;; happened to end -- or forever, if none did.
+     ((not running)
+      (claude-client--drain-notes (current-buffer))))))
 
 (defun claude-client--drain-notes (buffer)
   "Surface BUFFER's pending notes now that its turn has ended.
@@ -411,8 +448,14 @@ Returns the drained notes, oldest first, and clears the queue."
             (setq claude-client--turn-active t)
             (claude-client--send-turn
              claude-client--process
-             (concat "Notes from the human:\n"
-                     (mapconcat (lambda (n) (concat "- " n)) notes "\n")))))
+             (concat
+              (when claude-client--interrupted
+                (concat "Your previous turn was interrupted before it "
+                        "finished, on purpose. Do not resume it; re-plan "
+                        "around the note below.\n\n"))
+              "Notes from the human:\n"
+              (mapconcat (lambda (n) (concat "- " n)) notes "\n")))
+            (setq claude-client--interrupted nil)))
         notes))))
 
 ;;;; Streaming
@@ -465,6 +508,7 @@ Returns the drained notes, oldest first, and clears the queue."
                  (car (split-string text "\n"))))))
     ('finished (format "── %s ──" (or (plist-get event :subtype) "done")))
     ('resumed (format "── resumed %s ──" (plist-get event :session)))
+    ('interrupted "── interrupted ──")
     ('prompt (format "\n>>> %s" (plist-get event :text)))
     ('note (format "> %s%s"
                    (plist-get event :text)
@@ -509,6 +553,37 @@ prompt rather than dropped."
                           (content . [((type . "text") (text . ,text))])))))
            "\n")))
 
+(defun claude-client--send-interrupt (proc)
+  "Ask PROC to abandon the turn it is working on.
+Writes the `interrupt' control request the CLI advertises as
+`interrupt_receipt_v1' in its init capabilities.  The turn ends promptly
+with `result'/`error_during_execution'; the session itself survives and
+accepts further turns, so an interrupt costs the in-flight work and
+nothing else."
+  (process-send-string
+   proc
+   (concat (json-encode
+            `((type . "control_request")
+              (request_id . ,(format "int-%s" (float-time)))
+              (request . ((subtype . "interrupt")))))
+           "\n")))
+
+;;;###autoload
+(defun claude-client-interrupt ()
+  "Abandon the turn this conversation is working on.
+The partial work is lost; the session is not.  Use `n' to add a note
+instead when the point is to redirect rather than to stop."
+  (interactive)
+  (unless (derived-mode-p 'claude-client-mode)
+    (user-error "Not in a Claude conversation buffer"))
+  (unless claude-client--turn-active
+    (user-error "No turn is running"))
+  (unless (process-live-p claude-client--process)
+    (user-error "No live Claude process"))
+  (setq claude-client--interrupted t)
+  (claude-client--push-event (current-buffer) (list :kind 'interrupted))
+  (claude-client--send-interrupt claude-client--process))
+
 ;;;###autoload
 (defun claude-client-send (prompt)
   "Send PROMPT as the next turn of this conversation.
@@ -529,7 +604,8 @@ with the one being answered."
     (let ((text (claude-client--prompt-with-notes prompt)))
       (claude-client--push-event (current-buffer)
                                  (list :kind 'prompt :text prompt))
-      (setq claude-client--turn-active t)
+      (setq claude-client--turn-active t
+            claude-client--interrupted nil)
       (claude-client--send-turn claude-client--process text)))))
 
 ;;;; Entry point
@@ -564,7 +640,8 @@ file change opens an ediff for the human to accept or reject."
       (let ((inhibit-read-only t)) (erase-buffer))
       (setq claude-client--events nil
             claude-client--stdout ""
-            claude-client--session-id nil)
+            claude-client--session-id nil
+            claude-client--interrupted nil)
       (let ((text (claude-client--prompt-with-notes prompt))
             (proc (make-process
                    :name "claude-client"
@@ -630,6 +707,7 @@ either runner can be resumed in this one."
     (define-key map (kbd "n") #'claude-client-add-note)
     (define-key map (kbd "s") #'claude-client-send)
     (define-key map (kbd "r") #'claude-client-resume)
+    (define-key map (kbd "i") #'claude-client-interrupt)
     map)
   "Keymap for `claude-client-mode'.")
 
