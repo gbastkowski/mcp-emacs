@@ -54,5 +54,56 @@ echo "stamped: $stamp"
 
 [ "${1:-}" = "--no-render" ] && exit 0
 
-command -v pandoc >/dev/null || { echo "pandoc not found; stamped only" >&2; exit 0; }
-echo "Render via the mcp-latex render_markdown_to_pdf tool (preset classic-report)."
+# Render here rather than telling a human which preset to pass.  The settings
+# used to live only in whoever last invoked the tool, and the preset was duly
+# lost on the next render -- the document came back as a plain report.
+#
+# mcp-latex ships as an MCP server with no CLI, so this speaks the protocol to
+# it over stdio.  That also pins the version: the plugin cache can hold several,
+# and an older server silently ignores `preset` instead of rejecting it, which
+# is a slow thing to notice.
+preset="classic-komabook"
+pdf="$root/docs/reference.pdf"
+
+cache="$HOME/.claude/plugins/cache/mcp-latex/mcp-latex"
+server="$(ls -d "$cache"/*/mcp/dist/index.js 2>/dev/null \
+            | sort -t/ -k9 -V | tail -1)"
+
+if [ -z "$server" ]; then
+  echo "mcp-latex not found under $cache; stamped only" >&2
+  exit 0
+fi
+echo "using $(echo "$server" | sed -E 's|.*/mcp-latex/([^/]+)/.*|mcp-latex \1|')"
+
+node - "$server" "$md" "$pdf" "$preset" <<'JS'
+const { spawn } = require("node:child_process");
+const readline = require("node:readline");
+const [server, md, pdf, preset] = process.argv.slice(2);
+
+const p = spawn("node", [server], { stdio: ["pipe", "pipe", "inherit"] });
+const send = (o) => p.stdin.write(JSON.stringify(o) + "\n");
+
+readline.createInterface({ input: p.stdout }).on("line", (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m.id === 1) {
+    send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    send({ jsonrpc: "2.0", id: 2, method: "tools/call",
+           params: { name: "render_markdown_to_pdf",
+                     arguments: { markdown_path: md, output_path: pdf,
+                                  preset } } });
+  }
+  if (m.id === 2) {
+    const text = m.result?.content?.[0]?.text ?? JSON.stringify(m.error);
+    console.log(text);
+    // The server echoes the preset it actually used.  A server too old to
+    // know about presets renders a default-styled PDF and says nothing, so
+    // treat a missing echo as a failure rather than a success.
+    p.kill();
+    process.exit(text.includes(`preset: ${preset}`) ? 0 : 1);
+  }
+});
+
+send({ jsonrpc: "2.0", id: 1, method: "initialize",
+       params: { protocolVersion: "2024-11-05", capabilities: {},
+                 clientInfo: { name: "render-reference", version: "1" } } });
+JS
