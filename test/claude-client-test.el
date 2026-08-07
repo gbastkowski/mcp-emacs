@@ -538,8 +538,8 @@ stays alive after `result', so process liveness cannot stand in for it."
         (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
                   ((symbol-function 'process-send-string)
                    (lambda (_p s) (setq sent s))))
-          (setq claude-client--process 'fake
-                claude-client-deliver-notes t)
+          (setq claude-client--process 'fake)
+          (setq-local claude-client-deliver-notes t)
           (claude-test--with-running-turn
            (claude-client-add-note "reconsider the approach"))
           (setq claude-client--turn-active t)
@@ -558,8 +558,8 @@ stays alive after `result', so process liveness cannot stand in for it."
         (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
                   ((symbol-function 'process-send-string)
                    (lambda (_p s) (setq sent s))))
-          (setq claude-client--process 'fake
-                claude-client-deliver-notes nil)
+          (setq claude-client--process 'fake)
+          (setq-local claude-client-deliver-notes nil)
           (let ((claude-client-note-interrupts nil))
             (claude-test--with-running-turn (claude-client-add-note "quiet note")))
           (setq claude-client--turn-active t)
@@ -807,10 +807,10 @@ stays alive after `result', so process liveness cannot stand in for it."
         (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
                   ((symbol-function 'process-send-string)
                    (lambda (_p s) (setq sent s))))
-          (setq claude-client--process 'fake
-                claude-client-note-interrupts t)
-          (claude-test--with-running-turn
-           (claude-client-add-note "stop, do the other thing"))
+          (setq claude-client--process 'fake)
+          (let ((claude-client-note-interrupts t))
+            (claude-test--with-running-turn
+             (claude-client-add-note "stop, do the other thing")))
           (check "note-interrupts-turn"
                  (and sent (string-match-p "interrupt" sent) t) t)
           (check "note-logs-interrupted"
@@ -829,9 +829,9 @@ stays alive after `result', so process liveness cannot stand in for it."
         (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
                   ((symbol-function 'process-send-string)
                    (lambda (_p s) (setq sent s))))
-          (setq claude-client--process 'fake
-                claude-client-note-interrupts nil)
-          (claude-test--with-running-turn (claude-client-add-note "later"))
+          (setq claude-client--process 'fake)
+          (let ((claude-client-note-interrupts nil))
+            (claude-test--with-running-turn (claude-client-add-note "later")))
           (check "no-interrupt-when-opted-out" sent nil)
           (check "opted-out-note-queues"
                  claude-client--pending-notes '("later"))))
@@ -846,10 +846,10 @@ stays alive after `result', so process liveness cannot stand in for it."
         (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
                   ((symbol-function 'process-send-string)
                    (lambda (_p s) (setq sent s))))
-          (setq claude-client--process 'fake
-                claude-client-note-interrupts t
-                claude-client-deliver-notes t)
-          (claude-test--with-running-turn (claude-client-add-note "change course"))
+          (setq claude-client--process 'fake)
+          (let ((claude-client-note-interrupts t)
+                (claude-client-deliver-notes t))
+            (claude-test--with-running-turn (claude-client-add-note "change course")))
           (setq sent nil)
           ;; The interrupted turn's result arrives; the note goes out now.
           (setq claude-client--turn-active t)
@@ -870,14 +870,117 @@ stays alive after `result', so process liveness cannot stand in for it."
         (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
                   ((symbol-function 'process-send-string)
                    (lambda (_p s) (setq sent s))))
-          (setq claude-client--process 'fake
-                claude-client-note-interrupts nil
-                claude-client-deliver-notes t)
-          (claude-test--with-running-turn (claude-client-add-note "fyi"))
+          (setq claude-client--process 'fake)
+          (let ((claude-client-note-interrupts nil)
+                (claude-client-deliver-notes t))
+            (claude-test--with-running-turn (claude-client-add-note "fyi")))
           (setq sent nil claude-client--turn-active t)
           (claude-test--feed buf (concat claude-test--result "\n"))
           (check "uninterrupted-has-no-replan-framing"
                  (and sent (string-match-p "Do not resume" sent)) nil)
           (check "uninterrupted-still-carries-note"
                  (and sent (string-match-p "fyi" sent) t) t)))
+    (kill-buffer buf)))
+
+;;;; Backpressure (issue #39)
+;;
+;; Several notes in quick succession while the model is slow.  Once a turn is
+;; being interrupted it is already ending, so further notes ride out on the
+;; same delivery rather than firing more interrupts into a dying turn.
+
+;; Two notes during one turn interrupt it once, and both are delivered.
+(let ((buf (claude-test--buffer))
+      (interrupts 0))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s)
+                     (when (string-match-p "interrupt" s)
+                       (setq interrupts (1+ interrupts))))))
+          (setq claude-client--process 'fake claude-client--turn-active t)
+          (claude-client-add-note "first")
+          (claude-client-add-note "second")
+          (check "one-interrupt-for-many-notes" interrupts 1)
+          (check "later-notes-still-queued"
+                 claude-client--pending-notes '("first" "second"))
+          (check "one-interrupted-event"
+                 (length (seq-filter
+                          (lambda (e) (eq (plist-get e :kind) 'interrupted))
+                          claude-client--events))
+                 1)))
+    (kill-buffer buf)))
+
+;; An exact repeat says nothing new, so it is coalesced rather than sent twice.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string) (lambda (&rest _) nil)))
+          (setq claude-client--process 'fake claude-client--turn-active t)
+          (claude-client-add-note "same thing")
+          (claude-client-add-note "same thing")
+          (check "duplicate-note-coalesced"
+                 claude-client--pending-notes '("same thing"))
+          ;; Still logged twice: the human did write it twice.
+          (check "duplicate-still-recorded"
+                 (length (seq-filter (lambda (e) (eq (plist-get e :kind) 'note))
+                                     claude-client--events))
+                 2)))
+    (kill-buffer buf)))
+
+;; Explicitly interrupting a turn that is already being interrupted is
+;; refused rather than sending a second control request.
+(let ((buf (claude-test--buffer))
+      (interrupts 0))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string)
+                   (lambda (_p s)
+                     (when (string-match-p "interrupt" s)
+                       (setq interrupts (1+ interrupts))))))
+          (setq claude-client--process 'fake claude-client--turn-active t)
+          (claude-client-interrupt)
+          (check "second-interrupt-refused"
+                 (condition-case _ (progn (claude-client-interrupt) nil)
+                   (user-error t))
+                 t)
+          (check "second-interrupt-not-sent" interrupts 1)))
+    (kill-buffer buf)))
+
+;; The queue is bounded: the newest note is the current intent, so the oldest
+;; are dropped when the model is too slow to drain them.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string) (lambda (&rest _) nil)))
+          (setq claude-client--process 'fake claude-client--turn-active t)
+          (let ((claude-client-max-pending-notes 3))
+            (dolist (n '("n1" "n2" "n3" "n4" "n5"))
+              (claude-client-add-note n))
+            (check "queue-bounded" (length claude-client--pending-notes) 3)
+            (check "newest-kept"
+                   claude-client--pending-notes '("n3" "n4" "n5"))
+            ;; A drop is recorded, not silent.
+            (check "drops-logged"
+                   (mapcar (lambda (e) (plist-get e :text))
+                           (seq-filter
+                            (lambda (e) (eq (plist-get e :kind) 'note-dropped))
+                            claude-client--events))
+                   '("n1" "n2")))))
+    (kill-buffer buf)))
+
+;; nil means keep everything.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                  ((symbol-function 'process-send-string) (lambda (&rest _) nil)))
+          (setq claude-client--process 'fake claude-client--turn-active t)
+          (let ((claude-client-max-pending-notes nil))
+            (dolist (n '("a" "b" "c" "d")) (claude-client-add-note n))
+            (check "unbounded-keeps-all"
+                   (length claude-client--pending-notes) 4))))
     (kill-buffer buf)))

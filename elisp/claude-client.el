@@ -117,6 +117,20 @@ available either way for a deliberate stop."
   :type 'boolean
   :group 'claude-client)
 
+(defcustom claude-client-max-pending-notes 20
+  "How many undelivered notes to keep before dropping the oldest.
+Backpressure for the case where the human keeps writing while the model
+is slow or wedged.  Without a bound the queue grows until it is
+delivered as one enormous prompt, and the newest thought -- the one most
+likely to matter -- competes with everything stale in front of it.
+
+Dropping the oldest is the deliberate choice: the recent note is the
+current intent.  A drop is recorded in the log, so the record still
+shows that something was said and lost rather than quietly discarding
+it.  nil means keep everything."
+  :type '(choice (const :tag "Unbounded" nil) integer)
+  :group 'claude-client)
+
 (defcustom claude-client-window-direction 'right
   "Direction in which the conversation window is placed.
 An ordinary window in this direction, so it can be split, navigated and
@@ -406,8 +420,21 @@ delivered straight away either way."
         (running (and claude-client--turn-active t)))
     (when (string-empty-p note)
       (user-error "Empty note"))
-    (setq claude-client--pending-notes
-          (append claude-client--pending-notes (list note)))
+    ;; Coalesce an exact repeat: writing the same thing twice while the model
+    ;; has seen neither says nothing new, and sending it twice only spends
+    ;; context.  Anything genuinely different is kept, in order.
+    (unless (member note claude-client--pending-notes)
+      (setq claude-client--pending-notes
+            (append claude-client--pending-notes (list note))))
+    ;; Bound the queue: the newest note is the current intent, so when the
+    ;; model is too slow to drain them the oldest go.  Each drop is logged --
+    ;; the record should show that something was said and lost.
+    (when claude-client-max-pending-notes
+      (while (> (length claude-client--pending-notes)
+                claude-client-max-pending-notes)
+        (let ((dropped (pop claude-client--pending-notes)))
+          (claude-client--push-event
+           (current-buffer) (list :kind 'note-dropped :text dropped)))))
     (claude-client--push-event
      (current-buffer)
      (list :kind 'note :text note
@@ -418,7 +445,13 @@ delivered straight away either way."
      ;; Redirect now: abandon the turn.  The drain happens when `result'
      ;; arrives for the interrupted turn, which also marks the turn over --
      ;; draining here would race that and deliver into a dying turn.
+     ;;
+     ;; `claude-client--interrupted' also serves as the backpressure guard:
+     ;; a second note arriving before the abandoned turn has finished dying
+     ;; must not fire another interrupt.  The turn is already ending and the
+     ;; note is already queued, so it rides out on the same delivery.
      ((and running claude-client-note-interrupts
+           (not claude-client--interrupted)
            (process-live-p claude-client--process))
       (setq claude-client--interrupted t)
       (claude-client--push-event (current-buffer) (list :kind 'interrupted))
@@ -509,6 +542,7 @@ Returns the drained notes, oldest first, and clears the queue."
     ('finished (format "── %s ──" (or (plist-get event :subtype) "done")))
     ('resumed (format "── resumed %s ──" (plist-get event :session)))
     ('interrupted "── interrupted ──")
+    ('note-dropped (format "  (dropped unsent note: %s)" (plist-get event :text)))
     ('prompt (format "\n>>> %s" (plist-get event :text)))
     ('note (format "> %s%s"
                    (plist-get event :text)
@@ -580,6 +614,8 @@ instead when the point is to redirect rather than to stop."
     (user-error "No turn is running"))
   (unless (process-live-p claude-client--process)
     (user-error "No live Claude process"))
+  (when claude-client--interrupted
+    (user-error "This turn is already being interrupted"))
   (setq claude-client--interrupted t)
   (claude-client--push-event (current-buffer) (list :kind 'interrupted))
   (claude-client--send-interrupt claude-client--process))
