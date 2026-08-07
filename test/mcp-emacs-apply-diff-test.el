@@ -289,3 +289,101 @@ and `control' is the fake control buffer."
   (check "async-missing-path-defers" calls nil)
   (sleep-for 2)
   (check "async-missing-path-answers" (length calls) 1))
+
+;;;; Org-task domain events (issue #39)
+;;
+;; The Org file is the aggregate; these events observe that it changed.  The
+;; contract that matters is "only on success": a rejected keyword or an
+;; unidentifiable item changes nothing, so there is nothing to observe.
+
+(require 'org)
+
+(defun mcp--org-fixture (text)
+  "Write TEXT to a temp .org file and return its path."
+  (let ((f (make-temp-file "mcp-orgtask-" nil ".org" text)))
+    f))
+
+(defmacro mcp--with-org-events (var &rest body)
+  "Run BODY collecting org-task events into VAR (oldest first)."
+  (declare (indent 1))
+  `(let* ((,var nil)
+          (mcp-emacs-org-task-event-functions
+           (list (lambda (e) (setq ,var (append ,var (list e)))))))
+     ,@body))
+
+;; A successful status change emits one observation carrying the new state.
+(let ((f (mcp--org-fixture "* TODO Task\n:PROPERTIES:\n:SESSION: s1\n:END:\n")))
+  (unwind-protect
+      (mcp--with-org-events evs
+        (mcp-emacs-org-task-set-session-status f "DONE")
+        (check "emit-session-status-count" (length evs) 1)
+        (check "emit-session-status-kind" (plist-get (car evs) :kind) 'session-status)
+        (check "emit-session-status-value" (plist-get (car evs) :status) "DONE")
+        (check "emit-session-status-path" (plist-get (car evs) :path) f))
+    (let ((b (find-buffer-visiting f)))
+      (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+    (delete-file f)))
+
+;; A rejected keyword changes nothing, so it must emit nothing.
+(let ((f (mcp--org-fixture "* TODO Task\n:PROPERTIES:\n:SESSION: s1\n:END:\n")))
+  (unwind-protect
+      (mcp--with-org-events evs
+        (mcp-emacs-org-task-set-session-status f "NOT-A-KEYWORD")
+        (check "no-emit-on-rejected-keyword" evs nil))
+    (let ((b (find-buffer-visiting f)))
+      (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+    (delete-file f)))
+
+;; An item that cannot be identified changes nothing either.
+(let ((f (mcp--org-fixture "* TODO Task\n:PROPERTIES:\n:SESSION: s1\n:END:\n** TODO one\n")))
+  (unwind-protect
+      (mcp--with-org-events evs
+        (mcp-emacs-org-task-set-item-status f "no such item" "DONE")
+        (check "no-emit-on-unknown-item" evs nil))
+    (let ((b (find-buffer-visiting f)))
+      (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+    (delete-file f)))
+
+;; Appending an item observes the text and the keyword it was given.
+(let ((f (mcp--org-fixture "* TODO Task\n:PROPERTIES:\n:SESSION: s1\n:END:\n")))
+  (unwind-protect
+      (mcp--with-org-events evs
+        (mcp-emacs-org-task-append-item f "a new item" "TODO")
+        (check "emit-item-added-kind" (plist-get (car evs) :kind) 'item-added)
+        (check "emit-item-added-text" (plist-get (car evs) :text) "a new item"))
+    (let ((b (find-buffer-visiting f)))
+      (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+    (delete-file f)))
+
+;; A note observes its text.
+(let ((f (mcp--org-fixture "* TODO Task\n:PROPERTIES:\n:SESSION: s1\n:END:\n")))
+  (unwind-protect
+      (mcp--with-org-events evs
+        (mcp-emacs-org-task-append-note f "progress note")
+        (check "emit-note-kind" (plist-get (car evs) :kind) 'note)
+        (check "emit-note-text" (plist-get (car evs) :text) "progress note"))
+    (let ((b (find-buffer-visiting f)))
+      (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+    (delete-file f)))
+
+;; A failing subscriber must not break the Org write it observes -- the
+;; aggregate comes first, the record second.
+(let ((f (mcp--org-fixture "* TODO Task\n:PROPERTIES:\n:SESSION: s1\n:END:\n")))
+  (unwind-protect
+      (let ((mcp-emacs-org-task-event-functions
+             (list (lambda (_e) (error "subscriber blew up")))))
+        ;; The write must return normally, not signal: the outer handler only
+        ;; catches `user-error', so an unguarded subscriber error escapes as a
+        ;; plain `error' and takes the tool call down with it.
+        (check "write-survives-bad-subscriber"
+               (condition-case _
+                   (progn (mcp-emacs-org-task-set-session-status f "DONE") t)
+                 (error nil))
+               t)
+        ;; And the Org file really did change.
+        (with-current-buffer (find-file-noselect f)
+          (check "write-applied-despite-subscriber"
+                 (and (string-match-p "DONE" (buffer-string)) t) t)))
+    (let ((b (find-buffer-visiting f)))
+      (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+    (delete-file f)))

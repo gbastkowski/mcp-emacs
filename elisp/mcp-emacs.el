@@ -766,6 +766,30 @@ plain text for a missing/invalid path or a file with no task heading."
               (mapconcat #'identity lines "\n")))))
     (user-error (error-message-string err))))
 
+(defvar mcp-emacs-org-task-event-functions nil
+  "Abnormal hook run with (EVENT) after an org-task write succeeds.
+EVENT is a plist: `:kind' (`session-status' / `item-status' / `note' /
+`item-added'), `:path', and kind-specific keys.
+
+These are **observations, not commands**.  The Org file is the aggregate
+and owns this state (issue #39); an event says \"Org changed\", and
+nothing may reconstruct state by replaying the log.  The point is that
+the human's edits and the AI's writes land in one shared record, not
+that the record becomes a second source of truth.
+
+Only successful writes emit -- a rejected keyword or an item that could
+not be identified changed nothing, so there is nothing to observe.")
+
+(defun mcp-emacs-org-task--emit (kind path &rest props)
+  "Run `mcp-emacs-org-task-event-functions' for a KIND change to PATH.
+PROPS are extra plist keys.  Errors in a subscriber are swallowed: an
+observer must never break the write it is observing."
+  (let ((event (append (list :kind kind :path path) props)))
+    (condition-case err
+        (run-hook-with-args 'mcp-emacs-org-task-event-functions event)
+      (error (message "org-task event subscriber failed: %s"
+                      (error-message-string err))))))
+
 (defun mcp-emacs-org-task-set-session-status (path status)
   "Set the session STATUS (an Org keyword) of the task file at PATH.
 Reject a keyword not in `org-todo-keywords-1', leaving the status
@@ -782,6 +806,7 @@ unchanged.  Edits the live buffer only; does not save."
           (if (not (mcp-emacs-org-task--goto-task))
               "No task heading found in file"
             (org-todo status)
+            (mcp-emacs-org-task--emit 'session-status path :status status)
             (format "Set session status to %s" status))))
     (user-error (error-message-string err))))
 
@@ -801,6 +826,8 @@ item is touched.  Edits the live buffer only; does not save."
           (if (mcp-emacs-org-task--find-item ref)
               (progn
                 (org-todo status)
+                (mcp-emacs-org-task--emit 'item-status path
+                                          :ref ref :status status)
                 (format "Set item %S to %s" ref status))
             (format "TODO item not found: %s" ref))))
     (user-error (error-message-string err))))
@@ -829,6 +856,7 @@ does not save."
               (let ((inhibit-read-only t))
                 (unless (bolp) (insert "\n"))
                 (insert note "\n")))
+            (mcp-emacs-org-task--emit 'note path :text note)
             "Appended progress note")))
     (user-error (error-message-string err))))
 
@@ -859,6 +887,8 @@ content.  Edits the live buffer only; does not save."
                 (org-end-of-subtree t t)
                 (unless (bolp) (insert "\n"))
                 (insert (make-string (1+ task-level) ?*) " " kw " " text "\n")
+                (mcp-emacs-org-task--emit 'item-added path
+                                          :text text :status kw)
                 (format "Appended TODO item: %s %s" kw text))))))
     (user-error (error-message-string err))))
 

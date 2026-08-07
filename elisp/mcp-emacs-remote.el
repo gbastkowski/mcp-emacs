@@ -58,6 +58,11 @@
 ;; on the writer's side.
 (defvar claude-client-event-functions)
 
+;; Defined in mcp-emacs, which is loaded via mcp-emacs-run; declared so this
+;; file compiles standalone.  Org-side observations land in the same
+;; transcript as the runner's events (issue #39).
+(defvar mcp-emacs-org-task-event-functions)
+
 (defgroup mcp-emacs-remote nil
   "Remote-control an interactive Claude session from Emacs."
   :group 'tools)
@@ -275,6 +280,50 @@ degrades to silence instead of a malformed entry."
               (length (plist-get event :notes)))))
     (_ nil)))
 
+;;;; Org-task subscriber (issue #39)
+
+;; The Org file is the aggregate and owns this state; these events only
+;; *observe* that it changed.  Recording them here puts the human's Org
+;; edits and the runner's activity in one shared record, without the log
+;; becoming a second source of truth -- nothing here is ever replayed to
+;; reconstruct state.
+
+(defun mcp-emacs-remote--record-org-task-event (event)
+  "Record an org-task EVENT into the transcript.
+EVENT is a plist as published on `mcp-emacs-org-task-event-functions'.
+Unknown kinds are ignored rather than guessed at."
+  (let ((file (file-name-nondirectory (or (plist-get event :path) "?"))))
+    (pcase (plist-get event :kind)
+      ('session-status
+       (mcp-emacs-remote--append
+        (format "  - %s org session :: %s [%s]"
+                (mcp-emacs-remote--timestamp)
+                (plist-get event :status) file)))
+      ('item-status
+       (mcp-emacs-remote--append
+        (format "  - %s org item :: %s → %s [%s]"
+                (mcp-emacs-remote--timestamp)
+                (plist-get event :ref) (plist-get event :status) file)))
+      ('item-added
+       (mcp-emacs-remote--append
+        (format "  - %s org item added :: %s %s [%s]"
+                (mcp-emacs-remote--timestamp)
+                (plist-get event :status) (plist-get event :text) file)))
+      ('note
+       (mcp-emacs-remote--append
+        (format "  - %s org note :: %s [%s]"
+                (mcp-emacs-remote--timestamp)
+                (car (split-string (or (plist-get event :text) "") "\n"))
+                file)))
+      (_ nil))))
+
+(defun mcp-emacs-remote--tap-org-task-event (event)
+  "Subscriber for `mcp-emacs-org-task-event-functions'.
+Records EVENT when recording is enabled.  Errors are swallowed: an
+observer must never break the Org write it is observing."
+  (when mcp-emacs-remote-enabled
+    (ignore-errors (mcp-emacs-remote--record-org-task-event event))))
+
 (defun mcp-emacs-remote--tap-runner-event (buffer event)
   "Subscriber for `claude-client-event-functions'.
 Records EVENT from conversation BUFFER when recording is enabled.
@@ -297,7 +346,9 @@ Also sets `mcp-emacs-remote-enabled'."
   (when (fboundp 'mcp-emacs-ide-stop)
     (advice-add 'mcp-emacs-ide-stop :before #'mcp-emacs-remote--tap-stop))
   (add-hook 'claude-client-event-functions
-            #'mcp-emacs-remote--tap-runner-event))
+            #'mcp-emacs-remote--tap-runner-event)
+  (add-hook 'mcp-emacs-org-task-event-functions
+            #'mcp-emacs-remote--tap-org-task-event))
 
 ;;;###autoload
 (defun mcp-emacs-remote-disable ()
@@ -311,7 +362,9 @@ Also sets `mcp-emacs-remote-enabled'."
   (when (fboundp 'mcp-emacs-ide-stop)
     (advice-remove 'mcp-emacs-ide-stop #'mcp-emacs-remote--tap-stop))
   (remove-hook 'claude-client-event-functions
-               #'mcp-emacs-remote--tap-runner-event))
+               #'mcp-emacs-remote--tap-runner-event)
+  (remove-hook 'mcp-emacs-org-task-event-functions
+               #'mcp-emacs-remote--tap-org-task-event))
 
 (provide 'mcp-emacs-remote)
 ;;; mcp-emacs-remote.el ends here

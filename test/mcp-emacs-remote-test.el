@@ -272,3 +272,88 @@
            nil)))
 
 (remote--kill-transcripts)
+
+;; --- Org-task subscriber (issue #39) -----------------------------------------
+;;
+;; The Org file is the aggregate; these events only observe that it changed.
+;; They land in the same transcript as the runner's, so one record shows both
+;; the human's Org edits and the AI's activity in the order they happened.
+
+(remote--kill-transcripts)
+(let ((mcp-emacs-remote-enabled t))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+    (mcp-emacs-remote--tap-org-task-event
+     (list :kind 'session-status :path "/tmp/s.org" :status "STRT"))
+    (check "org-session-status-recorded"
+           (and (string-match-p "org session :: STRT" (remote--transcript-text)) t) t)))
+
+(remote--kill-transcripts)
+(let ((mcp-emacs-remote-enabled t))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+    (mcp-emacs-remote--tap-org-task-event
+     (list :kind 'item-status :path "/tmp/s.org" :ref "write tests" :status "DONE"))
+    (check "org-item-status-recorded"
+           (and (string-match-p "org item :: write tests" (remote--transcript-text)) t) t)))
+
+(remote--kill-transcripts)
+(let ((mcp-emacs-remote-enabled t))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+    (mcp-emacs-remote--tap-org-task-event
+     (list :kind 'item-added :path "/tmp/s.org" :text "new thing" :status "TODO"))
+    (check "org-item-added-recorded"
+           (and (string-match-p "org item added :: TODO new thing"
+                                (remote--transcript-text)) t) t)))
+
+(remote--kill-transcripts)
+(let ((mcp-emacs-remote-enabled t))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+    (mcp-emacs-remote--tap-org-task-event
+     (list :kind 'note :path "/tmp/s.org" :text "first line\nsecond"))
+    (check "org-note-first-line-only"
+           (and (string-match-p "org note :: first line" (remote--transcript-text))
+                (not (string-match-p "second" (remote--transcript-text))) t)
+           t)))
+
+;; Disabled -> silent, and no transcript buffer created.
+(remote--kill-transcripts)
+(let ((mcp-emacs-remote-enabled nil))
+  (mcp-emacs-remote--tap-org-task-event
+   (list :kind 'session-status :path "/tmp/s.org" :status "STRT"))
+  (check "org-disabled-silent" (remote--transcript-text) nil))
+
+;; Unknown kinds are ignored rather than guessed at.
+(remote--kill-transcripts)
+(let ((mcp-emacs-remote-enabled t))
+  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+    (mcp-emacs-remote--tap-org-task-event (list :kind 'brand-new :path "/tmp/s.org"))
+    (check "org-unknown-kind-ignored" (remote--transcript-text) nil)))
+
+;; A transcript failure must never break the Org write being observed.
+(remote--kill-transcripts)
+(let ((mcp-emacs-remote-enabled t))
+  (cl-letf (((symbol-function 'mcp-emacs-remote--append)
+             (lambda (&rest _) (error "boom"))))
+    (check "org-error-swallowed"
+           (condition-case _
+               (progn (mcp-emacs-remote--tap-org-task-event
+                       (list :kind 'note :path "/tmp/s.org" :text "x"))
+                      t)
+             (error nil))
+           t)))
+
+;; enable/disable manage the org-task hook too.
+(let ((mcp-emacs-org-task-event-functions nil)
+      (claude-client-event-functions nil))
+  (cl-letf (((symbol-function 'advice-add) #'ignore)
+            ((symbol-function 'advice-remove) #'ignore))
+    (mcp-emacs-remote-enable)
+    (check "org-enable-subscribes"
+           (and (memq #'mcp-emacs-remote--tap-org-task-event
+                      mcp-emacs-org-task-event-functions) t) t)
+    (mcp-emacs-remote-disable)
+    (check "org-disable-unsubscribes"
+           (memq #'mcp-emacs-remote--tap-org-task-event
+                 mcp-emacs-org-task-event-functions)
+           nil)))
+
+(remote--kill-transcripts)
