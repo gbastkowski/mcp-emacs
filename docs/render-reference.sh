@@ -18,7 +18,6 @@ md="$root/docs/reference.md"
 # version, and `git describe` says how far past one we are.
 version="$(git -C "$root" describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)"
 ahead="$(git -C "$root" rev-list --count "$version..HEAD" 2>/dev/null || echo 0)"
-date="$(date +%Y-%m-%d)"
 
 # A reader wants the human-readable version first.  The commit is kept as a
 # precise fallback, since a version alone cannot identify a point between
@@ -35,7 +34,9 @@ if ! git -C "$root" diff --quiet -- ':!docs/reference.md' ':!docs/reference.pdf'
   version="$version (uncommitted changes)"
 fi
 
-stamp="$version — $date"
+# Version only: the komabook title block prints the render date itself, so
+# repeating it here puts the same date on the page twice.
+stamp="$version"
 
 python3 - "$md" "$stamp" <<'PY'
 import re, sys
