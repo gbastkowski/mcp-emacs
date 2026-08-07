@@ -2,7 +2,7 @@
 title: "mcp-emacs — Source Reference"
 subtitle: "A guided tour of the code, its structure, and the Emacs Lisp it leans on"
 author: "Gunnar Bastkowski"
-date: "v1.6.0"
+date: "v1.6.0 (uncommitted changes)"
 ---
 
 # About This Document {-}
@@ -5483,94 +5483,3 @@ were handed.
 
 Following those four while writing ordinary features is what makes the eventual
 unification a refactor rather than a rewrite.
-
-\newpage
-# Appendix A: Elisp Features Quick Reference {-}
-
-Every feature explained in this document, with the section that covers it.
-
-| Feature | What it is | §|
-|---|---|---|
-| soft requires, `declare-function` | Optional dependencies without hard failure | 2.3 |
-| process filters, `inhibit-quit` | Why blocking in a filter freezes interactivity | 3.4 |
-| plists vs alists | Code-authored records vs parsed data | 3.6 |
-| `with-current-buffer`, `save-excursion`, `save-restriction` | Scoped buffer/point/narrowing state | 4.1 |
-| `when-let` / `if-let` | Abort-on-nil binding forms | 4.5 |
-| `catch` / `throw` | Non-local early exit | 4.6 |
-| markers and overlays | Positions and regions that track edits | 4.6 |
-| `condition-case` | Catching signals; the error hierarchy | 5.4 |
-| `with-slots`, `oref`, EIEIO | Emacs's object system, at the `web-server` boundary | 5.5 |
-| dynamic binding as configuration | `let`-binding special variables as an API | 5.6 |
-| cons cell as a mutable box | Sharing state between closures | 6.2 |
-| window parameters, `display-buffer` | Placement policy, side windows | 6.3 |
-| `setq-local`, buffer-local hooks | Per-buffer behaviour | 6.5 |
-| `accept-process-output` | Cooperative yield to the event loop | 6.7 |
-| timers | Deferred work with a real execution context | 6.8 |
-| modification ticks | Cheap change detection | 7.2 |
-| `org-map-entries`, narrowing | Walking Org subtrees safely | 7.3 |
-| `user-error` vs `error` | User mistake vs internal bug | 7.5 |
-| `cl-defstruct` | Record types with accessors and `setf` | 8.3 |
-| `with-temp-buffer` / `with-temp-file` | Build strings as buffers; write atomically | 8.4 |
-| Emacs regexp syntax | `\\(` groups, `\\`` and `\\'` anchors | 9.2 |
-| backquote and unquote | Templated data construction | 9.4 |
-| `buffer-local-value` | Read another buffer's variable | 9.7 |
-| process sentinels | Exit and status-change callbacks | 9.10 |
-| hooks, normal and abnormal | The `-hook` / `-functions` convention | 10.4 |
-| `json-parse-string` | The fast C reader and its keyword options | 10.5 |
-| `pcase` | Pattern-matching dispatch | 10.6 |
-| `define-derived-mode`, `special-mode` | Major modes for read-only buffers | 10.9 |
-| `interactive` specifications | How commands gather arguments | 11.1 |
-| advice | Wrapping functions you do not own | 11.2 |
-| bounded `insert-file-contents` | Reading a file prefix | 11.4 |
-| `org-element` | The Org AST and the `section` gotcha | 13.1, 13.2 |
-| Org subtree operations | `org-paste-subtree` and re-levelling | 14.3 |
-| custom error types | `define-error` and specific catches | 14.4 |
-| `cl-flet` / `cl-labels`, Lisp-2 | Local functions and the two namespaces | 16.1 |
-| `cl-letf` | Binding places; the standard mocking mechanism | 17.3 |
-| `defmacro`, `declare`, anaphora | Test-harness macros | 17.8 |
-
-# Appendix B: File Index {-}
-
-| File | § | One line |
-|---|---|---|
-| `elisp/mcp-emacs.el` | 4, 6, 7 | Helpers, the ediff review, the Org task protocol |
-| `elisp/mcp-emacs-server.el` | 5 | HTTP server, registries, JSON-RPC dispatch |
-| `elisp/mcp-emacs-report.el` | 19.3 | File GitHub issues about the tooling via `gh` |
-| `elisp/mcp-emacs-ide.el` | 8 | Claude Code IDE WebSocket protocol |
-| `elisp/mcp-emacs-run.el` | 9 | `eat`-based CLI runner and window management |
-| `elisp/mcp-emacs-run-resume.el` | 11.4 | Native picker over past sessions |
-| `elisp/mcp-emacs-remote.el` | 11 | Prompt input and the Org transcript |
-| `elisp/claude-client.el` | 10 | Terminal-free runner; the event log |
-| `elisp/opencode-client.el` | — | HTTP + SSE client for opencode |
-| `elisp/orgspec.el` | 12.2 | The marker table |
-| `elisp/orgspec-model.el` | 12.3 | Three structs |
-| `elisp/orgspec-parse.el` | 13, 15 | `org-element` extraction; the domain-model pattern |
-| `elisp/orgspec-fold.el` | 14, 15 | The delta fold; the pure-transformation rule |
-| `elisp/orgspec-validate.el` | 16.1 | The hard-gate validator |
-| `elisp/orgspec-commands.el` | 14.7 | `new`, `status`, `archive` |
-| `elisp/orgspec-lifecycle.el` | 16.2 | TODO state transitions |
-| `elisp/orgspec-agenda.el` | 16.2 | The in-flight dashboard |
-| `elisp/orgspec-review.el` | 16.3 | Ediff the fold before writing |
-| `elisp/orgspec-mcp.el` | 16.4 | Typed `orgspec_*` MCP tools |
-
-# Appendix C: Diagram Index {-}
-
-Every diagram, its PlantUML source in `docs/`, and where it appears.
-
-| Source | § | Shows |
-|---|---|---|
-| `architecture.puml` | 3.1 | The HTTP transport and the one-time launch |
-| `ref-cli-surface.puml` | 21 | Three CLI invocation surfaces, two editor-tool channels |
-| `ref-stream-events.puml` | 21.4 | stream-json messages mapped to internal events |
-| `ref-edit-gate.puml` | 21.6 | The two independent gates on an agent write |
-| `ref-ide-handshake.puml` | 21.7 | The blocking three-call sequence before a native edit |
-| `ref-event-today.puml` | 22.3 | Three hand-rolled wait/wake primitives; the write-only feed |
-| `event-model.puml` | 22.2 | Bounded contexts, aggregates, the shared log |
-| `ref-event-target.puml` | 22.4 | One log, many readers |
-| `event-loop.puml` | 22.5 | The cooperative loop, and the mid-flight note |
-
-Regenerate all of them with:
-
-```bash
-plantuml -tpng docs/*.puml
-```
