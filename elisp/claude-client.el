@@ -1,5 +1,15 @@
 ;;; claude-client.el --- Terminal-free Claude Code runner -*- lexical-binding: t; -*-
 
+;; Author: Gunnar Bastkowski
+;; Version: 1.6.0
+;; Package-Requires: ((emacs "28.1"))
+;; Keywords: tools
+;; URL: https://github.com/gbastkowski/mcp-emacs
+
+;; SPDX-License-Identifier: GPL-3.0-or-later
+
+;;; Commentary:
+
 ;; Drive Claude Code without a terminal emulator: spawn the CLI headless,
 ;; parse its stream-json output, and render the conversation into an
 ;; ordinary Emacs buffer.  This is the non-`eat' runner from issue #40,
