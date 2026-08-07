@@ -2,6 +2,7 @@
 title: "mcp-emacs — Source Reference"
 subtitle: "A guided tour of the code, its structure, and the Emacs Lisp it leans on"
 author: "Gunnar Bastkowski"
+date: "Version 1.0.0 — 2026-08-07 — describing commit 8f4b1c3"
 ---
 
 # About This Document {-}
@@ -31,7 +32,7 @@ The document is organised as follows.
 - Chapters 17–20 cover the test suite, how to modify the code safely, the
   packaging, and a set of cross-cutting idioms worth learning from here.
 - Chapters 21–22 cover the Claude Code CLI surface the project depends on,
-  and the event model the project is moving toward.
+  and the event model the human/AI workflow is built on.
 
 Diagrams are rendered from the PlantUML sources in `docs/`; each is named in
 its caption so you can regenerate it with
@@ -143,35 +144,35 @@ the order one file requires another.
 
 | File | Lines | Role |
 |---|---:|---|
-| `mcp-emacs.el` | 1319 | Every helper that touches editor state. No HTTP, no protocol. |
-| `mcp-emacs-report.el` | 145 | Files GitHub issues about the tooling itself, via `gh`. |
-| `mcp-emacs-server.el` | 687 | The HTTP server, tool/resource registries, JSON-RPC dispatch. |
+| `mcp-emacs.el` | 1348 | Every helper that touches editor state. No HTTP, no protocol. |
+| `mcp-emacs-report.el` | 144 | Files GitHub issues about the tooling itself, via `gh`. |
+| `mcp-emacs-server.el` | 686 | The HTTP server, tool/resource registries, JSON-RPC dispatch. |
 
 **Group 2 — agent-facing surfaces.**
 
 | File | Lines | Role |
 |---|---:|---|
-| `mcp-emacs-ide.el` | 469 | A WebSocket server speaking Claude Code's unofficial IDE protocol. |
-| `mcp-emacs-run.el` | 679 | Launches the Claude CLI in an `eat` terminal buffer; window management. |
-| `mcp-emacs-run-resume.el` | 173 | A native picker over past Claude sessions on disk. |
-| `mcp-emacs-remote.el` | 305 | Sends prompts to a running session; records activity as an Org transcript. |
-| `claude-client.el` | 347 | A terminal-free runner: subprocess + NDJSON stream + rendered buffer. |
-| `opencode-client.el` | 554 | An HTTP + SSE client for the opencode agent server. |
+| `mcp-emacs-ide.el` | 468 | A WebSocket server speaking Claude Code's unofficial IDE protocol. |
+| `mcp-emacs-run.el` | 678 | Launches the Claude CLI in an `eat` terminal buffer; window management. |
+| `mcp-emacs-run-resume.el` | 172 | A native picker over past Claude sessions on disk. |
+| `mcp-emacs-remote.el` | 370 | Sends prompts to a running session; records activity as an Org transcript. |
+| `claude-client.el` | 756 | A terminal-free runner: subprocess + NDJSON stream + rendered buffer. |
+| `opencode-client.el` | 553 | An HTTP + SSE client for the opencode agent server. |
 
 **Group 3 — orgspec, the org-native spec workflow.**
 
 | File | Lines | Role |
 |---|---:|---|
-| `orgspec.el` | 96 | The marker table: op tags, property names, regexes, TODO roles. |
-| `orgspec-model.el` | 62 | Three `cl-defstruct`s: scenario, requirement, change. |
-| `orgspec-parse.el` | 130 | `org-element` extraction of the model from buffers. |
-| `orgspec-fold.el` | 174 | The delta fold — the load-bearing algorithm. |
-| `orgspec-validate.el` | 113 | The hard-gate validator. |
-| `orgspec-commands.el` | 197 | The verbs: `new`, `status`, `archive`. |
-| `orgspec-lifecycle.el` | 82 | Moving a delta requirement through TODO states. |
-| `orgspec-agenda.el` | 61 | One `org-agenda` custom command as an in-flight dashboard. |
-| `orgspec-review.el` | 80 | Ediff the fold before it writes. |
-| `orgspec-mcp.el` | 179 | Typed MCP tools over the orgspec verbs. |
+| `orgspec.el` | 95 | The marker table: op tags, property names, regexes, TODO roles. |
+| `orgspec-model.el` | 61 | Three `cl-defstruct`s: scenario, requirement, change. |
+| `orgspec-parse.el` | 129 | `org-element` extraction of the model from buffers. |
+| `orgspec-fold.el` | 173 | The delta fold — the load-bearing algorithm. |
+| `orgspec-validate.el` | 112 | The hard-gate validator. |
+| `orgspec-commands.el` | 196 | The verbs: `new`, `status`, `archive`. |
+| `orgspec-lifecycle.el` | 81 | Moving a delta requirement through TODO states. |
+| `orgspec-agenda.el` | 60 | One `org-agenda` custom command as an in-flight dashboard. |
+| `orgspec-review.el` | 79 | Ediff the fold before it writes. |
+| `orgspec-mcp.el` | 178 | Typed MCP tools over the orgspec verbs. |
 
 ## What is deliberately *not* here
 
@@ -2576,10 +2577,158 @@ yank them away. `eobp` is "end of buffer predicate".
 `opencode-client.el` uses the identical pattern (line 406), which is a good
 sign that it was a deliberate choice rather than an accident.
 
+## Turns over one process
+
+The first version spawned a fresh CLI per prompt. It now keeps one subprocess
+and writes further turns to it, so the session id and the model's context
+carry across them:
+
+```commonlisp
+(defun claude-client-send (prompt)
+  "Send PROMPT as the next turn of this conversation."
+  (cond
+   (claude-client--turn-active
+    (user-error "A turn is already running; add a note with `n' instead"))
+   ((not (process-live-p claude-client--process))
+    (user-error "No live Claude process; start one with `g'"))
+   (t ...)))
+```
+
+The refusal while a turn is in flight is not defensiveness: the CLI reads one
+turn at a time, so a second write would interleave with the one being
+answered.
+
+The subtle part is knowing whether a turn *is* in flight. The obvious test —
+is the process alive? — is wrong, and wrong in a way that passed every unit
+test:
+
+```commonlisp
+(defvar-local claude-client--turn-active nil
+  "Non-nil while a turn is in flight, i.e. between spawn and `result'.
+Tracked from the stream rather than from the process: `claude --print'
+stays alive after emitting `result' (it waits on stdin for a follow-up
+turn), so `process-live-p' reports `run' long after the turn is over
+and cannot answer \"is the model working right now?\".")
+```
+
+`claude --print` does not exit after answering; it waits on stdin. Reading
+process liveness as "the model is working" left notes queued forever once a
+run had finished. Only a live run surfaced it.
+
+## Reopening a past session
+
+```commonlisp
+(when resume-id (list "--resume" resume-id))
+```
+
+`--resume`, not `--session-id`. The two look interchangeable and are not:
+`--session-id` means *create a new session with this id* and fails outright
+when a transcript already exists. The picker reuses the on-disk store and the
+labels `mcp-emacs-run-resume.el` already builds, so a session started in
+either runner continues in the other.
+
+Only the model's context comes back. The rendered log lives in the buffer,
+not on disk, so the conversation restarts on screen while the model still
+remembers — an asymmetry worth knowing before it surprises you.
+
+## Notes: the human as a second producer
+
+Until this point the log had one producer and several readers. A note is the
+human writing to the same log:
+
+```commonlisp
+(defun claude-client-add-note (text) ...)   ; bound to `n'
+```
+
+A note is recorded the moment it is written, so every subscriber sees it at
+once and the transcript interleaves `human ::` and `assistant ::` lines in the
+order things actually happened. What happens *next* is the interesting part.
+
+## Interruption: the design question, answered by measurement
+
+Issue #39 calls this *the* question — a note arrives mid tool-call: finish,
+abort, or re-plan? The CLI turns out to answer it for us. Its init event
+advertises:
+
+```json
+["interrupt_receipt_v1", "interrupt_cancel_queued_v1", "msg_lifecycle_v1"]
+```
+
+and accepts a control request that abandons the turn in flight:
+
+```commonlisp
+(defun claude-client--send-interrupt (proc)
+  (process-send-string
+   proc
+   (concat (json-encode
+            `((type . "control_request")
+              (request_id . ,(format "int-%s" (float-time)))
+              (request . ((subtype . "interrupt")))))
+           "\n")))
+```
+
+Two properties were checked against the real CLI before any of this was built
+on them: the interrupt lands **instantly**, and **the session survives it** —
+the next turn answers normally. So abandoning a turn costs the in-flight work
+and nothing else.
+
+That makes the aggressive answer affordable, and it is the default: a note
+written mid-turn interrupts, and is redelivered as the next turn with framing
+that says not to resume.
+
+```commonlisp
+(when claude-client--interrupted
+  (concat "Your previous turn was interrupted before it "
+          "finished, on purpose. Do not resume it; re-plan "
+          "around the note below.\n\n"))
+```
+
+That framing is load-bearing rather than decorative. Without it the model
+picks up the abandoned work instead of redirecting; the mutation that drops
+the text fails two tests. Live, the behaviour is unambiguous — a 2000-word
+essay cut mid-sentence, then:
+
+```
+── error_during_execution ──
+── 1 note to carry forward ──
+REDIRECTED
+```
+
+The lost partial work is the price of acting immediately. That trade is
+measured rather than argued, which the earlier queue-until-turn-end behaviour
+could not establish: with a one-shot runner there was no turn to steer.
+
+## Backpressure: three defects, found by probing
+
+Making a note interrupt exposed three ways rapid notes misbehaved. None were
+visible by reading the code; all three came from writing a probe that
+exercised the case.
+
+A second note fired **another interrupt** into a turn already dying, and
+logged a second `interrupted` event for one interruption. The interrupt flag
+now doubles as the guard:
+
+```commonlisp
+((and running claude-client-note-interrupts
+      (not claude-client--interrupted)
+      (process-live-p claude-client--process))
+ ...)
+```
+
+An exact repeat **queued twice** and was sent twice, spending context to say
+nothing new. Repeats are coalesced — though both are still recorded, because
+the human did write it twice.
+
+The queue was **unbounded**, so a slow model meant notes piling up until they
+arrived as one enormous prompt with the newest thought behind everything
+stale. `claude-client-max-pending-notes` bounds it and drops the oldest,
+because the recent note is the current intent. Drops are logged rather than
+silent: the record should show that something was said and lost.
+
 ## Guarding against a second run
 
 ```commonlisp
-(when (process-live-p claude-client--process)
+(when claude-client--turn-active
   (user-error "A Claude run is already active here; `k' to kill it first"))
 ```
 
@@ -2621,6 +2770,10 @@ answer".
 >   (let ((map (make-sparse-keymap)))
 >     (define-key map (kbd "g") #'claude-client-start)
 >     (define-key map (kbd "k") #'claude-client-quit)
+>     (define-key map (kbd "n") #'claude-client-add-note)
+>     (define-key map (kbd "s") #'claude-client-send)
+>     (define-key map (kbd "r") #'claude-client-resume)
+>     (define-key map (kbd "i") #'claude-client-interrupt)
 >     map))
 > ```
 >
@@ -2727,6 +2880,54 @@ A logging layer that can crash the thing it logs is worse than no logging.
 Note also `(ignore buffer)` — a no-op call whose only purpose is to tell the
 byte-compiler "yes, I know this parameter is unused". The alternative is to
 name it `_buffer`; both appear in this codebase.
+
+## The human's side of the same record
+
+The runner's activity was in the log; the human's Org edits were not. The four
+org-task writes now emit as well, and the transcript subscribes to both, so one
+record shows both actors in order:
+
+```org
+  - [13:18:34] org session :: STRT [session.org]
+  - [13:18:34] assistant   :: AI working
+  - [13:18:34] org item    :: first item → DONE [session.org]
+  - [13:18:34] result      :: Status: applied
+```
+
+The design rule behind this is worth stating plainly, because it is what keeps
+the log from becoming a liability:
+
+> **The Org file is the aggregate. The log observes it.**
+
+These events are *observations, not commands*. They are emitted because Org
+changed, and nothing may reconstruct state by replaying them. Session and item
+state lives in the Org subtree the human edits directly — reorder, flip a
+keyword, rewrite text — and the log is a record beside it, never a competing
+source of truth.
+
+Two consequences fall out of that. First, the log does not need to be durable:
+`claude-client--events` being buffer-local and lost on restart is a deliberate
+property, not a gap, because state does not live there. Second, ordering
+mostly stops being a problem — with Org as the single writer of record there
+is nothing to merge, and the only genuine two-writer case left is
+`FileChanged`, which the ediff gate already handles.
+
+Only *successful* writes emit. A rejected keyword or an item that could not be
+identified changed nothing, so there is nothing to observe:
+
+```commonlisp
+(if (mcp-emacs-org-task--find-item ref)
+    (progn
+      (org-todo status)
+      (mcp-emacs-org-task--emit 'item-status path :ref ref :status status)
+      ...)
+  (format "TODO item not found: %s" ref))   ; no emit
+```
+
+And the emit site catches subscriber errors itself rather than leaving them to
+the caller — the org-task functions' outer handler only catches `user-error`,
+so an unguarded observer error would escape as a plain `error` and take the
+write down with it. The aggregate comes first, the record second.
 
 ## Quiet tools
 
@@ -3873,8 +4074,11 @@ is enough, and it has one real advantage: a test file is *just Elisp you can
 load*. You can `M-x load-file` it in your running Emacs and watch the output
 appear in `*Messages*`, with all your normal debugging tools available.
 
-If you add a test file, follow the convention, and **add it to the CI loop in
-`.github/workflows/ci.yml`** — a file not listed there is never run.
+If you add a test file, follow the convention and drop it in `test/`; CI globs
+the directory, so it is picked up automatically. That was not always true —
+the workflow listed files by hand, the list fell behind, and 203 assertions
+including the whole terminal-free runner sat outside CI without anyone
+noticing.
 
 Note also the `(defun check ...)` is redefined per file. Some files use a
 namespaced variant (`mcp-ide-test--check`) to avoid clobbering; both are
@@ -4506,7 +4710,9 @@ for convenience. (§14.5.)
 **Advice depends on private names and arities.** If you must advise, expect it
 to break; prefer a published hook. (§11.2.)
 
-**A test file not listed in `ci.yml` never runs.** (§17.1.)
+**Hand-maintained file lists rot silently.** `ci.yml` listed its sources and
+tests explicitly until seven files had accumulated outside it. Glob instead.
+(§17.1, §20.4.)
 
 ## Style conventions to match
 
@@ -4620,13 +4826,21 @@ arguments.
 1. Check out.
 2. Install Emacs 29.4 via `purcell/setup-emacs`.
 3. `package-install` `web-server` and `websocket` from MELPA.
-4. Byte-compile an explicit list of files.
-5. Run an explicit list of test files, failing on any `FAIL` in the output.
+4. Byte-compile `elisp/*.el`.
+5. Run every suite in `test/*.el`, failing on any `FAIL`, on a non-zero exit,
+   or on a suite that produced no `PASS` at all.
 
-Both lists are explicit rather than globbed. That is a maintenance burden —
-a new file must be added in two places — but it also means a file can be
-excluded deliberately (`claude-client.el` and `opencode-client.el` are not in
-the byte-compile list, since they depend on packages CI does not install).
+Both steps used to list their files by hand. The lists fell behind: three
+source files and four test suites — 203 assertions, including the entire
+terminal-free runner — were never compiled or run here. The stated reason for
+the omission (that those files need packages CI does not install) was not even
+true; they had simply been forgotten. Globbing removes the failure mode
+entirely.
+
+The third failure condition is worth noting. The check originally only grepped
+for `FAIL`, so a suite that *errored before printing anything* counted as a
+pass — the most dangerous kind of green. Requiring at least one `PASS` closes
+that.
 
 \newpage
 
@@ -5018,15 +5232,17 @@ log, and the render buffer are all transport-agnostic. Only the ~120 lines of
 
 \newpage
 
-# The Coming Event Model
+# The Event Model
 
-Everything up to here describes code that exists. This chapter describes a
-design that does not yet — recorded in `docs/VISION.md` as an explicitly
-exploratory sketch, and included here because it explains *why* several
-existing pieces are shaped the way they are, and because it is the direction
-the next features will be chosen against.
+This chapter began as a sketch of a design that did not exist. Most of it now
+does. It is kept as a chapter rather than folded into the others because the
+reasoning is what makes the pieces legible: the shape was chosen first, in
+`docs/VISION.md`, and the features were then chosen against it.
 
-Treat it as a reading of the design, not a specification.
+Where something is built, this says so and points at the code. Where a
+question was open and has since been answered, the answer and the evidence for
+it are recorded — several were settled by measuring the CLI rather than by
+argument, and those measurements are the load-bearing part.
 
 ## The problem with turns
 
@@ -5097,8 +5313,10 @@ isolation.
 
 **An event feed exists.** `mcp-emacs-remote` (Chapter 11) appends tool calls,
 diff outcomes, and session boundaries into a per-project Org transcript. It is
-append-only, timestamped, and structured. It is also **write-only**: nothing
-reads it back. No cursor, no subscribers, no replay.
+append-only, timestamped, and structured. It was also **write-only** — nothing
+read it back. That is the piece that has since changed: the transcript is now
+a *subscriber* on `claude-client-event-functions`, and the runner publishes to
+a log rather than writing a record directly.
 
 **A wait/wake primitive exists.** `org_task_wait_for_change` (§7.6) blocks on
 a monotonic `buffer-chars-modified-tick` baseline via an
@@ -5109,19 +5327,24 @@ precisely the semantics a reactor needs.
 plus a single-fire `ediff-quit-hook` (§6.5) is a promise: exactly one
 resolution, whichever path gets there first.
 
-So the gap is not "we need an event system". It is narrower and more concrete:
+So the gap was never "we need an event system". It was narrower, and it has
+largely closed:
 
-- The feed is **one-directional**. It has producers and a human reader, but no
-  programmatic subscribers and no cursor.
-- The aggregates each **poll their own thing**. There is no shared notion of
-  "something happened".
-- The two producer mechanisms **disagree**. The IDE taps use advice (fragile,
-  §11.2); `claude-client` publishes a hook (robust, §10.4). The newer one is
-  the pattern; the older one predates it.
+- The feed was **one-directional**. It now has programmatic subscribers; the
+  rendered transcript is one of them, and keeping the conversation window
+  visible across an ediff review is another.
+- The producers were **one**. The human is now a second: a note
+  (`claude-client-add-note`) writes to the same log the runner does, and the
+  four org-task writes emit observations into it as well, so one record shows
+  both actors in order.
+- The two producer mechanisms **disagreed**. The IDE taps still use advice
+  (fragile, §11.2); everything added since publishes a hook (robust, §10.4).
+  The newer one is the pattern; the older one predates it and remains.
 
-The vision's own summary: "Turning this into an event system is mostly
-*unifying what exists*: make the transcript a first-class log with
-**subscribers**, and let the AI be one reactor among several."
+What has *not* changed, deliberately: the log is not a store. The Org file
+remains the aggregate and the log only observes it, so nothing reconstructs
+state by replaying — which is also why the log's not surviving a restart costs
+nothing that matters.
 
 ## The target shape
 
@@ -5143,46 +5366,75 @@ reactor may or may not care about.
 ![The loop, and the mid-flight note it exists for](event-loop.png)
 
 The first band of that diagram is the flow that works today, using the tick
-token and the poll wait. The second band — "add a thought mid-flight" — is the
-one the model exists for, and it is the part that is not built.
+token and the poll wait. The second band — "add a thought mid-flight" — is now
+built; the rest of this chapter is how each question was settled.
 
-## The three hard questions
+## The three hard questions, and their answers
 
-The vision names these as "the actual content of the design", which is a fair
-assessment: the plumbing is straightforward and these are not.
+The vision named these as "the actual content of the design", which was a fair
+assessment: the plumbing was straightforward and these were not.
 
-**1. Interruption semantics.** A `NoteAdded` arrives while the AI is mid
-tool-call. Finish, abort, or re-plan? Request/response dodges this question
-entirely by making it impossible to ask. An event model must answer it.
+**1. Interruption semantics — answered: interrupt and re-plan.** A `NoteAdded`
+arrives while the AI is mid tool-call. Finish, abort, or re-plan?
 
-The event-loop diagram sketches one shape — reach a safe point, then fold the
-new input into the plan; or if a current operation must complete, finish it
-and re-plan after. But "safe point" is doing enormous work in that sentence.
-Is a half-applied multi-file edit a safe point? Is an open ediff? The project
-memory records this as *the* open question, and it is.
+The CLI settled what was affordable. Its init event advertises
+`interrupt_receipt_v1`, and it accepts a control request that abandons the
+turn in flight. Two properties were measured before anything was built on
+them: the interrupt lands instantly, and *the session survives it* — the next
+turn answers normally. So abandoning a turn costs the in-flight work and
+nothing else, which makes the aggressive answer cheap enough to be the
+default.
 
-**2. Ordering and consistency.** Two writers on one file makes `FileChanged`
-ordering a merge problem. This is the same concern that caused the agent
-backend abstraction to be deferred: as long as one actor writes at a time, the
-question does not arise; the moment both do, it is a distributed-systems
-problem in a single address space.
+A note written mid-turn therefore interrupts, and is redelivered with framing
+that says the previous turn was cut short on purpose and not to resume it.
+That framing is load-bearing: without it the model picks up the abandoned work
+instead of redirecting.
 
-Note that the existing diff review has a small, correct answer to a small
-version of this: if buffer A was hand-edited during a review, the human's edit
-wins and the proposal is discarded (§6.4). That is a merge policy — last-human-
-writer-wins, scoped to one file, one review. Whether it generalises is unclear.
+Note what this did *not* require: a notion of "safe point". The earlier
+worry — is a half-applied edit a safe point? is an open ediff? — dissolved
+because the edit path is gated at the MCP tool boundary. An interrupt cannot
+land mid-write; it lands between tool calls, and a review already in flight is
+answered by the human on its own terms.
 
-**3. Backpressure.** Several notes arrive in quick succession while the AI is
-slow. Queue them, coalesce them, or take the latest? Each gives a different
-feel: a queue makes the AI work through stale instructions; latest-wins loses
-a thought the human deliberately typed; coalescing needs a merge rule.
+**2. Ordering and consistency — mostly dissolved by a decision.** Two writers
+on one file makes `FileChanged` ordering a merge problem. This was the same
+concern that caused the agent backend abstraction to be deferred.
 
-None of these have answers in the repository yet. That is the honest state of
-the design.
+The decision that the Org file is the aggregate removes most of it. For
+Session and Item state there is a single writer of record — Org — so there is
+nothing to merge; the log observes rather than competes. What remains is the
+genuine two-writer case on file contents, and the diff review already answers
+it: if buffer A was hand-edited during a review, the human's edit wins and the
+proposal is discarded (§6.4). Last-human-writer-wins, scoped to one file, one
+review.
 
-## The smallest first step
+**3. Backpressure — answered by probing, not by choosing.** Several notes
+arrive in quick succession while the AI is slow. The intended design was
+"queue them", and the interesting part is that writing a probe against the
+implementation found three defects that reading it had not:
 
-The vision is specific about not over-building:
+- a second note fired *another* interrupt into a turn already dying, and
+  logged a second `interrupted` event for one interruption;
+- an exact repeat queued twice and was sent twice, spending context to say
+  nothing new;
+- the queue was unbounded, so a slow model meant notes piling up until they
+  arrived as one enormous prompt with the newest thought behind everything
+  stale.
+
+The answers: one interrupt per turn (the interrupt flag doubles as the guard),
+exact repeats coalesced but still recorded, and a bounded queue that drops the
+*oldest* — the recent note is the current intent — with each drop logged
+rather than silent.
+
+All three now have answers in the repository. Two of them came from measuring
+rather than deciding, which is the part worth generalising: the interruption
+rule was chosen because the CLI made a cheap answer available, and the
+backpressure rules were written because a probe found defects that reading the
+code had not.
+
+## The smallest first step, and what it decided
+
+The vision was specific about not over-building:
 
 > Don't refactor everything onto a bus. Make the `mcp-emacs-remote` transcript
 > a readable log with one subscriber, and wire the single path that most *is*
@@ -5190,9 +5442,21 @@ The vision is specific about not over-building:
 > cleanly subsumes the hand-rolled org-task loop, the abstraction is right.
 > Then settle the interruption rule before going wider.
 
-That is a well-chosen test. If a general log with subscribers can express the
-org-task loop without contortion, the abstraction fits the domain. If it
-cannot, better to find out at one subscriber than at five.
+Both halves were built, and the test was run. **The answer is that it does not
+subsume the org-task loop** — and after the aggregate decision it was never
+going to.
+
+That is not a failure of the abstraction; it is the abstraction finding its
+scope. With Org owning Session and Item state, `wait_for_change` plus direct
+editing is the *right* shape for an owned aggregate: the human edits the file,
+the AI reacts to what changed. What the log contributes is the push-based wake
+in place of a poll, and one shared record in place of two side-by-side ones.
+It does not contribute ownership, and trying to make it would have created a
+second source of truth for the same checklist.
+
+Concretely: of the org-task loop's operations, the log subsumes the note path
+and improves on the wait; the item and session status operations stay in Org
+and merely emit observations. That split is stable, not a way-station.
 
 ## What this means if you are modifying the code today
 
