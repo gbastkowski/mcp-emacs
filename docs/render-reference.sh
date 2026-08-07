@@ -27,15 +27,15 @@ if [ "$ahead" != "0" ]; then
   version="$version+$ahead"
 fi
 
-commit="$(git -C "$root" rev-parse --short HEAD)"
-
-# Dirty tree means the stamp would claim a commit that does not contain the
-# state being described; say so rather than lying on the title page.
+# A commit hash on the title page is noise to a reader: it identifies the
+# tree precisely but means nothing to anyone not holding the repository.  The
+# version does the job.  A dirty tree is still called out, because then the
+# version is a claim the tree does not support.
 if ! git -C "$root" diff --quiet -- ':!docs/reference.md' ':!docs/reference.pdf'; then
-  commit="$commit+dirty"
+  version="$version (uncommitted changes)"
 fi
 
-stamp="$version — $date — commit $commit"
+stamp="$version — $date"
 
 python3 - "$md" "$stamp" <<'PY'
 import re, sys
