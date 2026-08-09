@@ -121,3 +121,29 @@
    1 (lambda (_r) nil))
   (check "async-args-passed-path" (alist-get 'path seen) "/tmp/x")
   (check "async-args-passed-timeout" (alist-get 'timeout seen) 30))
+;;;; Body decoding (UTF-8)
+;; web-server reads the socket with :coding no-conversion, so the body slot
+;; holds raw UTF-8 bytes; parse-body must decode them so non-ASCII survives
+;; as proper characters instead of raw bytes that prompt for a coding
+;; system when written into a buffer.
+
+(require (quote eieio))
+(defclass mcp-srv-test--request () ((body :initarg :body)))
+
+;; A UTF-8 em dash (U+2014) inside the raw body decodes to one character.
+(let* ((raw-em-dash (string #x3FFFE2 #x3FFF80 #x3FFF94))
+       (request (make-instance
+                 (quote mcp-srv-test--request)
+                 :body (format "{%c%s%c:%c%s%c}" 34 "text" 34 34 raw-em-dash 34)))
+       (parsed (mcp-emacs-server--parse-body request))
+       (text (alist-get (quote text) parsed)))
+  (check "body-decodes-em-dash" (string= text (string #x2014)) t)
+  (check "body-em-dash-single-char" (length text) 1))
+
+;; Pure-ASCII bodies are unaffected.
+(let* ((request (make-instance
+                 (quote mcp-srv-test--request)
+                 :body (format "{%c%s%c:%c%s%c}" 34 "method" 34 34 "ping" 34)))
+       (parsed (mcp-emacs-server--parse-body request)))
+  (check "body-ascii-method" (alist-get (quote method) parsed) "ping"))
+
