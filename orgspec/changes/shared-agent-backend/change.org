@@ -58,15 +58,15 @@ subscribers (reshow-after-review, the remote org transcript) to the
 shared hook.
 
 * Tasks
-- [ ] scaffold elisp/agent-backend.el: base class, generics, event hook, publish helper, base mode
-- [ ] port opencode-client.el onto agent-backend (subclass, thin wrappers, event translation)
-- [ ] grow the opencode test suite (event vocabulary, note-policy, permission/question, sessions)
-- [ ] verify Claude is untouched and its test suite still passes after milestone 1
-- [ ] port claude-client.el onto agent-backend (subclass, thin wrappers)
-- [ ] migrate claude-client-event-functions subscribers to agent-backend-event-functions
-- [ ] point the mcp-emacs-remote transcript at the shared hook
-- [ ] verify both test suites pass and agent-backend.el compiles standalone
-- [ ] document the backend architecture in README.md
+- [x] scaffold elisp/agent-backend.el: base class, generics, event hook, publish helper, base mode
+- [x] port opencode-client.el onto agent-backend (subclass, thin wrappers, event translation)
+- [x] grow the opencode test suite (event vocabulary, note-policy, permission/question, sessions)
+- [x] verify Claude is untouched and its test suite still passes after milestone 1
+- [x] port claude-client.el onto agent-backend (subclass, thin wrappers)
+- [x] migrate claude-client-event-functions subscribers to agent-backend-event-functions
+- [x] point the mcp-emacs-remote transcript at the shared hook
+- [x] verify both test suites pass and agent-backend.el compiles standalone
+- [x] document the backend architecture in README.md
 
 * Delta
 

@@ -39,8 +39,9 @@
     :initform :steer
     :documentation
     "How a human note written mid-turn reaches the model.
-`:steer' redirects the in-flight turn immediately; `:queue' waits for
-the turn to end on its own.")
+    `:steer' redirects the in-flight turn immediately; `:queue' waits
+    for the turn to end on its own.  Backends may add policy values
+    beyond this pair (claude-client uses `:interrupt').")
    (session-id
     :initarg :session-id
     :initform nil

@@ -153,6 +153,48 @@ This is the GitHub, single-repo counterpart to the "report a tooling issue"
 feature in the sibling GitLab AI-tooling (see #26); there is no fault-domain
 router because mcp-emacs is one repo.
 
+### Shared agent-backend
+
+`elisp/agent-backend.el` is the shared layer behind the two conversation
+backends in this repository (issue #41).  Both `opencode-client.el` and
+`claude-client.el` subclass its EIEIO base class `agent-backend', so the
+backends are interchangeable from the user's point of view: the same
+keybindings, the same event consumers, and the same Org transcript work
+regardless of which backend is driving the session.
+
+**The interface.**  The base class declares a `cl-defgeneric` lifecycle
+interface -- `agent-backend-connect`, `-quit`, `-send`, `-interrupt`,
+`-add-note`, `-note-policy`, `-reply-permission`, `-reply-question`,
+`-list-sessions`, `-resume`, `-seed-history`, `-project-root`, and
+`-render`.  The optional capabilities (permission/question replies,
+sessions, resume, history seeding, project root, render) have no-op or
+`user-error` defaults on the base class, so a minimal backend implements
+only connect, quit, send, interrupt, add-note, and note-policy and
+compiles without stubs.
+
+**The event vocabulary.**  Every conversation event is published as a
+plist with a `:kind' symbol on the abnormal hook
+`agent-backend-event-functions', run with (BUFFER EVENT).  The shared
+kinds are `started', `prompt', `text', `tool-use', `tool-result',
+`finished', `interrupted', `note', `notes-delivered', `note-dropped',
+`resumed', `permission-request', `question-request', and `error'.
+Subscribers must ignore unknown kinds, so a new kind degrades to silence
+rather than breaking a reader.  This is what lets the remote Org
+transcript record both opencode and Claude sessions through one
+subscriber.
+
+**The mode.**  `agent-backend-mode' derives from `special-mode' and binds
+the common actions in a shared keymap (`C-c C-s` send, `C-c C-i`
+interrupt, `C-c C-n` add-note, `C-c C-q` quit, `C-c C-r` resume); each
+backend's major mode derives from it and layers its own keys on top.
+
+**Note policy.**  `agent-backend-note-policy' names how a human note
+written mid-turn reaches the model.  opencode notes ARE steering prompts
+(`:steer'), delivered immediately via its HTTP API; Claude keeps its
+native interrupt-or-queue machinery (`:interrupt` when
+`claude-client-note-interrupts' is on, `:queue` when off).
+
+The two sections below describe what each concrete backend adds:
 ### opencode client
 
 `elisp/opencode-client.el` is a native Emacs client for
