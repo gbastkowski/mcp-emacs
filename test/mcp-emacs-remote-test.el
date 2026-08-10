@@ -140,7 +140,7 @@
 
 ;; --- Runner subscriber (issue #39) -------------------------------------------
 ;;
-;; The transcript subscribes to `claude-client-event-functions' rather than
+;; The transcript subscribes to `agent-backend-event-functions' rather than
 ;; advising anything: the runner publishes an append-only event log and this
 ;; is one reader of it.
 
@@ -254,21 +254,21 @@
            t)))
 
 ;; enable/disable manage hook membership, and both are idempotent.
-(let ((claude-client-event-functions nil))
+(let ((agent-backend-event-functions nil))
   (cl-letf (((symbol-function 'advice-add) #'ignore)
             ((symbol-function 'advice-remove) #'ignore))
     (mcp-emacs-remote-enable)
     (check "enable-subscribes"
            (and (memq #'mcp-emacs-remote--tap-runner-event
-                      claude-client-event-functions) t) t)
+                      agent-backend-event-functions) t) t)
     (mcp-emacs-remote-enable)
     (check "enable-idempotent"
            (length (seq-filter (lambda (f) (eq f #'mcp-emacs-remote--tap-runner-event))
-                               claude-client-event-functions))
+                               agent-backend-event-functions))
            1)
     (mcp-emacs-remote-disable)
     (check "disable-unsubscribes"
-           (memq #'mcp-emacs-remote--tap-runner-event claude-client-event-functions)
+           (memq #'mcp-emacs-remote--tap-runner-event agent-backend-event-functions)
            nil)))
 
 (remote--kill-transcripts)
@@ -343,7 +343,7 @@
 
 ;; enable/disable manage the org-task hook too.
 (let ((mcp-emacs-org-task-event-functions nil)
-      (claude-client-event-functions nil))
+      (agent-backend-event-functions nil))
   (cl-letf (((symbol-function 'advice-add) #'ignore)
             ((symbol-function 'advice-remove) #'ignore))
     (mcp-emacs-remote-enable)

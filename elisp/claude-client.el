@@ -53,6 +53,7 @@
 
 (require 'json)
 (require 'subr-x)
+(require 'agent-backend)
 
 ;;;; Customization
 
@@ -228,13 +229,29 @@ stays alive after emitting `result' (it waits on stdin for a follow-up
 turn), so `process-live-p' reports `run' long after the turn is over
 and cannot answer \"is the model working right now?\".")
 
-(defvar claude-client-event-functions '(claude-client--reshow-after-review)
-  "Abnormal hook run with (BUFFER EVENT) for every parsed event.
-Each EVENT is a plist as stored in `claude-client--events'.  This is
-the subscriber seam: rendering is one consumer, the Org transcript
-\(issue #39) another, and keeping the conversation window visible across
-an ediff review a third -- none of which the runner has to know about.")
+(defvaralias 'claude-client-event-functions 'agent-backend-event-functions)
+(make-obsolete-variable 'claude-client-event-functions
+                        'agent-backend-event-functions "1.7.0")
+;; `claude-client-event-functions' is now an alias of the shared hook
+;; `agent-backend-event-functions' (issue #41): every event is published
+;; on the shared hook, and subscribers that still name the old hook keep
+;; working because the alias resolves to the same variable.
 
+;;;; The backend class
+
+(defclass claude-client-backend (agent-backend)
+  ()
+  "A Claude conversation backend (an `agent-backend' subclass).
+The conversation state stays in the buffer-local variables this file
+already uses (`claude-client--events' and friends): the change spec
+deliberately keeps the append-only event log backend-internal rather
+than forcing one conversation model.  The instance is the dispatch
+target for the shared generic methods and is held in the buffer-local
+`agent-backend--instance'.")
+
+(defun claude-client--instance ()
+  "Return the claude backend instance for the current buffer."
+  agent-backend--instance)
 ;;;; Spawning
 
 (defun claude-client--mcp-config-file ()
@@ -315,7 +332,7 @@ splittable window rather than a dedicated side window -- the same shape
 
 (defun claude-client--reshow-after-review (buffer event)
   "Re-display BUFFER when EVENT reports a finished tool call.
-Subscriber for `claude-client-event-functions'.  An `apply_diff' review
+Subscriber for `agent-backend-event-functions'.  An `apply_diff' review
 restores the window configuration it captured before it opened, which
 predates this conversation window when the review came from this
 buffer's own tool call -- so without this the conversation vanishes at
@@ -326,18 +343,22 @@ displayed, so this never forces a hidden conversation on screen."
              (buffer-live-p buffer)
              (not (get-buffer-window buffer t)))
     (claude-client--display buffer)))
+;; The re-show is a subscriber on the shared hook now (issue #41).
+(add-hook 'agent-backend-event-functions #'claude-client--reshow-after-review)
 
 ;;;; Event model
 
 (defun claude-client--push-event (buffer event)
-  "Append EVENT to BUFFER's log, notify subscribers, and re-render."
+  "Append EVENT to BUFFER's log, notify subscribers, and re-render.
+Events are published on `agent-backend-event-functions' -- the shared
+hook (issue #41) -- which `claude-client-event-functions' aliases, so
+subscribers on either name see every event."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (setq claude-client--events
             (append claude-client--events (list event)))
-      (run-hook-with-args 'claude-client-event-functions buffer event)
+      (agent-backend--publish buffer event)
       (claude-client--render))))
-
 (defun claude-client--events-for-message (msg)
   "Return render events for an assistant MSG's content blocks."
   (delq nil
@@ -744,6 +765,87 @@ either runner can be resumed in this one."
   (setq claude-client--process nil
         claude-client--turn-active nil))
 
+;;;; agent-backend methods
+
+(cl-defmethod agent-backend-connect ((_backend claude-client-backend))
+  "Verify the Claude executable is present.
+Claude has no connect handshake -- a conversation starts on the first
+turn -- so this only checks the executable is runnable."
+  (unless (executable-find claude-client-executable)
+    (user-error "claude: executable %s not found" claude-client-executable))
+  t)
+
+(cl-defmethod agent-backend-quit ((backend claude-client-backend))
+  "Kill the CLI subprocess for BACKEND's buffer."
+  (let ((buffer (oref backend buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (claude-client-quit)))))
+
+(cl-defmethod agent-backend-send ((backend claude-client-backend) prompt)
+  "Send PROMPT as the next turn of BACKEND's conversation."
+  (let ((buffer (oref backend buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (claude-client-send prompt)))))
+
+(cl-defmethod agent-backend-interrupt ((backend claude-client-backend))
+  "Abandon the turn BACKEND's conversation is working on."
+  (let ((buffer (oref backend buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (claude-client-interrupt)))))
+
+(cl-defmethod agent-backend-add-note ((backend claude-client-backend) text)
+  "Add TEXT as a human note to BACKEND's conversation.
+Uses Claude's native note machinery -- the pending-notes queue, the
+interrupt-or-queue delivery policy -- unchanged."
+  (let ((buffer (oref backend buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (claude-client-add-note text)))))
+
+(cl-defmethod agent-backend-note-policy ((_backend claude-client-backend))
+  "Return Claude's note delivery policy.
+`:interrupt' when `claude-client-note-interrupts' is on (a note
+abandons the turn in flight); `:queue' when off (notes wait for the
+turn to end)."
+  (if claude-client-note-interrupts :interrupt :queue))
+
+;; Claude never emits permission or question requests: its gate is the
+;; ediff review (mcp-emacs-ide), not a stream-json request.  The base
+;; no-op defaults for reply-permission / reply-question apply.
+
+(cl-defmethod agent-backend-list-sessions ((_backend claude-client-backend))
+  "Return past Claude sessions from the on-disk resume store."
+  (require 'mcp-emacs-run)
+  (require 'mcp-emacs-run-resume)
+  (let* ((root (mcp-emacs-run--project-root))
+         (files (mcp-emacs-run-resume--session-files root)))
+    (mapcar (lambda (f)
+              (list :id (mcp-emacs-run-resume--session-id f)
+                    :label (mcp-emacs-run-resume--label f)))
+            files)))
+
+(cl-defmethod agent-backend-resume ((backend claude-client-backend) _session)
+  "Reopen a past Claude session through BACKEND's native picker."
+  (let ((buffer (oref backend buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (claude-client-resume)))))
+
+;; History seeding is a no-op for Claude: the rendered log lives in the
+;; buffer, not on disk, so there is nothing to replay (the base default
+;; applies).  project-root is likewise nil -- Claude's session store is
+;; project-scoped but the backend itself does not report a root.
+
+(cl-defmethod agent-backend-render ((backend claude-client-backend))
+  "Re-render BACKEND's conversation buffer."
+  (let ((buffer (oref backend buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (claude-client--render)))))
+
 ;;;; Major mode
 
 (defvar claude-client-mode-map
@@ -757,10 +859,14 @@ either runner can be resumed in this one."
     map)
   "Keymap for `claude-client-mode'.")
 
-(define-derived-mode claude-client-mode special-mode "claude"
-  "Major mode for the terminal-free Claude conversation buffer."
-  (setq-local truncate-lines nil))
-
+(define-derived-mode claude-client-mode agent-backend-mode "claude"
+  "Major mode for the terminal-free Claude conversation buffer.
+Derives from `agent-backend-mode' (issue #41), so the shared keymap is
+inherited and the buffer-local `agent-backend--instance' holds a fresh
+`claude-client-backend' bound to this buffer."
+  (setq-local truncate-lines nil)
+  (setq-local agent-backend--instance
+              (make-instance 'claude-client-backend
+                             :buffer (current-buffer))))
 (provide 'claude-client)
 
-;;; claude-client.el ends here
