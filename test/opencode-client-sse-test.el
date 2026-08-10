@@ -110,3 +110,157 @@
       (opencode-client-password-command nil))
   (check "headers-auth-absent"
          (assoc "Authorization" (opencode-client--headers)) nil))
+
+;;;; Shared event vocabulary (agent-backend port)
+
+;; A text part in the SSE stream is published as a `:text' event on the
+;; shared hook; a tool part becomes `:tool-use'.  Unknown part types are
+;; silent (the vocabulary's "ignore unknown kinds" contract).
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend))
+        (seen nil)
+        (buf (current-buffer)))
+    (add-hook 'agent-backend-event-functions
+              (lambda (b ev) (push (cons b (plist-get ev :kind)) seen)))
+    (opencode-client--publish-part buf '((type . "text") (text . "hi there")))
+    (opencode-client--publish-part buf '((type . "tool") (tool . "read") (state . ((status . "completed")))))
+    (opencode-client--publish-part buf '((type . "reasoning") (text . "skip me")))
+    (check "publish-text-kind" (mapcar #'cdr seen) '(tool-use text))
+    (check "publish-text-buffer" (caar seen) buf)))
+
+;; A note is a steering prompt: delivery "steer", and a `:note' event
+;; on the shared hook.
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend))
+        (sent nil)
+        (seen nil)
+        (agent-backend-event-functions nil))
+    (oset backend session-id "ses1")
+    (cl-letf (((symbol-function 'opencode-client--request)
+               (lambda (&rest args)
+                 (setq sent args)
+                 nil)))
+      (add-hook 'agent-backend-event-functions
+                (lambda (_b ev) (push ev seen)))
+      (agent-backend-add-note backend "  steer me  ")
+      (check "note-trimmed" (alist-get 'text (cdr (assq 'prompt (caddr sent)))) "steer me")
+      (check "note-delivery-steer" (alist-get 'delivery (caddr sent)) "steer")
+      (check "note-event" (plist-get (car seen) :kind) 'note))))
+
+;; The note-policy of the opencode backend is `:steer' (notes ARE
+;; steering prompts), and the session id is what drives the HTTP call.
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend)))
+    (oset backend session-id "ses9")
+    (check "note-policy-steer" (agent-backend-note-policy backend) :steer)
+    (check "project-root-nil" (agent-backend-project-root backend) nil)))
+
+;; Sending a prompt posts delivery "queue" (a normal turn, not a note)
+;; and publishes a `:prompt' event.
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend))
+        (sent nil)
+        (seen nil)
+        (agent-backend-event-functions nil))
+    (oset backend session-id "ses2")
+    (cl-letf (((symbol-function 'opencode-client--request)
+               (lambda (&rest args)
+                 (setq sent args)
+                 nil)))
+      (add-hook 'agent-backend-event-functions
+                (lambda (_b ev) (push ev seen)))
+      (agent-backend-send backend "hello")
+      (check "send-delivery-queue" (alist-get 'delivery (caddr sent)) "queue")
+      (check "send-event" (plist-get (car seen) :kind) 'prompt))))
+
+
+;;;; Permission and question replies
+
+;; The shared reply methods hit the opencode endpoints with the
+;; backend's session id.
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend))
+        (sent nil))
+    (oset backend session-id "ses3")
+    (cl-letf (((symbol-function 'opencode-client--request)
+               (lambda (&rest args) (setq sent args) nil)))
+      (agent-backend-reply-permission backend "req-1" "allow")
+      (check "permission-path"
+             (cadr sent)
+             "/api/session/ses3/permission/req-1/reply")
+      (check "permission-decision"
+             (alist-get 'decision (caddr sent)) "allow"))
+    (cl-letf (((symbol-function 'opencode-client--request)
+               (lambda (&rest args) (setq sent args) nil)))
+      (agent-backend-reply-question backend "req-2" "42")
+      (check "question-path"
+             (cadr sent)
+             "/api/session/ses3/question/req-2/reply")
+      (check "question-answer"
+             (alist-get 'answer (caddr sent)) "42"))))
+
+;;;; Sessions on the shared surface
+
+;; `agent-backend-list-sessions' returns (:id :label :time) plists.
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend)))
+    (cl-letf (((symbol-function 'opencode-client--request)
+               (lambda (&rest _)
+                 (list (list (cons 'id "a") (cons 'title "Alpha")
+                             (cons 'time "2026-01-01"))
+                       (list (cons 'id "b"))))))
+      (let ((sessions (agent-backend-list-sessions backend)))
+        (check "sessions-first-id" (plist-get (car sessions) :id) "a")
+        (check "sessions-first-label" (plist-get (car sessions) :label) "Alpha")
+        (check "sessions-first-time" (plist-get (car sessions) :time) "2026-01-01")
+        (check "sessions-second-id" (plist-get (cadr sessions) :id) "b")
+        (check "sessions-second-label-fallback" (plist-get (cadr sessions) :label) "b")))))
+
+;; Resume is not natively supported: it signals a user-error that names
+;; the alternative (switch-session), rather than silently doing nothing.
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend)))
+    (oset backend session-id "ses4")
+    (let ((err (condition-case e
+                   (agent-backend-resume backend "ses4")
+                 (user-error (error-message-string e)))))
+      (check "resume-errors"
+             (and (stringp err)
+                  (numberp (string-match-p "switch-session" err)))
+             t))))
+
+;; Interrupt posts to the interrupt endpoint and publishes `interrupted'.
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend))
+        (sent nil)
+        (seen nil)
+        (agent-backend-event-functions nil))
+    (oset backend session-id "ses5")
+    (cl-letf (((symbol-function 'opencode-client--request)
+               (lambda (&rest args) (setq sent args) nil)))
+      (add-hook 'agent-backend-event-functions
+                (lambda (_b ev) (push ev seen)))
+      (agent-backend-interrupt backend)
+      (check "interrupt-path" (cadr sent) "/api/session/ses5/interrupt")
+      (check "interrupt-event" (plist-get (car seen) :kind) 'interrupted))))
+
+;; Quit stops the stream process of the backend's buffer, if any.
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend))
+        (killed nil))
+    (let ((proc (start-process "fake-sse" nil "sleep" "10")))
+      (oset backend stream-process proc)
+      (cl-letf (((symbol-function 'delete-process)
+                 (lambda (p) (setq killed p))))
+        (agent-backend-quit backend))
+      (check "quit-kills-stream" (eq killed proc) t))
+    (check "quit-sets-nil" (oref backend stream-process) nil)))
