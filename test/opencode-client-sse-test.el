@@ -5,27 +5,31 @@
   (princ (format "%s %s: got=%S want=%S\n" (if (equal got want) "PASS" "FAIL") label got want)))
 (defun mk (seq part)
   (json-encode `((type . "sync") (syncEvent . ((type . "message.part.updated.1") (seq . ,seq) (data . ((part . ,part))))))))
+(defun new-backend ()
+  "Return a fresh opencode backend bound to the current buffer."
+  (let ((b (make-instance 'opencode-client-backend :buffer (current-buffer))))
+    (setq-local agent-backend--instance b)
+    b))
 (with-temp-buffer
   (opencode-client-mode)
-  (setq opencode-client--parts (make-hash-table :test 'equal))
-  (setq opencode-client--message-parts (make-hash-table :test 'equal))
-  (let ((buf (current-buffer))
+  (let ((backend (new-backend))
+        (buf (current-buffer))
         (f1 (mk 1 '((id . "p1") (messageID . "m") (type . "text") (text . "Hello"))))
         (f2 (mk 2 '((id . "p1") (messageID . "m") (type . "text") (text . "Hello world"))))
         (f3 (mk 3 '((id . "p2") (messageID . "m") (type . "tool") (tool . "read") (state . ((status . "completed"))))))
         (stale (mk 1 '((id . "p1") (type . "text") (text . "STALE")))))
     (let* ((payload (concat "data: " f1 "\n\n")) (m (/ (length payload) 2)))
       (opencode-client--stream-filter buf nil (substring payload 0 m))
-      (check "partial-no-apply" (hash-table-count opencode-client--parts) 0)
+      (check "partial-no-apply" (hash-table-count (oref backend parts)) 0)
       (opencode-client--stream-filter buf nil (substring payload m)))
-    (check "after-f1-parts" (hash-table-count opencode-client--parts) 1)
+    (check "after-f1-parts" (hash-table-count (oref backend parts)) 1)
     (opencode-client--stream-filter buf nil (concat "data: " f2 "\n\ndata: " f3 "\n\n"))
-    (check "after-f2f3-parts" (hash-table-count opencode-client--parts) 2)
-    (check "seq" opencode-client--seq 3)
-    (check "p1-upserted" (alist-get 'text (gethash "p1" opencode-client--parts)) "Hello world")
+    (check "after-f2f3-parts" (hash-table-count (oref backend parts)) 2)
+    (check "seq" (oref backend seq) 3)
+    (check "p1-upserted" (alist-get 'text (gethash "p1" (oref backend parts))) "Hello world")
     (opencode-client--stream-filter buf nil (concat "data: " stale "\n\n"))
-    (check "stale-text" (alist-get 'text (gethash "p1" opencode-client--parts)) "Hello world")
-    (check "stale-seq" opencode-client--seq 3)
+    (check "stale-text" (alist-get 'text (gethash "p1" (oref backend parts))) "Hello world")
+    (check "stale-seq" (oref backend seq) 3)
     (opencode-client--render)
     (princ "=== buffer ===\n") (princ (buffer-string))))
 
@@ -44,10 +48,8 @@
 ;; History seeding: adapt a canned history payload into the render model.
 (with-temp-buffer
   (opencode-client-mode)
-  (setq opencode-client--parts (make-hash-table :test 'equal))
-  (setq opencode-client--message-parts (make-hash-table :test 'equal))
-  (setq opencode-client--messages nil)
-  (let ((history
+  (let ((backend (new-backend))
+        (history
          (list
           '((id . "m1") (type . "user") (text . "Hi there"))
           '((id . "m2") (type . "assistant")
@@ -55,14 +57,15 @@
                         ((id . "p2") (type . "reasoning") (text . "thinking"))
                         ((id . "p3") (type . "tool") (name . "read")
                          (state . "completed"))))))))
+    (oset backend session-id "ses_x")
     (cl-letf (((symbol-function 'opencode-client--request)
                (lambda (&rest _) history)))
-      (opencode-client--seed-history "ses_x")
-      (check "seed-messages-order" opencode-client--messages '("m1" "m2"))
+      (opencode-client--seed-history backend)
+      (check "seed-messages-order" (oref backend messages) '("m1" "m2"))
       (check "seed-user-text"
-             (alist-get 'text (gethash "m1:text" opencode-client--parts)) "Hi there")
+             (alist-get 'text (gethash "m1:text" (oref backend parts))) "Hi there")
       (check "seed-tool-name-mapped"
-             (alist-get 'tool (gethash "p3" opencode-client--parts)) "read")
+             (alist-get 'tool (gethash "p3" (oref backend parts))) "read")
       (opencode-client--render)
       (check "seed-render"
              (buffer-string)
@@ -71,14 +74,13 @@
 ;; Empty history seeds nothing.
 (with-temp-buffer
   (opencode-client-mode)
-  (setq opencode-client--parts (make-hash-table :test 'equal))
-  (setq opencode-client--message-parts (make-hash-table :test 'equal))
-  (setq opencode-client--messages nil)
-  (cl-letf (((symbol-function 'opencode-client--request) (lambda (&rest _) nil)))
-    (opencode-client--seed-history "ses_empty")
-    (opencode-client--render)
-    (check "seed-empty-messages" opencode-client--messages nil)
-    (check "seed-empty-render" (buffer-string) "")))
+  (let ((backend (new-backend)))
+    (oset backend session-id "ses_empty")
+    (cl-letf (((symbol-function 'opencode-client--request) (lambda (&rest _) nil)))
+      (opencode-client--seed-history backend)
+      (opencode-client--render)
+      (check "seed-empty-messages" (oref backend messages) nil)
+      (check "seed-empty-render" (buffer-string) ""))))
 
 ;; Password resolution precedence and header emission.
 (let ((opencode-client-password "direct")

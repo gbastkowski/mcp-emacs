@@ -18,7 +18,7 @@
 ;; GNU General Public License for more details.
 ;;
 ;; You should have received a copy of the GNU General Public License
-;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+;; along with this program.  If not, see <https://www.gnu.org/licenses/\>.
 
 ;;; Commentary:
 
@@ -34,12 +34,19 @@
 ;; `plz' is an optional dependency: it is loaded only when present and is
 ;; required only when a client command is actually invoked, so installing
 ;; mcp-emacs never hard-requires plz.
+;;
+;; The client is an `agent-backend' subclass (`opencode-client-backend'):
+;; the conversation lifecycle (send, interrupt, add-note, replies,
+;; sessions) dispatches through the shared generic methods and publishes
+;; the shared event vocabulary on `agent-backend-event-functions', so the
+;; backend is interchangeable with claude-client behind one UI (issue #41).
 
 ;;; Code:
 
 (require 'json)
 (require 'subr-x)
 (require 'plz nil t)
+(require 'agent-backend)
 
 (declare-function plz "plz"
                   (method url &rest rest))
@@ -93,26 +100,30 @@ child process.  When nil, the server is started as a child process."
 (defvar opencode-client--active-session nil
   "ID of the currently active opencode session, or nil.")
 
-(defvar-local opencode-client--session-id nil
-  "The opencode session ID a chat buffer is bound to.")
+;;;; The backend class
 
-(defvar-local opencode-client--messages nil
-  "Ordered list of message IDs seen in this chat buffer.")
+(defclass opencode-client-backend (agent-backend)
+  ((messages :initarg :messages :initform nil
+             :documentation "Ordered list of message IDs seen in this chat buffer.")
+   (parts :initarg :parts
+          :initform (make-hash-table :test 'equal)
+          :documentation "Hash table mapping part ID -> part alist.")
+   (message-parts :initarg :message-parts
+                  :initform (make-hash-table :test 'equal)
+                  :documentation "Hash table mapping message ID -> ordered part IDs.")
+   (seq :initarg :seq :initform 0
+        :documentation "Highest sync-event `seq' applied in this chat buffer.")
+   (stream-process :initarg :stream-process :initform nil
+                   :documentation "The SSE stream process for this chat buffer, or nil.")
+   (stream-buffer :initarg :stream-buffer :initform ""
+                  :documentation "Accumulated, not-yet-framed SSE bytes."))
+  "An opencode chat backend (an `agent-backend' subclass).
+Holds the per-buffer conversation state -- session id, part model, and
+SSE stream -- and implements the shared lifecycle generics.")
 
-(defvar-local opencode-client--parts nil
-  "Hash table mapping part ID -> part alist, for this chat buffer.")
-
-(defvar-local opencode-client--message-parts nil
-  "Hash table mapping message ID -> ordered list of part IDs.")
-
-(defvar-local opencode-client--seq 0
-  "Highest sync-event `seq' applied in this chat buffer.")
-
-(defvar-local opencode-client--stream-process nil
-  "The SSE stream process for this chat buffer, or nil.")
-
-(defvar-local opencode-client--stream-buffer ""
-  "Accumulated, not-yet-framed SSE bytes for this chat buffer.")
+(defun opencode-client--instance ()
+  "Return the opencode backend instance for the current buffer."
+  agent-backend--instance)
 
 ;;;; Low-level HTTP
 
@@ -187,10 +198,7 @@ no `data' key) are returned unchanged."
 (defun opencode-client-connect ()
   "Verify the configured opencode server is reachable."
   (interactive)
-  (if (opencode-client-health)
-      (message "opencode: connected to %s" (opencode-client--base-url))
-    (user-error "opencode: cannot reach a healthy server at %s"
-                (opencode-client--base-url))))
+  (agent-backend-connect (opencode-client--transient-backend)))
 
 ;;;###autoload
 (defun opencode-client-serve ()
@@ -233,13 +241,14 @@ process."
 (defun opencode-client-list-sessions ()
   "Message the available opencode sessions."
   (interactive)
-  (let ((sessions (opencode-client--sessions)))
+  (let ((sessions (agent-backend-list-sessions
+                   (opencode-client--transient-backend))))
     (if sessions
-        (message "opencode sessions:\n%s"
+        (message "opencode sessions:n%s"
                  (mapconcat
                   (lambda (s) (format "  %s  %s"
-                                      (alist-get 'id s)
-                                      (or (alist-get 'title s) "")))
+                                      (plist-get s :id)
+                                      (plist-get s :label)))
                   sessions "\n"))
       (message "opencode: no sessions"))))
 
@@ -269,12 +278,13 @@ process."
          (pick (completing-read "Session: " choices nil t))
          (id (cdr (assoc pick choices))))
     (setq opencode-client--active-session id)
-    (opencode-client--open-buffer id pick)))
+    (opencode-client--open-buffer id pick t)))
 
 ;;;###autoload
 (defun opencode-client-delete-session (id)
   "Delete the opencode session ID."
-  (interactive (list (or opencode-client--session-id
+  (interactive (list (or (and (opencode-client--instance)
+                              (oref (opencode-client--instance) session-id))
                          opencode-client--active-session
                          (read-string "Session id: "))))
   (opencode-client--request 'delete (format "/api/session/%s" id))
@@ -288,50 +298,52 @@ process."
   "Return the chat buffer name for session TITLE."
   (format "*opencode:%s*" title))
 
-(defun opencode-client--open-buffer (id title)
+(defun opencode-client--open-buffer (id title &optional resumed)
   "Open (creating if needed) the chat buffer for session ID/TITLE, and stream.
-Loads and renders the session's existing message history before starting
-the live event stream, so reconnecting shows the prior conversation."
+Creates a fresh backend instance bound to the buffer, loads and renders
+the session's existing message history, then starts the live stream.
+Publishes `started' or, when RESUMED, `resumed' on the shared hook."
   (let ((buf (get-buffer-create (opencode-client--buffer-name title))))
     (with-current-buffer buf
       (unless (derived-mode-p 'opencode-client-mode)
         (opencode-client-mode))
-      (setq opencode-client--session-id id)
-      (unless opencode-client--parts
-        (setq opencode-client--parts (make-hash-table :test 'equal)))
-      (unless opencode-client--message-parts
-        (setq opencode-client--message-parts (make-hash-table :test 'equal)))
-      (opencode-client--seed-history id)
-      (opencode-client--render)
-      (opencode-client--start-stream))
+      (let ((backend (make-instance 'opencode-client-backend
+                                    :session-id id
+                                    :buffer buf)))
+        (setq-local agent-backend--instance backend)
+        (agent-backend-seed-history backend)
+        (agent-backend-render backend)
+        (opencode-client--start-stream)
+        (agent-backend--publish
+         buf (list :kind (if resumed 'resumed 'started) :session id))))
     (pop-to-buffer buf)
     buf))
 
-(defun opencode-client--seed-history (id)
-  "Seed the conversation model from session ID's message history.
-Populates `opencode-client--messages', `--message-parts', and `--parts'
-from `GET /api/session/ID/message', adapting each history message into
-the same part model the live stream uses.  A user message becomes a
-single text part; an assistant message contributes its `content' items
-\(text, reasoning, tool), with the tool item's `name' copied to the
+(defun opencode-client--seed-history (backend)
+  "Seed BACKEND's conversation model from its session's message history.
+Populates `messages', `message-parts', and `parts' from
+`GET /api/session/ID/message', adapting each history message into the
+same part model the live stream uses.  A user message becomes a single
+text part; an assistant message contributes its `content' items
+(text, reasoning, tool), with the tool item's `name' copied to the
 `tool' key the renderer reads."
-  (let ((messages (opencode-client--request
-                   'get (format "/api/session/%s/message" id))))
-    (dolist (msg messages)
+  (let ((id (oref backend session-id)))
+    (dolist (msg (opencode-client--request
+                  'get (format "/api/session/%s/message" id)))
       (let* ((mid (alist-get 'id msg))
              (mtype (alist-get 'type msg))
              (parts (opencode-client--history-parts mid mtype msg)))
         (when mid
-          (unless (member mid opencode-client--messages)
-            (setq opencode-client--messages
-                  (append opencode-client--messages (list mid))))
+          (unless (member mid (oref backend messages))
+            (oset backend messages
+                  (append (oref backend messages) (list mid))))
           (dolist (part parts)
             (let ((pid (alist-get 'id part)))
-              (puthash pid part opencode-client--parts)
-              (let ((order (gethash mid opencode-client--message-parts)))
+              (puthash pid part (oref backend parts))
+              (let ((order (gethash mid (oref backend message-parts))))
                 (unless (member pid order)
                   (puthash mid (append order (list pid))
-                           opencode-client--message-parts))))))))))
+                           (oref backend message-parts)))))))))))
 
 (defun opencode-client--history-parts (mid mtype msg)
   "Return render-model parts for history message MSG with id MID, type MTYPE."
@@ -350,70 +362,91 @@ single text part; an assistant message contributes its `content' items
 
 (defun opencode-client--apply-sync-event (buffer event)
   "Apply a parsed sync EVENT to the conversation model in BUFFER.
-Ignores stale/duplicate `seq' and unknown event types."
+Ignores stale/duplicate `seq' and unknown event types, and publishes
+translated events on `agent-backend-event-functions'."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (let* ((sync (alist-get 'syncEvent event))
-             (etype (alist-get 'type sync))
-             (seq (or (alist-get 'seq sync) 0))
-             (data (alist-get 'data sync)))
-        ;; Ignore stale/duplicate events; the stream `seq' is monotonic.
-        (when (> seq opencode-client--seq)
-          (setq opencode-client--seq seq)
-          (pcase etype
-          ("message.updated.1"
-           (let* ((info (alist-get 'info data))
-                  (mid (alist-get 'id info)))
-             (when (and mid (not (member mid opencode-client--messages)))
-               (setq opencode-client--messages
-                     (append opencode-client--messages (list mid))))))
-          ("message.part.updated.1"
-           (let* ((part (alist-get 'part data))
-                  (pid (alist-get 'id part))
-                  (mid (alist-get 'messageID part)))
-             (when pid
-               (puthash pid part opencode-client--parts)
-               (when (and mid (not (member mid opencode-client--messages)))
-                 (setq opencode-client--messages
-                       (append opencode-client--messages (list mid))))
-               (let ((order (gethash mid opencode-client--message-parts)))
-                 (unless (member pid order)
-                   (puthash mid (append order (list pid))
-                            opencode-client--message-parts)))
-               (opencode-client--render))))
-          ("message.part.removed.1"
-           (let* ((part (alist-get 'part data))
-                  (pid (alist-get 'id part)))
-             (when pid
-               (remhash pid opencode-client--parts)
-               (opencode-client--render))))
-          (_ nil)))))))
+      (when-let ((backend (opencode-client--instance)))
+        (let* ((sync (alist-get 'syncEvent event))
+               (etype (alist-get 'type sync))
+               (seq (or (alist-get 'seq sync) 0))
+               (data (alist-get 'data sync)))
+          ;; Ignore stale/duplicate events; the stream `seq' is monotonic.
+          (when (> seq (oref backend seq))
+            (oset backend seq seq)
+            (pcase etype
+              ("message.updated.1"
+               (let* ((info (alist-get 'info data))
+                      (mid (alist-get 'id info)))
+                 (when (and mid (not (member mid (oref backend messages))))
+                   (oset backend messages
+                         (append (oref backend messages) (list mid))))))
+              ("message.part.updated.1"
+               (let* ((part (alist-get 'part data))
+                      (pid (alist-get 'id part))
+                      (mid (alist-get 'messageID part)))
+                 (when pid
+                   (puthash pid part (oref backend parts))
+                   (when (and mid (not (member mid (oref backend messages))))
+                     (oset backend messages
+                           (append (oref backend messages) (list mid))))
+                   (let ((order (gethash mid (oref backend message-parts))))
+                     (unless (member pid order)
+                       (puthash mid (append order (list pid))
+                                (oref backend message-parts))))
+                   (opencode-client--render)
+                   (opencode-client--publish-part buffer part))))
+              ("message.part.removed.1"
+               (let* ((part (alist-get 'part data))
+                      (pid (alist-get 'id part)))
+                 (when pid
+                   (remhash pid (oref backend parts))
+                   (opencode-client--render))))
+              (_ nil))))))))
+
+(defun opencode-client--publish-part (buffer part)
+  "Publish PART from BUFFER as a shared `:kind' event, when renderable.
+Maps opencode part types onto the shared vocabulary: a text part becomes
+`:text', a tool part becomes `:tool-use'."
+  (pcase (alist-get 'type part)
+    ("text"
+     (let ((text (alist-get 'text part)))
+       (when (and text (not (string-empty-p (string-trim text))))
+         (agent-backend--publish buffer (list :kind 'text :text text)))))
+    ("tool"
+     (agent-backend--publish
+      buffer (list :kind 'tool-use
+                   :name (or (alist-get 'tool part)
+                             (alist-get 'name part)))))
+    (_ nil)))
 
 (defun opencode-client--render-part (pid)
   "Return a rendered string for part PID, or nil to skip it."
-  (let* ((part (gethash pid opencode-client--parts))
-         (type (alist-get 'type part)))
-    (pcase type
-      ("text" (alist-get 'text part))
-      ("reasoning" (concat "  · " (or (alist-get 'text part) "")))
-      ("tool" (format "  [tool: %s %s]"
-                      (alist-get 'tool part)
-                      (let ((st (alist-get 'state part)))
-                        (if (listp st) (alist-get 'status st) st))))
-      ((or "step-start" "step-finish") nil)
-      (_ nil))))
+  (when-let ((backend (opencode-client--instance)))
+    (let* ((part (gethash pid (oref backend parts)))
+           (type (alist-get 'type part)))
+      (pcase type
+        ("text" (alist-get 'text part))
+        ("reasoning" (concat "  · " (or (alist-get 'text part) "")))
+        ("tool" (format "  [tool: %s %s]"
+                          (alist-get 'tool part)
+                          (let ((st (alist-get 'state part)))
+                            (if (listp st) (alist-get 'status st) st))))
+        ((or "step-start" "step-finish") nil)
+        (_ nil)))))
 
 (defun opencode-client--render ()
   "Re-render the conversation into the current chat buffer."
-  (let ((at-end (eobp))
-        (inhibit-read-only t))
-    (erase-buffer)
-    (dolist (mid opencode-client--messages)
-      (dolist (pid (gethash mid opencode-client--message-parts))
-        (when-let ((s (opencode-client--render-part pid)))
-          (insert s)
-          (unless (string-suffix-p "\n" s) (insert "\n")))))
-    (when at-end (goto-char (point-max)))))
+  (when-let ((backend (opencode-client--instance)))
+    (let ((at-end (eobp))
+          (inhibit-read-only t))
+      (erase-buffer)
+      (dolist (mid (oref backend messages))
+        (dolist (pid (gethash mid (oref backend message-parts)))
+          (when-let ((s (opencode-client--render-part pid)))
+            (insert s)
+            (unless (string-suffix-p "\n" s) (insert "\n")))))
+      (when at-end (goto-char (point-max))))))
 
 ;;;; Streaming (SSE)
 
@@ -421,45 +454,48 @@ Ignores stale/duplicate `seq' and unknown event types."
   "Open the per-session SSE stream for the current chat buffer."
   (opencode-client--ensure-plz)
   (opencode-client--stop-stream)
-  (let* ((buffer (current-buffer))
-         (id opencode-client--session-id)
-         (url (format "%s/api/session/%s/event"
-                      (opencode-client--base-url) id)))
-    (setq opencode-client--stream-buffer "")
-    (setq opencode-client--stream-process
-          (plz 'get url
-            :headers (opencode-client--headers)
-            :as 'response
-            :filter (lambda (proc chunk)
-                      (opencode-client--stream-filter buffer proc chunk))
-            :then #'ignore
-            :else (lambda (_err)
-                    (when (buffer-live-p buffer)
-                      (with-current-buffer buffer
-                        (message "opencode: event stream disconnected"))))))))
+  (when-let ((backend (opencode-client--instance)))
+    (let* ((buffer (current-buffer))
+           (id (oref backend session-id))
+           (url (format "%s/api/session/%s/event"
+                        (opencode-client--base-url) id)))
+      (oset backend stream-buffer "")
+      (oset backend stream-process
+            (plz 'get url
+              :headers (opencode-client--headers)
+              :as 'response
+              :filter (lambda (proc chunk)
+                        (opencode-client--stream-filter buffer proc chunk))
+              :then #'ignore
+              :else (lambda (_err)
+                      (when (buffer-live-p buffer)
+                        (with-current-buffer buffer
+                          (message "opencode: event stream disconnected")))))))))
 
 (defun opencode-client--stop-stream ()
   "Stop the SSE stream process for the current chat buffer, if any."
-  (when (and opencode-client--stream-process
-             (process-live-p opencode-client--stream-process))
-    (ignore-errors (delete-process opencode-client--stream-process)))
-  (setq opencode-client--stream-process nil))
+  (when-let ((backend (opencode-client--instance)))
+    (let ((proc (oref backend stream-process)))
+      (when (and proc (process-live-p proc))
+        (ignore-errors (delete-process proc)))
+      (oset backend stream-process nil))))
 
 (defun opencode-client--stream-filter (buffer _proc chunk)
   "Frame SSE CHUNK for BUFFER: split on blank lines, parse data payloads."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (setq opencode-client--stream-buffer
-            (concat opencode-client--stream-buffer chunk))
-      ;; SSE frames are separated by a blank line.  Capture the split
-      ;; positions before dispatching, since parsing/rendering a frame can
-      ;; clobber the global match data.
-      (let ((sep "\n\n") (pos nil))
-        (while (setq pos (string-search sep opencode-client--stream-buffer))
-          (let ((frame (substring opencode-client--stream-buffer 0 pos)))
-            (setq opencode-client--stream-buffer
-                  (substring opencode-client--stream-buffer (+ pos (length sep))))
-            (opencode-client--handle-frame buffer frame)))))))
+      (when-let ((backend (opencode-client--instance)))
+        (oset backend stream-buffer
+              (concat (oref backend stream-buffer) chunk))
+        ;; SSE frames are separated by a blank line.  Capture the split
+        ;; positions before dispatching, since parsing/rendering a frame can
+        ;; clobber the global match data.
+        (let ((sep "\n\n") (pos nil))
+          (while (setq pos (string-search sep (oref backend stream-buffer)))
+            (let ((frame (substring (oref backend stream-buffer) 0 pos)))
+              (oset backend stream-buffer
+                    (substring (oref backend stream-buffer) (+ pos (length sep))))
+              (opencode-client--handle-frame buffer frame))))))))
 
 (defun opencode-client--handle-frame (buffer frame)
   "Parse one SSE FRAME (its `data:' lines) and apply the event to BUFFER."
@@ -480,29 +516,132 @@ Ignores stale/duplicate `seq' and unknown event types."
         (when event
           (opencode-client--apply-sync-event buffer event))))))
 
+;;;; agent-backend methods
+
+(cl-defmethod agent-backend-connect ((_backend opencode-client-backend))
+  "Verify the configured opencode server is reachable."
+  (if (opencode-client-health)
+      (message "opencode: connected to %s" (opencode-client--base-url))
+    (user-error "opencode: cannot reach a healthy server at %s"
+                (opencode-client--base-url))))
+
+(cl-defmethod agent-backend-quit ((backend opencode-client-backend))
+  "Stop the SSE stream for BACKEND's chat buffer, if any."
+  (let ((buffer (oref backend buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (opencode-client--stop-stream)))))
+
+(cl-defmethod agent-backend-send ((backend opencode-client-backend) prompt)
+  "Send PROMPT to BACKEND's session as the next turn."
+  (let ((id (oref backend session-id)))
+    (unless id (user-error "opencode: no active session"))
+    (opencode-client--request
+     'post (format "/api/session/%s/prompt" id)
+     `((prompt . ((text . ,prompt)))
+       (delivery . "queue")))
+    (when-let ((buffer (oref backend buffer)))
+      (agent-backend--publish buffer (list :kind 'prompt :text prompt)))
+    (message "opencode: prompt sent")))
+
+(cl-defmethod agent-backend-interrupt ((backend opencode-client-backend))
+  "Interrupt the running turn in BACKEND's session."
+  (let ((id (oref backend session-id)))
+    (unless id (user-error "opencode: no active session"))
+    (opencode-client--request 'post (format "/api/session/%s/interrupt" id))
+    (when-let ((buffer (oref backend buffer)))
+      (agent-backend--publish buffer (list :kind 'interrupted)))
+    (message "opencode: interrupted")))
+
+(cl-defmethod agent-backend-add-note ((backend opencode-client-backend) text)
+  "Deliver TEXT to BACKEND's session as a steering prompt.
+opencode notes ARE steering prompts: the note is posted with delivery
+`steer' so the model incorporates it mid-turn."
+  (let ((id (oref backend session-id))
+        (note (string-trim text)))
+    (unless id (user-error "opencode: no active session"))
+    (when (string-empty-p note) (user-error "Empty note"))
+    (opencode-client--request
+     'post (format "/api/session/%s/prompt" id)
+     `((prompt . ((text . ,note)))
+       (delivery . "steer")))
+    (when-let ((buffer (oref backend buffer)))
+      (agent-backend--publish buffer (list :kind 'note :text note)))
+    (message "opencode: note sent")))
+
+(cl-defmethod agent-backend-reply-permission
+  ((backend opencode-client-backend) request-id decision)
+  "Reply DECISION to BACKEND's permission REQUEST-ID."
+  (opencode-client--reply-permission (oref backend session-id)
+                                     request-id decision))
+
+(cl-defmethod agent-backend-reply-question
+  ((backend opencode-client-backend) request-id answer)
+  "Reply ANSWER to BACKEND's question REQUEST-ID."
+  (opencode-client--reply-question (oref backend session-id) request-id answer))
+
+(cl-defmethod agent-backend-list-sessions ((_backend opencode-client-backend))
+  "Return opencode sessions as (:id :label :time) plists."
+  (mapcar (lambda (s)
+            (list :id (alist-get 'id s)
+                  :label (or (alist-get 'title s) (alist-get 'id s))
+                  :time (or (alist-get 'time s) "")))
+          (opencode-client--sessions)))
+
+(cl-defmethod agent-backend-resume ((_backend opencode-client-backend) _session)
+  "Refuse to resume: opencode has no native resume picker.
+Use `opencode-client-switch-session' to pick a past session instead."
+  (user-error "opencode: no native resume picker; use `opencode-client-switch-session'"))
+
+(cl-defmethod agent-backend-seed-history ((backend opencode-client-backend))
+  "Seed BACKEND's conversation model from its session's history."
+  (opencode-client--seed-history backend))
+
+(cl-defmethod agent-backend-project-root ((_backend opencode-client-backend))
+  "Return nil: opencode sessions carry no project scoping."
+  nil)
+
+(cl-defmethod agent-backend-render ((backend opencode-client-backend))
+  "Re-render BACKEND's conversation buffer."
+  (let ((buffer (oref backend buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (opencode-client--render)))))
+
 ;;;; Prompting and interaction
+
+(defun opencode-client--transient-backend ()
+  "Return a transient backend instance for server-level operations.
+Used by commands that need a backend object but are not bound to a
+conversation buffer (connect, list-sessions)."
+  (make-instance 'opencode-client-backend))
+
+(defun opencode-client--active-backend ()
+  "Return the backend instance for the active session.
+Uses the current buffer's instance when bound to a session; otherwise a
+transient instance around `opencode-client--active-session'."
+  (let ((instance (opencode-client--instance)))
+    (if (and instance (oref instance session-id))
+        instance
+      (make-instance 'opencode-client-backend
+                     :session-id opencode-client--active-session))))
 
 ;;;###autoload
 (defun opencode-client-send-prompt (text &optional steer)
   "Send TEXT as a prompt to the active session.
-With prefix arg STEER, deliver it as a steering message mid-turn."
+With prefix arg STEER, deliver it as a steering message mid-turn --
+the shared note path (`agent-backend-add-note')."
   (interactive (list (read-string "Prompt: ") current-prefix-arg))
-  (let ((id (or opencode-client--session-id opencode-client--active-session)))
-    (unless id (user-error "opencode: no active session"))
-    (opencode-client--request
-     'post (format "/api/session/%s/prompt" id)
-     `((prompt . ((text . ,text)))
-       (delivery . ,(if steer "steer" "queue"))))
-    (message "opencode: prompt sent")))
+  (let ((backend (opencode-client--active-backend)))
+    (if steer
+        (agent-backend-add-note backend text)
+      (agent-backend-send backend text))))
 
 ;;;###autoload
 (defun opencode-client-interrupt ()
   "Interrupt the running turn in the active session."
   (interactive)
-  (let ((id (or opencode-client--session-id opencode-client--active-session)))
-    (unless id (user-error "opencode: no active session"))
-    (opencode-client--request 'post (format "/api/session/%s/interrupt" id))
-    (message "opencode: interrupted")))
+  (agent-backend-interrupt (opencode-client--active-backend)))
 
 (defun opencode-client--reply-permission (id request-id decision)
   "Reply DECISION to permission REQUEST-ID of session ID."
@@ -510,14 +649,13 @@ With prefix arg STEER, deliver it as a steering message mid-turn."
    'post (format "/api/session/%s/permission/%s/reply" id request-id)
    `((decision . ,decision))))
 
+;;;###autoload
 (defun opencode-client-answer-permission (request-id)
   "Prompt the user to allow or deny permission REQUEST-ID in the active session."
   (interactive (list (read-string "Permission request id: ")))
-  (let ((id (or opencode-client--session-id opencode-client--active-session)))
-    (unless id (user-error "opencode: no active session"))
-    (opencode-client--reply-permission
-     id request-id
-     (if (y-or-n-p "opencode: allow this request? ") "allow" "deny"))))
+  (agent-backend-reply-permission
+   (opencode-client--active-backend) request-id
+   (if (y-or-n-p "opencode: allow this request? ") "allow" "deny")))
 
 (defun opencode-client--reply-question (id request-id answer)
   "Reply ANSWER to question REQUEST-ID of session ID."
@@ -525,13 +663,12 @@ With prefix arg STEER, deliver it as a steering message mid-turn."
    'post (format "/api/session/%s/question/%s/reply" id request-id)
    `((answer . ,answer))))
 
+;;;###autoload
 (defun opencode-client-answer-question (request-id)
   "Prompt the user to answer question REQUEST-ID in the active session."
   (interactive (list (read-string "Question request id: ")))
-  (let ((id (or opencode-client--session-id opencode-client--active-session)))
-    (unless id (user-error "opencode: no active session"))
-    (opencode-client--reply-question
-     id request-id (read-string "Answer: "))))
+  (agent-backend-reply-question
+   (opencode-client--active-backend) request-id (read-string "Answer: ")))
 
 ;;;; Major mode
 
@@ -543,7 +680,7 @@ With prefix arg STEER, deliver it as a steering message mid-turn."
     map)
   "Keymap for `opencode-client-mode'.")
 
-(define-derived-mode opencode-client-mode special-mode "opencode"
+(define-derived-mode opencode-client-mode agent-backend-mode "opencode"
   "Major mode for an opencode chat buffer."
   (setq-local truncate-lines nil)
   (add-hook 'kill-buffer-hook #'opencode-client--stop-stream nil t))
