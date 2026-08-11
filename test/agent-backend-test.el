@@ -12,11 +12,11 @@
 " (if (equal g w) "PASS" "FAIL") l g w)))
 
 ;; Explicit preference wins regardless of server state.
-(cl-letf (((symbol-function 'opencode-client-health) (lambda () t)))
+(cl-letf (((symbol-function 'opencode-client--health) (lambda () t)))
   (let ((agent-backend-preference 'opencode))
     (check "forced-opencode" (agent-backend-prefer-opencode-p) t)))
 
-(cl-letf (((symbol-function 'opencode-client-health) (lambda () nil)))
+(cl-letf (((symbol-function 'opencode-client--health) (lambda () nil)))
   (let ((agent-backend-preference 'opencode))
     (check "forced-opencode-despite-unhealthy" (agent-backend-prefer-opencode-p) t)))
 
@@ -30,12 +30,12 @@
 (defun agent-backend-test--health (healthy)
   (lambda () healthy))
 (unless (featurep 'opencode-client)
-  (fset 'opencode-client-health (lambda () nil))
+  (fset 'opencode-client--health (lambda () nil))
   (provide 'opencode-client))
-(cl-letf (((symbol-function 'opencode-client-health) (lambda () t)))
+(cl-letf (((symbol-function 'opencode-client--health) (lambda () t)))
   (let ((agent-backend-preference 'auto))
     (check "auto-healthy-opencode" (agent-backend-prefer-opencode-p) t)))
-(cl-letf (((symbol-function 'opencode-client-health) (lambda () nil)))
+(cl-letf (((symbol-function 'opencode-client--health) (lambda () nil)))
   (let ((agent-backend-preference 'auto))
     (check "auto-unhealthy-falls-to-claude" (agent-backend-prefer-opencode-p) nil)))
 

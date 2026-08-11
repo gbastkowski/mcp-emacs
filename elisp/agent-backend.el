@@ -251,7 +251,7 @@ The backend instance lives in the buffer-local `agent-backend--instance'."
 ;; The client functions are loaded on demand; declare them so the
 ;; shared core still byte-compiles standalone (the clients require
 ;; this file, so agent-backend cannot require them back at load).
-(declare-function opencode-client-health "opencode-client" ())
+(declare-function opencode-client--health "opencode-client" ())
 (declare-function opencode-client-create-session "opencode-client" (&optional title))
 (declare-function claude-client-start "claude-client" (prompt &optional resume-id))
 
@@ -275,7 +275,7 @@ never, `auto' when a healthy opencode server answers."
     ('opencode t)
     ('claude nil)
     ('auto (and (require 'opencode-client nil t)
-                (opencode-client-health)))))
+                (opencode-client--health)))))
 
 ;;;###autoload
 (defun agent-backend-start ()
