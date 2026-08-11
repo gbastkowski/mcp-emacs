@@ -1,2 +1,6 @@
 *.elc
 *.log
+
+# Build artifacts (unrelated JS tooling may land in the repo root)
+dist/
+node_modules/
