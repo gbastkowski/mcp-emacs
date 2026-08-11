@@ -1,0 +1,63 @@
+* The agent-backend class defines the conversation lifecycle interface
+
+The agent-backend module MUST define an EIEIO base class with
+cl-defgeneric methods for connect, quit, send, interrupt, add-note,
+note-policy, reply-permission, reply-question, list-sessions, resume,
+seed-history, project-root, and render, and MUST provide no-op or
+user-error default implementations for the optional capabilities
+(permission/question replies, history seeding, resume, sessions) so a
+backend that lacks them needs no stubs.
+
+** A minimal backend compiles against the defaults
+GIVEN a backend subclass implementing only connect, send, interrupt,
+add-note, note-policy, and quit
+WHEN the module is byte-compiled
+THEN the subclass is valid without further stubs
+
+** Resume is optional
+GIVEN a backend without a session store
+WHEN agent-backend-resume is called
+THEN a user-error explains that the backend cannot resume
+
+** Replies are optional
+GIVEN a backend that never asks for permission
+WHEN agent-backend-reply-permission is called
+THEN the default implementation is a no-op
+
+* A shared event hook carries the backend-agnostic vocabulary
+
+The agent-backend module MUST publish every conversation event as a
+plist with a :kind symbol on the abnormal hook
+agent-backend-event-functions, run with (BUFFER EVENT), and the :kind
+vocabulary MUST cover at least started, prompt, text, tool-use,
+tool-result, finished, interrupted, note, notes-delivered,
+note-dropped, resumed, permission-request, question-request, and
+error. Subscribers MUST ignore unknown kinds.
+
+** Text events reach subscribers
+GIVEN a backend publishes an assistant text event
+WHEN a subscriber is registered on agent-backend-event-functions
+THEN it is called with (BUFFER (:kind text ...))
+
+** Unknown kinds degrade to silence
+GIVEN a subscriber that knows only :text
+WHEN an event with an unknown :kind is published
+THEN the subscriber runs without error
+
+* A shared conversation mode holds the instance and common keys
+
+agent-backend-mode MUST derive from special-mode, MUST hold the backend
+instance in a buffer-local variable, and MUST bind the common actions
+(send, interrupt, add-note, quit, resume) in a shared keymap that
+derived backend modes extend.
+
+** The instance is visible to subscribers
+GIVEN a buffer in a derived backend mode
+WHEN a subscriber reads the buffer-local instance
+THEN it is the backend object of that conversation
+
+** The common keys are bound
+GIVEN a derived backend mode
+WHEN the shared keymap is inspected
+THEN send, interrupt, add-note, quit, and resume are bound
+

@@ -593,6 +593,11 @@ Returns nil for notifications, which require no response."
   "Parse the JSON body of web-server REQUEST into an alist, or nil."
   (let ((body (and (slot-boundp request 'body) (oref request body))))
     (when (and body (not (string-empty-p body)))
+      ;; web-server reads the socket with :coding no-conversion, so the
+      ;; request body arrives as raw UTF-8 bytes; decode before JSON parsing
+      ;; so non-ASCII reaches buffers as proper characters instead of raw
+      ;; bytes that make Emacs prompt for a coding system on save.
+      (setq body (decode-coding-string body 'utf-8))
       (let ((json-object-type 'alist)
             (json-array-type 'vector)
             (json-key-type 'symbol))

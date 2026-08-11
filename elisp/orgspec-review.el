@@ -40,21 +40,35 @@ side windows included -- comes back.  View-only: nothing is written."
     (with-current-buffer buf-b
       (insert (or new-text ""))
       (let ((org-inhibit-startup t)) (org-mode)))
+    ;; Take the whole frame: ediff's plain single-frame layout calls
+    ;; `delete-other-windows', but a *dedicated* window (not just a side
+    ;; window) survives that and forces the diff into a split that
+    ;; overlaps the user's layout.  Clear every other window first so the
+    ;; review owns the screen; the captured `winconf' restores them all
+    ;; on quit.
     (dolist (window (window-list))
-      (when (window-parameter window 'window-side)
-        (ignore-errors (delete-window window))))
+      (unless (eq window (selected-window))
+        (when (or (window-parameter window 'window-side)
+                  (window-dedicated-p window))
+          (ignore-errors (delete-window window)))))
+    (delete-other-windows)
     (let ((ediff-window-setup-function 'ediff-setup-windows-plain)
           (ediff-split-window-function 'split-window-horizontally))
-      (ediff-buffers
-       buf-a buf-b
-       (list (lambda ()
-               (with-current-buffer ediff-control-buffer
-                 (setq-local
-                  ediff-quit-hook
-                  (list (lambda ()
-                          (ignore-errors (set-window-configuration winconf))
-                          (when (buffer-live-p buf-a) (kill-buffer buf-a))
-                          (when (buffer-live-p buf-b) (kill-buffer buf-b))))))))))))
+      (condition-case err
+          (ediff-buffers
+           buf-a buf-b
+           (list (lambda ()
+                   (with-current-buffer ediff-control-buffer
+                     (setq-local
+                      ediff-quit-hook
+                      (list (lambda ()
+                              (ignore-errors (set-window-configuration winconf))
+                              (when (buffer-live-p buf-a) (kill-buffer buf-a))
+                              (when (buffer-live-p buf-b) (kill-buffer buf-b)))))))))
+        ;; Ediff setup can abort before the quit hook exists; restore the
+        ;; layout here so a failed review never leaves windows deleted.
+        (error (ignore-errors (set-window-configuration winconf))
+               (signal (car err) (cdr err)))))))
 
 ;;;###autoload
 (defun orgspec-review-fold (id)

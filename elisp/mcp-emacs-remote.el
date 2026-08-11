@@ -56,7 +56,7 @@
 ;; event hook, but neither module needs the other loaded.  That is the point
 ;; of publishing events instead of advising -- adding a reader costs nothing
 ;; on the writer's side.
-(defvar claude-client-event-functions)
+(defvar agent-backend-event-functions)
 
 ;; Defined in mcp-emacs, which is loaded via mcp-emacs-run; declared so this
 ;; file compiles standalone.  Org-side observations land in the same
@@ -236,7 +236,7 @@ returns nothing, so the wrapped completion runs unchanged."
 
 (defun mcp-emacs-remote--record-runner-event (event)
   "Record a `claude-client' EVENT into the transcript.
-EVENT is a plist as published on `claude-client-event-functions'.
+EVENT is a plist as published on `agent-backend-event-functions'.
 Unknown kinds are ignored rather than guessed at, so a new event kind
 degrades to silence instead of a malformed entry."
   (pcase (plist-get event :kind)
@@ -325,7 +325,7 @@ observer must never break the Org write it is observing."
     (ignore-errors (mcp-emacs-remote--record-org-task-event event))))
 
 (defun mcp-emacs-remote--tap-runner-event (buffer event)
-  "Subscriber for `claude-client-event-functions'.
+  "Subscriber for `agent-backend-event-functions'.
 Records EVENT from conversation BUFFER when recording is enabled.
 Errors are swallowed: a transcript problem must never take down the
 runner whose events it is observing."
@@ -345,7 +345,7 @@ Also sets `mcp-emacs-remote-enabled'."
   (advice-add 'mcp-emacs-ide-start :after #'mcp-emacs-remote--tap-start)
   (when (fboundp 'mcp-emacs-ide-stop)
     (advice-add 'mcp-emacs-ide-stop :before #'mcp-emacs-remote--tap-stop))
-  (add-hook 'claude-client-event-functions
+  (add-hook 'agent-backend-event-functions
             #'mcp-emacs-remote--tap-runner-event)
   (add-hook 'mcp-emacs-org-task-event-functions
             #'mcp-emacs-remote--tap-org-task-event))
@@ -361,7 +361,7 @@ Also sets `mcp-emacs-remote-enabled'."
   (advice-remove 'mcp-emacs-ide-start #'mcp-emacs-remote--tap-start)
   (when (fboundp 'mcp-emacs-ide-stop)
     (advice-remove 'mcp-emacs-ide-stop #'mcp-emacs-remote--tap-stop))
-  (remove-hook 'claude-client-event-functions
+  (remove-hook 'agent-backend-event-functions
                #'mcp-emacs-remote--tap-runner-event)
   (remove-hook 'mcp-emacs-org-task-event-functions
                #'mcp-emacs-remote--tap-org-task-event))
