@@ -1,0 +1,56 @@
+* opencode-client implements agent-backend and publishes shared events
+
+The opencode client MUST define an agent-backend subclass, MUST
+translate its SSE stream events into the shared :kind vocabulary and
+publish them on agent-backend-event-functions, MUST derive its major
+mode from agent-backend-mode, and MUST keep its public
+opencode-client-* commands as thin wrappers over the generic methods.
+
+** SSE text maps to :text
+GIVEN opencode streams an assistant text part
+WHEN the frame is applied
+THEN a :text event is published on the shared hook
+
+** Public commands stay stable
+GIVEN the refactored client
+WHEN opencode-client-send-prompt is called
+THEN it dispatches through agent-backend-send and behaves as before
+
+* opencode mid-turn input and replies use the shared primitives
+
+The opencode backend MUST implement agent-backend-add-note as a
+steering prompt (delivery: steer; note-policy :steer), and MUST
+implement reply-permission and reply-question against the opencode
+HTTP endpoints.
+
+** A note steers the turn
+GIVEN a turn is active
+WHEN agent-backend-add-note is called
+THEN a steer prompt is delivered and a :note event is published
+
+** Permission is answered
+GIVEN opencode requests permission
+WHEN agent-backend-reply-permission is called
+THEN the permission reply endpoint is used
+
+** Questions are answered
+GIVEN opencode asks a question
+WHEN agent-backend-reply-question is called
+THEN the question reply endpoint is used
+
+* opencode exposes sessions through the shared surface
+
+The opencode backend MUST implement list-sessions from the opencode
+session API, MUST make resume either reuse switch-session or signal
+user-error, and MUST report no project scoping when it has none.
+
+** Sessions are listed
+GIVEN opencode serve has sessions
+WHEN agent-backend-list-sessions is called
+THEN they are returned as (:id :label :time) plists
+
+** Resume without a picker fails clearly
+GIVEN no native resume picker
+WHEN agent-backend-resume is called
+THEN a user-error names the alternative (switch-session)
+

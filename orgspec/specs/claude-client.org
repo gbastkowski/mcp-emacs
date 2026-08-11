@@ -1,0 +1,43 @@
+* claude-client implements agent-backend and keeps its capabilities
+
+The Claude backend MUST define an agent-backend subclass, MUST
+translate its stream-json events into the shared :kind vocabulary
+(the union minus permission/question, which it never emits), MUST
+publish on agent-backend-event-functions, MUST derive its mode from
+agent-backend-mode, and MUST keep its native notes (note-policy
+:interrupt or :queue), resume, headless query, and IDE diff review
+working as Claude-specific commands.
+
+** Stream-json maps onto the vocabulary
+GIVEN a Claude stream-json message
+WHEN it is handled
+THEN it yields :text, :tool-use, :tool-result, or :finished events
+
+** Notes keep the Claude machinery
+GIVEN note-interrupts is enabled
+WHEN a human note arrives mid-turn
+THEN the turn is interrupted and the note re-sent (note-policy
+:interrupt)
+
+** IDE review stays Claude-only
+GIVEN the IDE surface is enabled
+WHEN Claude issues a native edit
+THEN the ediff review still gates it
+
+* Claude event subscribers migrate to the shared hook
+
+claude-client-event-functions MUST be replaced by
+agent-backend-event-functions, and its subscribers (the
+reshow-after-review and the remote org transcript) MUST move to the
+shared hook, so the existing Claude test suite passes unchanged.
+
+** Reshow runs from the shared hook
+GIVEN a diff review ends
+WHEN the window was captured
+THEN the reshow-after-review subscriber fires from the shared hook
+
+** The Claude suite stays green
+GIVEN the subscriber migration
+WHEN the existing claude-client tests run
+THEN they pass without modification
+

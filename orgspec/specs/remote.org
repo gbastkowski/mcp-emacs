@@ -1,0 +1,16 @@
+* The org transcript becomes a backend-agnostic subscriber
+
+mcp-emacs-remote MUST subscribe to agent-backend-event-functions for
+its runner transcript so it records opencode sessions as well as
+Claude sessions, while its IDE-surface advice taps MUST remain
+Claude-only.
+
+** opencode sessions are transcribed
+GIVEN an opencode session with tool activity
+WHEN the remote surface is enabled
+THEN a per-project org transcript records it
+
+** IDE taps stay Claude-only
+GIVEN the IDE surface
+WHEN advice taps on IDE functions fire
+THEN they still only apply to Claude
