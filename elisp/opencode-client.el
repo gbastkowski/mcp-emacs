@@ -103,7 +103,11 @@ child process.  When nil, the server is started as a child process."
 ;;;; The backend class
 
 (defclass opencode-client-backend (agent-backend)
-  ((messages :initarg :messages :initform nil
+  ((host :initarg :host :initform nil
+         :documentation "Host of this backend's own server, or nil for the default.")
+   (port :initarg :port :initform nil
+         :documentation "Port of this backend's own server, or nil for the default.")
+   (messages :initarg :messages :initform nil
              :documentation "Ordered list of message IDs seen in this chat buffer.")
    (parts :initarg :parts
           :initform (make-hash-table :test 'equal)
@@ -132,9 +136,13 @@ SSE stream -- and implements the shared lifecycle generics.")
   (unless (featurep 'plz)
     (user-error "opencode-client requires the `plz' package; please install it")))
 
-(defun opencode-client--base-url ()
-  "Return the base URL of the configured opencode server."
-  (format "http://%s:%d" opencode-client-host opencode-client-port))
+(defun opencode-client--base-url (&optional backend)
+  "Return the base URL for BACKEND, or the configured default.
+When BACKEND carries its own host/port (a per-project server started by
+`opencode-client-serve'), that wins; otherwise the defcustoms apply."
+  (format "http://%s:%d"
+          (or (and backend (oref backend host)) opencode-client-host)
+          (or (and backend (oref backend port)) opencode-client-port)))
 
 (defun opencode-client--password ()
   "Return the server password, or nil.
@@ -158,13 +166,14 @@ Prefer `opencode-client-password'; otherwise run
                          (base64-encode-string
                           (concat "opencode:" pw) t)))))))
 
-(defun opencode-client--request (method path &optional body)
+(defun opencode-client--request (method path &optional body backend)
   "Perform a synchronous HTTP METHOD on PATH, returning parsed JSON.
-BODY, when non-nil, is encoded as a JSON request body.  Errors are
-surfaced as user errors rather than raw signals."
+BODY, when non-nil, is encoded as a JSON request body.  BACKEND selects
+the server when non-nil (its own host/port); nil uses the defaults.
+Errors are surfaced as user errors rather than raw signals."
   (opencode-client--ensure-plz)
   (condition-case err
-      (let* ((url (concat (opencode-client--base-url) path))
+      (let* ((url (concat (opencode-client--base-url backend) path))
              (json-object-type 'alist)
              (json-array-type 'list)
              (res (apply #'plz method url
@@ -188,10 +197,11 @@ no `data' key) are returned unchanged."
 
 ;;;; Connection
 
-(defun opencode-client-health ()
-  "Return non-nil when the opencode server is reachable and healthy."
+(defun opencode-client--health (&optional backend)
+  "Return non-nil when BACKEND's server is reachable and healthy.
+nil BACKEND probes the default server."
   (ignore-errors
-    (let ((res (opencode-client--request 'get "/api/health")))
+    (let ((res (opencode-client--request 'get "/api/health" nil backend)))
       (and res (alist-get 'healthy res)))))
 
 ;;;###autoload
@@ -201,48 +211,90 @@ no `data' key) are returned unchanged."
   (agent-backend-connect (opencode-client--transient-backend)))
 
 ;;;###autoload
+;;;; Server registry (one server per project, parallel ports)
+
+(defvar opencode-client--servers nil
+  "Alist mapping project directory -> `opencode-client-backend' instance.
+Lets several opencode servers run in parallel, each on its own port,
+one per project -- so sessions stay project-scoped and do not collide
+on a single fixed port.")
+
+(defun opencode-client--free-port ()
+  "Return a free TCP port, probing upward from `opencode-client-port'.
+The probe binds and releases a socket, so a parallel server starting
+concurrently could race -- acceptable for an interactive tool."
+  (let ((port opencode-client-port))
+    (while (condition-case nil
+               (progn
+                 (make-network-process
+                  :name "opencode-client--port-probe"
+                  :server t :host "127.0.0.1" :service port
+                  :noquery t)
+                 (delete-process (get-process "opencode-client--port-probe"))
+                 nil)                ; bind succeeded: port is free
+             (error t))              ; bind failed: port is taken
+      (setq port (1+ port)))
+    port))
+
+(defun opencode-client--ensure-server ()
+  "Return the backend for the current project, starting one if needed.
+The server is registered under `default-directory' so switching
+projects uses that project's server and its sessions."
+  (or (cdr (assoc (expand-file-name default-directory)
+                  opencode-client--servers))
+      (opencode-client-serve)))
+
+;;;###autoload
 (defun opencode-client-serve ()
-  "Start an `opencode serve' on demand and wait until it is healthy.
-Attaching to an already-running server is the primary path; this is a
-convenience for starting one.  When `opencode-client-launchd-label' is
-set, the server is started by kickstarting that launchd agent, so it is
-owned by launchd and outlives Emacs; otherwise it is started as a child
-process."
+  "Start an `opencode serve' for the current project on a free port.
+Each project gets its own server on its own port, so several can run
+in parallel with project-scoped sessions.  Registers the backend under
+`default-directory' and returns it.  When `opencode-client-launchd-label'
+is set, the server is started by kickstarting that launchd agent;
+otherwise it is started as a child process."
   (interactive)
-  (when (opencode-client-health)
-    (user-error "opencode: a server is already running at %s"
-                (opencode-client--base-url)))
-  (if opencode-client-launchd-label
-      (unless (zerop (call-process
-                      "launchctl" nil nil nil "kickstart"
-                      (format "gui/%d/%s"
-                              (user-uid) opencode-client-launchd-label)))
-        (user-error "opencode: failed to kickstart launchd agent %s"
-                    opencode-client-launchd-label))
-    (start-process "opencode-serve" " *opencode-serve*"
-                   opencode-client-executable "serve"
-                   "--hostname" opencode-client-host
-                   "--port" (number-to-string opencode-client-port)))
-  (let ((deadline (+ (float-time) 20)))
-    (while (and (not (opencode-client-health))
-                (< (float-time) deadline))
-      (accept-process-output nil 0.3))
-    (if (opencode-client-health)
-        (message "opencode: server started at %s" (opencode-client--base-url))
-      (user-error "opencode: server did not become healthy in time"))))
+  (let* ((port (opencode-client--free-port))
+         (backend (make-instance 'opencode-client-backend
+                                 :host opencode-client-host
+                                 :port port))
+         (dir (expand-file-name default-directory)))
+    (if opencode-client-launchd-label
+        (unless (zerop (call-process
+                        "launchctl" nil nil nil "kickstart"
+                        (format "gui/%d/%s"
+                                (user-uid) opencode-client-launchd-label)))
+          (user-error "opencode: failed to kickstart launchd agent %s"
+                      opencode-client-launchd-label))
+      (start-process "opencode-serve" " *opencode-serve*"
+                     opencode-client-executable "serve"
+                     "--hostname" opencode-client-host
+                     "--port" (number-to-string port)))
+    (let ((deadline (+ (float-time) 20)))
+      (while (and (not (opencode-client--health backend))
+                  (< (float-time) deadline))
+        (accept-process-output nil 0.3))
+      (if (opencode-client--health backend)
+          (progn
+            (setq opencode-client--servers
+                  (assoc-delete-all dir opencode-client--servers))
+            (push (cons dir backend) opencode-client--servers)
+            (message "opencode: server started at %s (project %s)"
+                     (opencode-client--base-url backend) dir)
+            backend)
+        (user-error "opencode: server did not become healthy in time")))))
 
 ;;;; Sessions
 
-(defun opencode-client--sessions ()
-  "Return the list of sessions from the server."
-  (opencode-client--request 'get "/api/session"))
+(defun opencode-client--sessions (&optional backend)
+  "Return the list of sessions from BACKEND's server."
+  (opencode-client--request 'get "/api/session" nil backend))
 
 ;;;###autoload
 (defun opencode-client-list-sessions ()
   "Message the available opencode sessions."
   (interactive)
   (let ((sessions (agent-backend-list-sessions
-                   (opencode-client--transient-backend))))
+                   (opencode-client--ensure-server))))
     (if sessions
         (message "opencode sessions:n%s"
                  (mapconcat
@@ -254,21 +306,27 @@ process."
 
 ;;;###autoload
 (defun opencode-client-create-session (&optional title)
-  "Create a new opencode session with optional TITLE and make it active."
+  "Create a new opencode session on the current project's server.
+The server is started on demand if none exists for this project, so
+several projects can run their own opencode server in parallel."
   (interactive (list (read-string "Session title: ")))
-  (let* ((body (when (and title (not (string-empty-p title))) `((title . ,title))))
-         (session (opencode-client--request 'post "/api/session" body))
+  (let* ((backend (opencode-client--ensure-server))
+         (body (when (and title (not (string-empty-p title))) `((title . ,title))))
+         (session (opencode-client--request 'post "/api/session" body backend))
          (id (alist-get 'id session)))
     (setq opencode-client--active-session id)
-    (opencode-client--open-buffer id (or title id))
+    (opencode-client--open-buffer id (or title id) nil backend)
     (message "opencode: created session %s" id)
     id))
 
 ;;;###autoload
 (defun opencode-client-switch-session ()
-  "Choose an opencode session and make it active, opening its chat buffer."
+  "Choose an opencode session on the current project's server.
+Lists sessions from this project's server (starting it on demand), so
+each project keeps its own session list."
   (interactive)
-  (let* ((sessions (opencode-client--sessions))
+  (let* ((backend (opencode-client--ensure-server))
+         (sessions (opencode-client--sessions backend))
          (choices (mapcar (lambda (s)
                             (cons (format "%s  %s"
                                           (or (alist-get 'title s) "")
@@ -278,16 +336,18 @@ process."
          (pick (completing-read "Session: " choices nil t))
          (id (cdr (assoc pick choices))))
     (setq opencode-client--active-session id)
-    (opencode-client--open-buffer id pick t)))
+    (opencode-client--open-buffer id pick t backend)))
 
 ;;;###autoload
 (defun opencode-client-delete-session (id)
-  "Delete the opencode session ID."
+  "Delete the opencode session ID from the current buffer's server."
   (interactive (list (or (and (opencode-client--instance)
                               (oref (opencode-client--instance) session-id))
                          opencode-client--active-session
                          (read-string "Session id: "))))
-  (opencode-client--request 'delete (format "/api/session/%s" id))
+  (let ((backend (or (opencode-client--instance)
+                     (opencode-client--ensure-server))))
+    (opencode-client--request 'delete (format "/api/session/%s" id) nil backend))
   (when (equal id opencode-client--active-session)
     (setq opencode-client--active-session nil))
   (message "opencode: deleted session %s" id))
@@ -298,18 +358,22 @@ process."
   "Return the chat buffer name for session TITLE."
   (format "*opencode:%s*" title))
 
-(defun opencode-client--open-buffer (id title &optional resumed)
+(defun opencode-client--open-buffer (id title &optional resumed server)
   "Open (creating if needed) the chat buffer for session ID/TITLE, and stream.
-Creates a fresh backend instance bound to the buffer, loads and renders
-the session's existing message history, then starts the live stream.
-Publishes `started' or, when RESUMED, `resumed' on the shared hook."
+Creates a fresh backend instance bound to the buffer, carrying SERVER's
+host/port (so the buffer talks to the right project server), loads and
+renders the session's existing message history, then starts the live
+stream.  Publishes `started' or, when RESUMED, `resumed' on the shared
+hook."
   (let ((buf (get-buffer-create (opencode-client--buffer-name title))))
     (with-current-buffer buf
       (unless (derived-mode-p 'opencode-client-mode)
         (opencode-client-mode))
       (let ((backend (make-instance 'opencode-client-backend
                                     :session-id id
-                                    :buffer buf)))
+                                    :buffer buf
+                                    :host (and server (oref server host))
+                                    :port (and server (oref server port)))))
         (setq-local agent-backend--instance backend)
         (agent-backend-seed-history backend)
         (agent-backend-render backend)
@@ -329,7 +393,7 @@ text part; an assistant message contributes its `content' items
 `tool' key the renderer reads."
   (let ((id (oref backend session-id)))
     (dolist (msg (opencode-client--request
-                  'get (format "/api/session/%s/message" id)))
+                  'get (format "/api/session/%s/message" id) nil backend))
       (let* ((mid (alist-get 'id msg))
              (mtype (alist-get 'type msg))
              (parts (opencode-client--history-parts mid mtype msg)))
@@ -458,7 +522,7 @@ Maps opencode part types onto the shared vocabulary: a text part becomes
     (let* ((buffer (current-buffer))
            (id (oref backend session-id))
            (url (format "%s/api/session/%s/event"
-                        (opencode-client--base-url) id)))
+                        (opencode-client--base-url backend) id)))
       (oset backend stream-buffer "")
       (oset backend stream-process
             (plz 'get url
@@ -518,12 +582,12 @@ Maps opencode part types onto the shared vocabulary: a text part becomes
 
 ;;;; agent-backend methods
 
-(cl-defmethod agent-backend-connect ((_backend opencode-client-backend))
-  "Verify the configured opencode server is reachable."
-  (if (opencode-client-health)
-      (message "opencode: connected to %s" (opencode-client--base-url))
+(cl-defmethod agent-backend-connect ((backend opencode-client-backend))
+  "Verify BACKEND's server is reachable."
+  (if (opencode-client--health backend)
+      (message "opencode: connected to %s" (opencode-client--base-url backend))
     (user-error "opencode: cannot reach a healthy server at %s"
-                (opencode-client--base-url))))
+                (opencode-client--base-url backend))))
 
 (cl-defmethod agent-backend-quit ((backend opencode-client-backend))
   "Stop the SSE stream for BACKEND's chat buffer, if any."
@@ -539,7 +603,8 @@ Maps opencode part types onto the shared vocabulary: a text part becomes
     (opencode-client--request
      'post (format "/api/session/%s/prompt" id)
      `((prompt . ((text . ,prompt)))
-       (delivery . "queue")))
+       (delivery . "queue"))
+     backend)
     (when-let ((buffer (oref backend buffer)))
       (agent-backend--publish buffer (list :kind 'prompt :text prompt)))
     (message "opencode: prompt sent")))
@@ -548,7 +613,7 @@ Maps opencode part types onto the shared vocabulary: a text part becomes
   "Interrupt the running turn in BACKEND's session."
   (let ((id (oref backend session-id)))
     (unless id (user-error "opencode: no active session"))
-    (opencode-client--request 'post (format "/api/session/%s/interrupt" id))
+    (opencode-client--request 'post (format "/api/session/%s/interrupt" id) nil backend)
     (when-let ((buffer (oref backend buffer)))
       (agent-backend--publish buffer (list :kind 'interrupted)))
     (message "opencode: interrupted")))
@@ -564,7 +629,8 @@ opencode notes ARE steering prompts: the note is posted with delivery
     (opencode-client--request
      'post (format "/api/session/%s/prompt" id)
      `((prompt . ((text . ,note)))
-       (delivery . "steer")))
+       (delivery . "steer"))
+     backend)
     (when-let ((buffer (oref backend buffer)))
       (agent-backend--publish buffer (list :kind 'note :text note)))
     (message "opencode: note sent")))
@@ -572,21 +638,21 @@ opencode notes ARE steering prompts: the note is posted with delivery
 (cl-defmethod agent-backend-reply-permission
   ((backend opencode-client-backend) request-id decision)
   "Reply DECISION to BACKEND's permission REQUEST-ID."
-  (opencode-client--reply-permission (oref backend session-id)
+  (opencode-client--reply-permission backend (oref backend session-id)
                                      request-id decision))
 
 (cl-defmethod agent-backend-reply-question
   ((backend opencode-client-backend) request-id answer)
   "Reply ANSWER to BACKEND's question REQUEST-ID."
-  (opencode-client--reply-question (oref backend session-id) request-id answer))
+  (opencode-client--reply-question backend (oref backend session-id) request-id answer))
 
-(cl-defmethod agent-backend-list-sessions ((_backend opencode-client-backend))
+(cl-defmethod agent-backend-list-sessions ((backend opencode-client-backend))
   "Return opencode sessions as (:id :label :time) plists."
   (mapcar (lambda (s)
             (list :id (alist-get 'id s)
                   :label (or (alist-get 'title s) (alist-get 'id s))
                   :time (or (alist-get 'time s) "")))
-          (opencode-client--sessions)))
+          (opencode-client--sessions backend)))
 
 (cl-defmethod agent-backend-resume ((_backend opencode-client-backend) _session)
   "Refuse to resume: opencode has no native resume picker.
@@ -619,12 +685,16 @@ conversation buffer (connect, list-sessions)."
 (defun opencode-client--active-backend ()
   "Return the backend instance for the active session.
 Uses the current buffer's instance when bound to a session; otherwise a
-transient instance around `opencode-client--active-session'."
+transient instance around `opencode-client--active-session' carrying the
+current project's server host/port."
   (let ((instance (opencode-client--instance)))
     (if (and instance (oref instance session-id))
         instance
-      (make-instance 'opencode-client-backend
-                     :session-id opencode-client--active-session))))
+      (let ((server (opencode-client--ensure-server)))
+        (make-instance 'opencode-client-backend
+                       :session-id opencode-client--active-session
+                       :host (oref server host)
+                       :port (oref server port))))))
 
 ;;;###autoload
 (defun opencode-client-send-prompt (text &optional steer)
@@ -643,11 +713,11 @@ the shared note path (`agent-backend-add-note')."
   (interactive)
   (agent-backend-interrupt (opencode-client--active-backend)))
 
-(defun opencode-client--reply-permission (id request-id decision)
-  "Reply DECISION to permission REQUEST-ID of session ID."
+(defun opencode-client--reply-permission (backend id request-id decision)
+  "Reply DECISION to permission REQUEST-ID of session ID on BACKEND's server."
   (opencode-client--request
    'post (format "/api/session/%s/permission/%s/reply" id request-id)
-   `((decision . ,decision))))
+   `((decision . ,decision)) backend))
 
 ;;;###autoload
 (defun opencode-client-answer-permission (request-id)
@@ -657,11 +727,11 @@ the shared note path (`agent-backend-add-note')."
    (opencode-client--active-backend) request-id
    (if (y-or-n-p "opencode: allow this request? ") "allow" "deny")))
 
-(defun opencode-client--reply-question (id request-id answer)
-  "Reply ANSWER to question REQUEST-ID of session ID."
+(defun opencode-client--reply-question (backend id request-id answer)
+  "Reply ANSWER to question REQUEST-ID of session ID on BACKEND's server."
   (opencode-client--request
    'post (format "/api/session/%s/question/%s/reply" id request-id)
-   `((answer . ,answer))))
+   `((answer . ,answer)) backend))
 
 ;;;###autoload
 (defun opencode-client-answer-question (request-id)

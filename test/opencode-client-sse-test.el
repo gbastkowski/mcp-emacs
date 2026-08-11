@@ -264,3 +264,60 @@
         (agent-backend-quit backend))
       (check "quit-kills-stream" (eq killed proc) t))
     (check "quit-sets-nil" (oref backend stream-process) nil)))
+
+;;;; Per-project parallel servers (multiple ports)
+
+;; The base URL follows the instance's own host/port when set, else the defaults.
+(let ((b (make-instance 'opencode-client-backend :host "127.0.0.1" :port 5001)))
+  (check "base-url-instance-port" (opencode-client--base-url b) "http://127.0.0.1:5001")
+  (check "base-url-instance-host" (string-match-p "127.0.0.1:5001" (opencode-client--base-url b)) 7))
+(let ((b (make-instance 'opencode-client-backend)))
+  (check "base-url-default" (opencode-client--base-url b)
+         (format "http://%s:%d" opencode-client-host opencode-client-port)))
+
+;; free-port probes upward from the configured port and skips taken ports.
+(cl-letf (((symbol-function 'make-network-process)
+           (lambda (&rest args)
+             (let ((port (plist-get args :service)))
+               (when (eq port opencode-client-port)
+                 (error "port %d taken" port)))
+             (make-symbol "fake-sock")))
+          ((symbol-function 'get-process) (lambda (_name) nil))
+          ((symbol-function 'delete-process) (lambda (_proc) nil)))
+  (let ((opencode-client-port 4096))
+    (check "free-port-skips-taken" (opencode-client--free-port) 4097)))
+
+;; ensure-server starts one server per project and reuses it: the
+;; serve stub registers under the project dir, so a second ensure for the
+;; same project returns the same instance instead of starting another.
+(cl-letf (((symbol-function 'opencode-client-serve)
+           (lambda ()
+             (let ((b (make-instance 'opencode-client-backend :port 5002)))
+               (setq opencode-client--servers
+                     (cons (cons (expand-file-name default-directory) b)
+                           opencode-client--servers))
+               b)))
+          ((symbol-function 'expand-file-name) (lambda (d) (concat "/proj/" d))))
+  (let ((opencode-client--servers nil))
+    (let ((b1 (opencode-client--ensure-server)))
+      (check "ensure-server-first" (oref b1 port) 5002)
+      (let ((b2 (opencode-client--ensure-server)))
+        (check "ensure-server-reuses" (eq b1 b2) t))
+      (check "registry-length" (length opencode-client--servers) 1))))
+
+;; Different projects get different servers (parallel sessions).
+(cl-letf (((symbol-function 'opencode-client-serve)
+           (lambda ()
+             (let ((b (make-instance 'opencode-client-backend :port 5002)))
+               (setq opencode-client--servers
+                     (cons (cons (expand-file-name default-directory) b)
+                           opencode-client--servers))
+               b)))
+          ((symbol-function 'expand-file-name) (lambda (d) (concat "/proj/" d))))
+  (let ((opencode-client--servers nil)
+        (default-directory "/proj/one"))
+    (let ((b1 (opencode-client--ensure-server)))
+      (setq default-directory "/proj/two")
+      (let ((b2 (opencode-client--ensure-server)))
+        (check "parallel-projects-distinct" (eq b1 b2) nil)
+        (check "parallel-projects-two-servers" (length opencode-client--servers) 2)))))
