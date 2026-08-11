@@ -199,7 +199,7 @@ The two sections below describe what each concrete backend adds:
 
 `elisp/opencode-client.el` is a native Emacs client for
 [opencode](https://opencode.ai)'s local HTTP API. opencode runs headless
-(`opencode serve`, default `127.0.0.1:4096`); the client drives it over HTTP and
+(`opencode serve`); the client drives it over HTTP and
 renders the conversation incrementally from the server's Server-Sent Events
 stream into an ordinary Emacs buffer, instead of embedding the opencode TUI in a
 terminal. Editor-tool integration is provided to opencode through the `emacs`
@@ -209,6 +209,12 @@ editor tools.
 It requires the [`plz`](https://github.com/alphapapa/plz.el) package, loaded as
 an optional dependency — installing `mcp-emacs` does not pull it in, and client
 commands report clearly if it is missing.
+
+One opencode server runs **per project**, each on its own free port
+(probing upward from `opencode-client-port`, default 4096).  `opencode-client-serve`
+starts the server for the current `default-directory` and registers it, so several
+projects can run opencode sessions in parallel without colliding on a fixed
+address — switch projects and each keeps its own session list.
 
 Configure `opencode-client-host`, `-port`, and optional `-password`, then:
 
