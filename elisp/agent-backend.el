@@ -248,5 +248,51 @@ derived mode maps (claude-client-mode-map, opencode-client-mode-map).")
 The backend instance lives in the buffer-local `agent-backend--instance'."
   (setq-local truncate-lines nil))
 
+;; The client functions are loaded on demand; declare them so the
+;; shared core still byte-compiles standalone (the clients require
+;; this file, so agent-backend cannot require them back at load).
+(declare-function opencode-client-health "opencode-client" ())
+(declare-function opencode-client-create-session "opencode-client" (&optional title))
+(declare-function claude-client-start "claude-client" (prompt &optional resume-id))
+
+;;;; Backend selection
+
+(defcustom agent-backend-preference 'auto
+  "Which backend `agent-backend-start' should pick.
+`opencode' and `claude' force that backend.  `auto' probes: it starts
+opencode when its server is reachable, otherwise Claude.  Set this
+per machine when only one backend is usable -- for example `opencode'
+on a machine without a Claude subscription, where the CLI is installed
+but every request would fail at auth time."
+  :type '(choice (const opencode) (const claude) (const auto))
+  :group 'agent-backend)
+
+(defun agent-backend-prefer-opencode-p ()
+  "Return non-nil when `agent-backend-start' should use opencode.
+Honours `agent-backend-preference': explicit `opencode' always, `claude'
+never, `auto' when a healthy opencode server answers."
+  (pcase agent-backend-preference
+    ('opencode t)
+    ('claude nil)
+    ('auto (and (require 'opencode-client nil t)
+                (opencode-client-health)))))
+
+;;;###autoload
+(defun agent-backend-start ()
+  "Start the preferred backend for this machine.
+Dispatch to the opencode or Claude client according to
+`agent-backend-preference' -- the per-machine signal, since which CLI
+is *usable* cannot be probed reliably (a binary can exist while every
+request fails, e.g. no subscription).  Falls back to Claude when
+opencode is not reachable under `auto'."
+  (interactive)
+  (if (agent-backend-prefer-opencode-p)
+      (require 'opencode-client nil t)
+    (require 'claude-client nil t))
+  (if (agent-backend-prefer-opencode-p)
+      (opencode-client-create-session)
+    (claude-client-start
+     (read-string "Prompt: "))))
+
 (provide 'agent-backend)
 ;;; agent-backend.el ends here
