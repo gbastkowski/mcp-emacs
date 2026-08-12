@@ -250,15 +250,16 @@ projects uses that project's server and its sessions."
 Each project gets its own server on its own port, so several can run
 in parallel with project-scoped sessions.  Registers the backend under
 `default-directory' and returns it.  When `opencode-client-launchd-label'
-is set, the server is started by kickstarting that launchd agent;
-otherwise it is started as a child process."
+is set *and* this is macOS (launchd exists only there), the server is
+started by kickstarting that launchd agent; otherwise it is started as
+a child process."
   (interactive)
   (let* ((port (opencode-client--free-port))
          (backend (make-instance 'opencode-client-backend
                                  :host opencode-client-host
                                  :port port))
          (dir (expand-file-name default-directory)))
-    (if opencode-client-launchd-label
+    (if (and opencode-client-launchd-label (eq system-type 'darwin))
         (unless (zerop (call-process
                         "launchctl" nil nil nil "kickstart"
                         (format "gui/%d/%s"
