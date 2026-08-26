@@ -454,7 +454,7 @@ stays alive after `result', so process liveness cannot stand in for it."
               (setq claude-client--process nil)
               (claude-test--with-running-turn
                (claude-client-add-note "remember the timeout")))
-            (claude-client-start "do the thing")
+            (with-current-buffer buf (claude-client-start "do the thing"))
             (let ((text (alist-get
                          'text
                          (aref (alist-get
@@ -618,7 +618,8 @@ stays alive after `result', so process liveness cannot stand in for it."
             (with-current-buffer buf
               (claude-client-mode)
               (setq claude-client--process nil claude-client--turn-active nil))
-            (claude-client-start "carry on" "sess-xyz")
+            (with-current-buffer buf
+              (claude-client-start "carry on" "sess-xyz"))
             (with-current-buffer buf
               (check "resume-logs-resumed-event"
                      (plist-get (car claude-client--events) :kind) 'resumed)
@@ -643,7 +644,7 @@ stays alive after `result', so process liveness cannot stand in for it."
             (with-current-buffer buf
               (claude-client-mode)
               (setq claude-client--process nil claude-client--turn-active nil))
-            (claude-client-start "fresh")
+            (with-current-buffer buf (claude-client-start "fresh"))
             (with-current-buffer buf
               (check "fresh-start-has-no-resumed"
                      (memq 'resumed
@@ -984,6 +985,118 @@ stays alive after `result', so process liveness cannot stand in for it."
             (check "unbounded-keeps-all"
                    (length claude-client--pending-notes) 4))))
     (kill-buffer buf)))
+
+;;;; Conversation buffers (issue #56)
+;;
+;; One buffer per conversation, `*claude-client:<project>:<n>*'.  The bug
+;; being pinned: a single hardcoded name meant starting a conversation in
+;; one project silently killed another project's CLI.
+
+(let ((default-directory "/tmp/proj-a/"))
+  (check "buffer-name-uses-project"
+         (claude-client--buffer-name "/tmp/proj-a/" 1)
+         "*claude-client:proj-a:1*")
+  (check "buffer-name-numbers"
+         (claude-client--buffer-name "/tmp/proj-a/" 7)
+         "*claude-client:proj-a:7*"))
+
+;; Numbers are per project and fill the lowest free slot.
+(let* ((a1 (get-buffer-create "*claude-client:proj-a:1*"))
+       (a2 (get-buffer-create "*claude-client:proj-a:2*"))
+       (b1 (get-buffer-create "*claude-client:proj-b:1*")))
+  (unwind-protect
+      ;; A buffer's project comes from its own `default-directory', the way
+      ;; `claude-client--new-buffer' pins it.
+      (progn
+        (dolist (cell (list (cons a1 "/tmp/proj-a/")
+                            (cons a2 "/tmp/proj-a/")
+                            (cons b1 "/tmp/proj-b/")))
+          (with-current-buffer (car cell)
+            (claude-client-mode)
+            (setq default-directory (cdr cell))))
+        (check "buffers-found" (length (claude-client--buffers)) 3)
+        (check "project-scopes-buffers"
+               (length (claude-client--project-buffers "/tmp/proj-a/")) 2)
+        (check "next-number-skips-used"
+               (claude-client--next-number "/tmp/proj-a/") 3)
+        ;; A hole left by a killed conversation is refilled, not skipped.
+        (let ((kill-buffer-query-functions nil)) (kill-buffer a1))
+        (check "next-number-refills-hole"
+               (claude-client--next-number "/tmp/proj-a/") 1))
+    (let ((kill-buffer-query-functions nil))
+      (dolist (b (list a1 a2 b1)) (when (buffer-live-p b) (kill-buffer b))))))
+
+;; `cl-letf' is not used for these: several `symbol-function' places in one
+;; form collide during macroexpansion, so the mocks silently overwrite each
+;; other.  Save and restore by hand instead.
+(defmacro claude-test--with-stubs (stubs &rest body)
+  "Run BODY with STUBS, an alist of (SYMBOL . FUNCTION), then restore."
+  (declare (indent 1))
+  `(let ((saved (mapcar (lambda (c)
+                          (cons (car c)
+                                (and (fboundp (car c))
+                                     (symbol-function (car c)))))
+                        ,stubs)))
+     (unwind-protect
+         (progn (dolist (c ,stubs) (fset (car c) (cdr c)))
+                ,@body)
+       (dolist (c saved)
+         (if (cdr c) (fset (car c) (cdr c)) (fmakunbound (car c)))))))
+
+(defun claude-test--start-stubs (root-fn &optional on-delete)
+  "Stubs that let `claude-client-start' run without a CLI.
+ROOT-FN supplies the project root; ON-DELETE, when given, replaces
+`delete-process' so a kill can be detected."
+  (append
+   (list (cons 'claude-client--project-root root-fn)
+         (cons 'make-process (lambda (&rest _) 'fake-proc))
+         (cons 'process-send-string (lambda (&rest _) nil))
+         (cons 'claude-client--display #'ignore)
+         (cons 'claude-client--mcp-config-file (lambda () "/tmp/m.json"))
+         (cons 'claude-client--settings-file (lambda () "/tmp/s.json"))
+         (cons 'claude-client--system-prompt-file (lambda () "/tmp/p.txt")))
+   (when on-delete (list (cons 'delete-process on-delete)))))
+
+;; The regression: starting in project B must not touch project A's process.
+(let ((a nil) (b nil) (root "/tmp/proj-a/"))
+  (unwind-protect
+      (claude-test--with-stubs
+          (cons (cons 'process-live-p (lambda (p) (eq p 'fake-proc)))
+                (claude-test--start-stubs
+                 (lambda () root)
+                 (lambda (&rest _) (error "a live conversation was killed"))))
+        (setq a (claude-client-start "in A"))
+        (check "start-names-by-project" (buffer-name a) "*claude-client:proj-a:1*")
+        ;; Switch project and start again: delete-process would signal.
+        (setq root "/tmp/proj-b/")
+        (check "cross-project-start-spares-other"
+               (condition-case err
+                   (progn (setq b (claude-client-start "in B")) :no-kill)
+                 (error (error-message-string err)))
+               :no-kill)
+        (check "second-buffer-is-distinct" (buffer-name b)
+               "*claude-client:proj-b:1*")
+        (check "first-still-live" (buffer-live-p a) t))
+    (let ((kill-buffer-query-functions nil))
+      (dolist (x (list a b)) (when (and x (buffer-live-p x)) (kill-buffer x))))))
+
+;; `g' from inside a conversation restarts in place rather than piling up.
+(let ((buf nil))
+  (unwind-protect
+      (claude-test--with-stubs
+          (cons (cons 'process-live-p (lambda (_p) nil))
+                (claude-test--start-stubs (lambda () "/tmp/proj-a/")))
+        (setq buf (claude-client-start "first"))
+        ;; No CLI to emit `result', so clear the in-flight flag by hand --
+        ;; otherwise the restart is refused, which is its own correct
+        ;; behaviour but not what this test is about.
+        (with-current-buffer buf (setq claude-client--turn-active nil))
+        (let ((again (with-current-buffer buf (claude-client-start "again"))))
+          (check "restart-in-place-reuses-buffer" (eq again buf) t)
+          (check "restart-in-place-adds-no-buffer"
+                 (length (claude-client--buffers)) 1)))
+    (let ((kill-buffer-query-functions nil))
+      (when (and buf (buffer-live-p buf)) (kill-buffer buf)))))
 
 ;; The single-letter keys.  Evil is not installed in batch, so this only
 ;; pins the plain-Emacs map and the evil-registration data; the evil path

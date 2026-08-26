@@ -30,6 +30,11 @@
 ;;   `permission_denials' in the result are a post-hoc audit record rather
 ;;   than a gate.
 ;;
+;; Conversations are per project, one buffer and one subprocess each, named
+;; `*claude-client:<project>:<n>*' (`claude-client-list' and
+;; `claude-client-switch' enumerate them).  Several can run at once, in one
+;; project or across several.
+;;
 ;; Turns are multi-turn over one subprocess: `claude-client-start' opens a
 ;; conversation and `claude-client-send' continues it, reusing the same CLI
 ;; so the session id and its context carry across turns.  That is also what
@@ -307,6 +312,88 @@ exists."
    (when claude-client-model (list "--model" claude-client-model))
    (when claude-client-disallowed-tools
      (cons "--disallowedTools" claude-client-disallowed-tools))))
+
+;;;; Conversation buffers
+
+;; One buffer per conversation, named `*claude-client:<project>:<n>*' --
+;; the eat runner's `*claude:<project>:<n>*' scheme with this client's own
+;; prefix, so the two runners stay distinguishable in the buffer list.  The
+;; project comes from each buffer's own `default-directory', so no registry
+;; has to be kept in sync (issue #56).
+
+(declare-function project-root "project" (project))
+
+(defconst claude-client--buffer-name-regexp
+  "\\`\\*claude-client:\\(.+\\):\\([0-9]+\\)\\*\\'"
+  "Regexp matching a conversation buffer name.
+Group 1 is the project name, group 2 the per-project number.")
+
+(defun claude-client--project-root ()
+  "Return the current project root, or `default-directory' as a fallback.
+Delegates to the runner's helper so both runners agree on what a project
+is, but falls back when that file is absent."
+  (if (require 'mcp-emacs-run nil t)
+      (mcp-emacs-run--project-root)
+    (or (when (and (featurep 'project) (fboundp 'project-current))
+          (when-let* ((proj (project-current nil)))
+            (expand-file-name (project-root proj))))
+        (expand-file-name default-directory))))
+
+(defun claude-client--buffer-name (root n)
+  "Return the conversation buffer name for project ROOT and number N."
+  (format "*claude-client:%s:%d*"
+          (file-name-nondirectory (directory-file-name root))
+          n))
+
+(defun claude-client--buffers ()
+  "Return all live conversation buffers."
+  (seq-filter (lambda (buf)
+                (string-match-p claude-client--buffer-name-regexp
+                                (buffer-name buf)))
+              (buffer-list)))
+
+(defun claude-client--project-buffers (root)
+  "Return the live conversation buffers belonging to project ROOT.
+A buffer's project is read straight off its own `default-directory',
+which `claude-client--new-buffer' pins to the root it was created for.
+Re-running project detection inside the buffer would be wrong: it can
+resolve to a different root (or fail over to `default-directory' of a
+parent project), which mis-scopes the numbering."
+  (let ((root (expand-file-name root)))
+    (seq-filter (lambda (buf)
+                  (string= (expand-file-name
+                            (buffer-local-value 'default-directory buf))
+                           root))
+                (claude-client--buffers))))
+
+(defun claude-client--next-number (root)
+  "Return the lowest positive conversation number free for project ROOT.
+Killed middle slots are refilled, so numbers stay compact."
+  (let ((used (delq nil
+                    (mapcar (lambda (buf)
+                              (when (string-match claude-client--buffer-name-regexp
+                                                  (buffer-name buf))
+                                (string-to-number
+                                 (match-string 2 (buffer-name buf)))))
+                            (claude-client--project-buffers root))))
+        (n 1))
+    (while (memq n used) (setq n (1+ n)))
+    n))
+
+(defun claude-client--new-buffer ()
+  "Create and return a fresh conversation buffer for this project.
+`default-directory' is pinned to the project root so the buffer keeps
+answering for the right project even when the conversation outlives the
+buffer it was started from."
+  (let* ((root (claude-client--project-root))
+         (buffer (get-buffer-create
+                  (claude-client--buffer-name
+                   root (claude-client--next-number root)))))
+    (with-current-buffer buffer
+      (setq default-directory root)
+      (unless (derived-mode-p 'claude-client-mode)
+        (claude-client-mode)))
+    buffer))
 
 ;;;; Windows
 
@@ -680,8 +767,12 @@ with the one being answered."
 ;;;###autoload
 (defun claude-client-start (prompt &optional resume-id)
   "Run PROMPT through a headless Claude and render it in a buffer.
-Starts a fresh conversation, replacing any previous log in this buffer.
-Use `claude-client-send' to continue the one already running.
+From outside a conversation buffer this opens a new one for the current
+project, named `*claude-client:<project>:<n>*', so conversations in
+different projects (or several in one) coexist.  Called from inside a
+conversation buffer -- the `g' binding -- it restarts that conversation
+in place, replacing its log.  Use `claude-client-send' to continue the
+one already running.
 
 With RESUME-ID, reopen that past session instead of starting a new one,
 so the model still has its history; `claude-client-resume' picks one
@@ -692,7 +783,11 @@ the model's context does not.
 Edits are routed through the mcp-emacs server's `apply_diff', so any
 file change opens an ediff for the human to accept or reject."
   (interactive "sPrompt: ")
-  (let ((buffer (get-buffer-create "*claude-client*")))
+  (let ((buffer (if (derived-mode-p 'claude-client-mode)
+                    ;; Called from a conversation buffer (`g'): restart this
+                    ;; one in place rather than piling up a new buffer.
+                    (current-buffer)
+                  (claude-client--new-buffer))))
     (with-current-buffer buffer
       (unless (derived-mode-p 'claude-client-mode)
         (claude-client-mode))
@@ -756,6 +851,42 @@ either runner can be resumed in this one."
         (claude-client-start
          (read-string "Prompt: ")
          (mcp-emacs-run-resume--session-id file))))))
+
+(defun claude-client--label (buffer)
+  "Return a `completing-read' label for conversation BUFFER.
+The buffer name already carries project and number, so it only gains a
+marker for whether the model is working."
+  (format "%s%s"
+          (buffer-name buffer)
+          (with-current-buffer buffer
+            (cond (claude-client--turn-active "  (working)")
+                  ((process-live-p claude-client--process) "  (idle)")
+                  (t "  (finished)")))))
+
+;;;###autoload
+(defun claude-client-list ()
+  "Message the live Claude conversations."
+  (interactive)
+  (if-let* ((bufs (claude-client--buffers)))
+      (message "Claude conversations:\n%s"
+               (string-join (mapcar (lambda (b)
+                                      (format "  %s" (claude-client--label b)))
+                                    bufs)
+                            "\n"))
+    (message "No Claude conversations")))
+
+;;;###autoload
+(defun claude-client-switch ()
+  "Choose a live Claude conversation and display it."
+  (interactive)
+  (let ((bufs (claude-client--buffers)))
+    (unless bufs (user-error "No Claude conversations"))
+    (if (= (length bufs) 1)
+        (claude-client--display (car bufs))
+      (let* ((alist (mapcar (lambda (b) (cons (claude-client--label b) b)) bufs))
+             (pick (completing-read "Conversation: " alist nil t)))
+        (when-let* ((buf (cdr (assoc pick alist))))
+          (claude-client--display buf))))))
 
 (defun claude-client-quit ()
   "Kill the CLI subprocess for this buffer."
