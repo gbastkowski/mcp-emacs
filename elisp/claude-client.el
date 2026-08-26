@@ -857,7 +857,48 @@ turn to end)."
     (define-key map (kbd "r") #'claude-client-resume)
     (define-key map (kbd "i") #'claude-client-interrupt)
     map)
-  "Keymap for `claude-client-mode'.")
+  "Keymap for `claude-client-mode'.
+The single-letter keys are only reachable in plain Emacs; under evil they
+are shadowed by the normal-state map, so `claude-client--setup-evil'
+re-registers them.  The evil-safe `C-c'-prefixed vocabulary lives in
+`agent-backend-mode-map' and works either way.")
+
+(defconst claude-client--evil-keys
+  '(("g" . claude-client-start)
+    ("k" . claude-client-quit)
+    ("n" . claude-client-add-note)
+    ("s" . claude-client-send)
+    ("r" . claude-client-resume)
+    ("i" . claude-client-interrupt))
+  "The single-letter bindings to re-register with evil.
+Mirrors `claude-client-mode-map'; kept as data so both paths bind the
+same set.")
+
+(declare-function evil-define-key* "evil-core"
+                  (state keymap key def &rest bindings))
+
+(defun claude-client--setup-evil ()
+  "Bind `claude-client--evil-keys' in evil's normal and motion states.
+Evil's state maps take precedence over a major mode's own keymap, so
+without this every single-letter binding above is dead in a Doom-style
+config -- `s' runs `evil-snipe-s', `k' moves the cursor up.  Evil is not
+a dependency of this package (it must work in plain Emacs), so this is
+called from an `evil-mode' load hook and is a no-op when evil is absent."
+  (when (fboundp 'evil-define-key*)
+    (pcase-dolist (`(,key . ,cmd) claude-client--evil-keys)
+      (evil-define-key* '(normal motion) claude-client-mode-map
+                        (kbd key) cmd))))
+
+(with-eval-after-load 'evil
+  (claude-client--setup-evil))
+
+;; evil-snipe binds `s' in a *minor* mode map, which outranks even an
+;; evil-registered major-mode map, so `s' would still snipe.  This is the
+;; opt-out evil-snipe provides for exactly this case; magit, dired and
+;; treemacs are on the same list by default.
+(with-eval-after-load 'evil-snipe
+  (when (boundp 'evil-snipe-disabled-modes)
+    (add-to-list 'evil-snipe-disabled-modes 'claude-client-mode)))
 
 (define-derived-mode claude-client-mode agent-backend-mode "claude"
   "Major mode for the terminal-free Claude conversation buffer.

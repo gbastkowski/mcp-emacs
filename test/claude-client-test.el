@@ -984,3 +984,34 @@ stays alive after `result', so process liveness cannot stand in for it."
             (check "unbounded-keeps-all"
                    (length claude-client--pending-notes) 4))))
     (kill-buffer buf)))
+
+;; The single-letter keys.  Evil is not installed in batch, so this only
+;; pins the plain-Emacs map and the evil-registration data; the evil path
+;; itself needs a live evil (see `claude-client--setup-evil').
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (check "letter-s-sends"
+               (lookup-key claude-client-mode-map (kbd "s")) 'claude-client-send)
+        (check "letter-n-notes"
+               (lookup-key claude-client-mode-map (kbd "n")) 'claude-client-add-note)
+        ;; The evil table must stay in step with the keymap, since the two
+        ;; are bound from separate places.
+        (check "evil-table-matches-keymap"
+               (sort (mapcar (lambda (c)
+                               (format "%s=%s" (car c)
+                                       (lookup-key claude-client-mode-map (kbd (car c)))))
+                             claude-client--evil-keys)
+                     #'string<)
+               (sort (mapcar (lambda (c) (format "%s=%s" (car c) (cdr c)))
+                             claude-client--evil-keys)
+                     #'string<))
+        ;; The evil-safe C-c vocabulary comes from the parent mode and must
+        ;; survive regardless.
+        (check "C-c-C-s-inherited"
+               (lookup-key agent-backend-mode-map (kbd "C-c C-s"))
+               'agent-backend-send-command)
+        ;; Guarded so a snipe-less Emacs is a no-op rather than an error.
+        (check "setup-evil-safe-without-evil"
+               (progn (claude-client--setup-evil) :no-error) :no-error))
+    (kill-buffer buf)))
