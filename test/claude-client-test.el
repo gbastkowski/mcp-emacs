@@ -1116,12 +1116,13 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
         (with-current-buffer buf
           (claude-client-mode)
           (setq default-directory "/tmp/proj-a/"))
+        ;; Nowhere at all (nil for this frame and for all frames).
         (claude-test--with-stubs
             (list (cons 'get-buffer-window (lambda (&rest _) nil)))
           (claude-client-toggle))
         (check "toggle-hidden-shows" shown buf)
         (check "toggle-hidden-does-not-start" started nil)
-        ;; Visible: the window is deleted rather than re-shown.
+        ;; Visible on this frame: the window is hidden, not re-shown.
         (setq shown nil)
         (claude-test--with-stubs
             (list (cons 'get-buffer-window (lambda (&rest _) 'fake-window)))
@@ -1130,6 +1131,55 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
         (check "toggle-visible-does-not-show" shown nil))
     (let ((kill-buffer-query-functions nil))
       (when (and buf (buffer-live-p buf)) (kill-buffer buf)))))
+
+;; Frame-awareness: a conversation only on *another* frame is raised, not
+;; hidden and not duplicated.
+(let ((buf nil) (shown nil) (deleted nil) (focused nil) (selected nil))
+  (unwind-protect
+      (progn
+        (setq buf (get-buffer-create "*claude-client:proj-a:1*"))
+        (with-current-buffer buf
+          (claude-client-mode)
+          (setq default-directory "/tmp/proj-a/"))
+        (claude-test--with-stubs
+            (list (cons 'claude-client--project-root (lambda () "/tmp/proj-a/"))
+                  (cons 'claude-client--display (lambda (b) (setq shown b)))
+                  (cons 'delete-window (lambda (&optional w) (setq deleted (or w t))))
+                  ;; nil for this frame, a window when asked across frames.
+                  (cons 'get-buffer-window
+                        (lambda (&optional _buf all-frames)
+                          (and all-frames 'other-window)))
+                  (cons 'window-frame (lambda (&rest _) 'other-frame))
+                  (cons 'select-frame-set-input-focus
+                        (lambda (f) (setq focused f)))
+                  (cons 'select-window (lambda (w &rest _) (setq selected w))))
+          (claude-client-toggle))
+        (check "toggle-other-frame-raises" focused 'other-frame)
+        (check "toggle-other-frame-selects-window" selected 'other-window)
+        (check "toggle-other-frame-does-not-hide" deleted nil)
+        (check "toggle-other-frame-does-not-redisplay" shown nil))
+    (let ((kill-buffer-query-functions nil))
+      (when (and buf (buffer-live-p buf)) (kill-buffer buf)))))
+
+;; A split window is simply deleted.
+(let ((deleted nil) (iconified nil))
+  (claude-test--with-stubs
+      (list (cons 'delete-window (lambda (&optional w) (setq deleted (or w t))))
+            (cons 'iconify-frame (lambda (f) (setq iconified f))))
+    (claude-client--hide-window 'a-window))
+  (check "hide-window-deletes" deleted 'a-window)
+  (check "hide-window-spares-frame" iconified nil))
+
+;; A conversation alone on its own frame would trip `delete-window''s
+;; sole-window error, so the frame is iconified instead.
+(let ((iconified nil))
+  (claude-test--with-stubs
+      (list (cons 'delete-window
+                  (lambda (&optional _w) (error "Attempt to delete minibuffer or sole ordinary window")))
+            (cons 'window-frame (lambda (&rest _) 'lone-frame))
+            (cons 'iconify-frame (lambda (f) (setq iconified f))))
+    (claude-client--hide-window 'lone-window))
+  (check "hide-sole-window-iconifies" iconified 'lone-frame))
 
 ;; Toggle is project-scoped: another project's conversation is not a
 ;; candidate, so toggling in an empty project starts a new one.

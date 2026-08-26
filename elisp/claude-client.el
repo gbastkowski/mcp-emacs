@@ -895,19 +895,40 @@ the sole buffer is returned without prompting."
     (when-let* ((buf (claude-client--pick bufs "Switch to conversation: ")))
       (claude-client--display buf))))
 
+(defun claude-client--hide-window (window)
+  "Hide WINDOW, or its whole frame when it is that frame's only window.
+`delete-window' signals on a frame's sole window, and a conversation
+given its own frame is a reasonable thing to have done, so iconify that
+frame instead of refusing to toggle."
+  (condition-case nil
+      (delete-window window)
+    ;; The sole-window case is reported as a plain `error', so it cannot be
+    ;; caught by type; trying and falling back beats predicting it.
+    (error (iconify-frame (window-frame window)))))
+
 ;;;###autoload
 (defun claude-client-toggle ()
   "Toggle a conversation window for the current project.
-With no conversation, start one.  With one, hide it when visible or show
-it otherwise.  With several, prompt for which to toggle.  Mirrors
-`mcp-emacs-run-toggle', scoped to this project rather than frame-wide so
-it does not reach past the project you are working in."
+With no conversation, start one.  With several, prompt for which to
+toggle.  Mirrors `mcp-emacs-run-toggle', scoped to this project rather
+than frame-wide so it does not reach past the project you are working in.
+
+Frame-aware: a conversation shown on this frame is hidden, but one that
+is only on another frame is raised rather than hidden -- asking to toggle
+something you cannot see means you want to see it, and deleting a window
+on a frame you are not looking at is worse than surprising."
   (interactive)
   (let* ((bufs (claude-client--project-buffers (claude-client--project-root)))
          (buf (claude-client--pick bufs "Toggle conversation: ")))
     (cond
      ((null buf) (call-interactively #'claude-client-start))
-     ((get-buffer-window buf) (delete-window (get-buffer-window buf)))
+     ;; This frame: hide it.
+     ((get-buffer-window buf) (claude-client--hide-window (get-buffer-window buf)))
+     ;; Another frame only: raise that frame and select the window there.
+     ((get-buffer-window buf t)
+      (let ((window (get-buffer-window buf t)))
+        (select-frame-set-input-focus (window-frame window))
+        (select-window window)))
      (t (claude-client--display buf)))))
 
 (defun claude-client-quit ()
