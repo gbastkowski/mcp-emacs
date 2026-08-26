@@ -98,17 +98,43 @@
          (file (orgspec-commands--change-file id)))
     (format "%s -> %s" name (orgspec-lifecycle-advance file name role))))
 
-(defun orgspec-mcp--agenda (_args)
+(defun orgspec-mcp--agenda (&optional _args)
   (orgspec-agenda-install (orgspec-commands--changes-dir))
   (format "registered agenda command under key %S" orgspec-agenda-key))
 
-;;;; Tool descriptors
+;;;; Project routing
+;;
+;; A caller reaching these tools over HTTP cannot see, let alone choose,
+;; which buffer the target Emacs is visiting, so leaving the project to
+;; `project-current' makes the acted-on repository unspecifiable from the
+;; caller's side.  Every tool therefore accepts an optional `root'.
+
+(defconst orgspec-mcp--root-description
+  "Absolute path of the project to act on. Omit to use the Emacs session's current project."
+  "Shared description for the `root' argument of every orgspec tool.")
+
+(defun orgspec-mcp--with-root (handler)
+  "Return HANDLER wrapped to honour the `root' argument in its args alist.
+Binds `orgspec-project-root', so every orgspec path the handler resolves
+belongs to the requested project rather than to whichever buffer the
+Emacs session happens to be in."
+  (lambda (args)
+    (let ((orgspec-project-root (or (alist-get 'root args)
+                                    orgspec-project-root)))
+      (funcall handler args))))
+
+(defun orgspec-mcp--root-prop ()
+  "Return the `root' property pair for a tool schema."
+  (list "root" (mcp-emacs-server--prop
+                "string" orgspec-mcp--root-description)))
 
 (defun orgspec-mcp--id-schema (desc)
   (mcp-emacs-server--obj
    "type" "object"
-   "properties" (mcp-emacs-server--obj
-                 "id" (mcp-emacs-server--prop "string" desc))
+   "properties" (apply #'mcp-emacs-server--obj
+                       (append
+                        (list "id" (mcp-emacs-server--prop "string" desc))
+                        (orgspec-mcp--root-prop)))
    "required" (vector "id")))
 
 (defconst orgspec-mcp--tools
@@ -121,9 +147,11 @@
          :description "Report task-checkbox completion for one change or all active changes"
          :schema (mcp-emacs-server--obj
                   "type" "object"
-                  "properties" (mcp-emacs-server--obj
-                                "id" (mcp-emacs-server--prop
-                                      "string" "Change id, or omit for all active changes")))
+                  "properties" (apply #'mcp-emacs-server--obj
+                                      (append
+                                       (list "id" (mcp-emacs-server--prop
+                                                   "string" "Change id, or omit for all active changes"))
+                                       (orgspec-mcp--root-prop))))
          :handler #'orgspec-mcp--status)
    (list :name "orgspec_parse"
          :description "Read a change's delta as structured data (per-requirement op/area/scenarios)"
@@ -145,30 +173,54 @@
          :description "Set a delta requirement's lifecycle TODO keyword (active/blocked/removed/done)"
          :schema (mcp-emacs-server--obj
                   "type" "object"
-                  "properties" (mcp-emacs-server--obj
-                                "id" (mcp-emacs-server--prop "string" "Change id")
-                                "requirement" (mcp-emacs-server--prop
-                                               "string" "Exact requirement headline text")
-                                "role" (mcp-emacs-server--obj
-                                        "type" "string"
-                                        "description" "Lifecycle role"
-                                        "enum" (vector "active" "blocked" "removed" "done")))
+                  "properties" (apply #'mcp-emacs-server--obj
+                                      (append
+                                       (list "id" (mcp-emacs-server--prop "string" "Change id")
+                                             "requirement" (mcp-emacs-server--prop
+                                                            "string" "Exact requirement headline text")
+                                             "role" (mcp-emacs-server--obj
+                                                     "type" "string"
+                                                     "description" "Lifecycle role"
+                                                     "enum" (vector "active" "blocked" "removed" "done")))
+                                       (orgspec-mcp--root-prop)))
                   "required" (vector "id" "requirement" "role"))
          :handler #'orgspec-mcp--advance)
    (list :name "orgspec_agenda"
          :description "Register the orgspec in-flight-requirements agenda custom command"
-         :schema (mcp-emacs-server--no-args)
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (apply #'mcp-emacs-server--obj
+                                      (orgspec-mcp--root-prop)))
          :handler #'orgspec-mcp--agenda))
   "orgspec MCP tool descriptors, registered onto the server's extra-tools.")
 
 ;;;; Registration
+
+(defun orgspec-mcp--routed-tools ()
+  "Return `orgspec-mcp--tools' with every handler wrapped for `root'.
+Wrapping once here, rather than in each handler, keeps the routing off
+the handlers and applies to any tool added later."
+  (mapcar (lambda (tl)
+            (let ((copy (copy-sequence tl)))
+              (plist-put copy :handler
+                         (orgspec-mcp--with-root (plist-get tl :handler)))))
+          orgspec-mcp--tools))
+
+(defun orgspec-mcp-call (name args)
+  "Invoke orgspec tool NAME with ARGS through its registered handler.
+Goes via `orgspec-mcp--routed-tools', so `root' routing applies exactly
+as it does for a request arriving at the server."
+  (let ((tool (seq-find (lambda (tl) (equal (plist-get tl :name) name))
+                        (orgspec-mcp--routed-tools))))
+    (unless tool (error "No orgspec tool named %s" name))
+    (funcall (plist-get tool :handler) args)))
 
 (defun orgspec-mcp-register ()
   "Register the orgspec tools onto `mcp-emacs-server-extra-tools'.
 Idempotent: replaces any previously registered orgspec descriptors."
   (let ((names (mapcar (lambda (tl) (plist-get tl :name)) orgspec-mcp--tools)))
     (setq mcp-emacs-server-extra-tools
-          (append orgspec-mcp--tools
+          (append (orgspec-mcp--routed-tools)
                   (seq-remove (lambda (tl) (member (plist-get tl :name) names))
                               mcp-emacs-server-extra-tools)))))
 
