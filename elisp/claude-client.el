@@ -875,18 +875,40 @@ marker for whether the model is working."
                             "\n"))
     (message "No Claude conversations")))
 
+(defun claude-client--pick (bufs &optional prompt)
+  "Return one buffer from BUFS, asking with PROMPT when there is a choice.
+Nil when BUFS is empty, so callers can decide what \"nothing yet\" means;
+the sole buffer is returned without prompting."
+  (cond
+   ((null bufs) nil)
+   ((= (length bufs) 1) (car bufs))
+   (t (let* ((alist (mapcar (lambda (b) (cons (claude-client--label b) b)) bufs))
+             (pick (completing-read (or prompt "Conversation: ") alist nil t)))
+        (cdr (assoc pick alist))))))
+
 ;;;###autoload
 (defun claude-client-switch ()
   "Choose a live Claude conversation and display it."
   (interactive)
   (let ((bufs (claude-client--buffers)))
     (unless bufs (user-error "No Claude conversations"))
-    (if (= (length bufs) 1)
-        (claude-client--display (car bufs))
-      (let* ((alist (mapcar (lambda (b) (cons (claude-client--label b) b)) bufs))
-             (pick (completing-read "Conversation: " alist nil t)))
-        (when-let* ((buf (cdr (assoc pick alist))))
-          (claude-client--display buf))))))
+    (when-let* ((buf (claude-client--pick bufs "Switch to conversation: ")))
+      (claude-client--display buf))))
+
+;;;###autoload
+(defun claude-client-toggle ()
+  "Toggle a conversation window for the current project.
+With no conversation, start one.  With one, hide it when visible or show
+it otherwise.  With several, prompt for which to toggle.  Mirrors
+`mcp-emacs-run-toggle', scoped to this project rather than frame-wide so
+it does not reach past the project you are working in."
+  (interactive)
+  (let* ((bufs (claude-client--project-buffers (claude-client--project-root)))
+         (buf (claude-client--pick bufs "Toggle conversation: ")))
+    (cond
+     ((null buf) (call-interactively #'claude-client-start))
+     ((get-buffer-window buf) (delete-window (get-buffer-window buf)))
+     (t (claude-client--display buf)))))
 
 (defun claude-client-quit ()
   "Kill the CLI subprocess for this buffer."

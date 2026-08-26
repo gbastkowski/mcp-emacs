@@ -1098,6 +1098,57 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
     (let ((kill-buffer-query-functions nil))
       (when (and buf (buffer-live-p buf)) (kill-buffer buf)))))
 
+;; Toggle: no conversation starts one, a visible one is hidden, a hidden
+;; one is shown.
+(let ((buf nil) (started nil) (shown nil) (deleted nil))
+  (unwind-protect
+      (claude-test--with-stubs
+          (list (cons 'claude-client--project-root (lambda () "/tmp/proj-a/"))
+                (cons 'claude-client-start (lambda (&rest _) (interactive) (setq started t)))
+                (cons 'claude-client--display (lambda (b) (setq shown b)))
+                (cons 'delete-window (lambda (&optional w) (setq deleted (or w t)))))
+        ;; Nothing yet: toggle starts a conversation.
+        (claude-client-toggle)
+        (check "toggle-with-none-starts" started t)
+        ;; With one hidden conversation: shown, not started again.
+        (setq buf (get-buffer-create "*claude-client:proj-a:1*")
+              started nil)
+        (with-current-buffer buf
+          (claude-client-mode)
+          (setq default-directory "/tmp/proj-a/"))
+        (claude-test--with-stubs
+            (list (cons 'get-buffer-window (lambda (&rest _) nil)))
+          (claude-client-toggle))
+        (check "toggle-hidden-shows" shown buf)
+        (check "toggle-hidden-does-not-start" started nil)
+        ;; Visible: the window is deleted rather than re-shown.
+        (setq shown nil)
+        (claude-test--with-stubs
+            (list (cons 'get-buffer-window (lambda (&rest _) 'fake-window)))
+          (claude-client-toggle))
+        (check "toggle-visible-hides" deleted 'fake-window)
+        (check "toggle-visible-does-not-show" shown nil))
+    (let ((kill-buffer-query-functions nil))
+      (when (and buf (buffer-live-p buf)) (kill-buffer buf)))))
+
+;; Toggle is project-scoped: another project's conversation is not a
+;; candidate, so toggling in an empty project starts a new one.
+(let ((other nil) (started nil))
+  (unwind-protect
+      (progn
+        (setq other (get-buffer-create "*claude-client:proj-b:1*"))
+        (with-current-buffer other
+          (claude-client-mode)
+          (setq default-directory "/tmp/proj-b/"))
+        (claude-test--with-stubs
+            (list (cons 'claude-client--project-root (lambda () "/tmp/proj-a/"))
+                  (cons 'claude-client-start (lambda (&rest _) (interactive) (setq started t)))
+                  (cons 'claude-client--display #'ignore))
+          (claude-client-toggle))
+        (check "toggle-ignores-other-project" started t))
+    (let ((kill-buffer-query-functions nil))
+      (when (and other (buffer-live-p other)) (kill-buffer other)))))
+
 ;; The single-letter keys.  Evil is not installed in batch, so this only
 ;; pins the plain-Emacs map and the evil-registration data; the evil path
 ;; itself needs a live evil (see `claude-client--setup-evil').
