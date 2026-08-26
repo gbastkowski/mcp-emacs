@@ -41,3 +41,81 @@ GIVEN the subscriber migration
 WHEN the existing claude-client tests run
 THEN they pass without modification
 
+* Conversations are per project, one buffer each
+The Claude client SHALL give each conversation its own buffer, named
+~*claude-client:<project>:<n>*~, and MUST NOT disturb any other
+conversation's process when a new one starts.  A buffer's project MUST be
+read from its own ~default-directory~, pinned when the buffer is created,
+rather than by re-running project detection inside it; per-project numbers
+MUST refill the lowest free slot.  Starting from inside a conversation
+buffer MUST restart that conversation in place rather than allocating
+another.
+** Starting in another project spares the first
+- GIVEN a live conversation for project A
+- WHEN a conversation is started while visiting project B
+- THEN a second buffer is created for B and A's process is left running
+** Numbering is per project
+- GIVEN project A already has conversations 1 and 2
+- WHEN a third is started in project A
+- THEN it is numbered 3, while project B's first is still numbered 1
+** A killed conversation frees its number
+- GIVEN conversations 1 and 2 exist and 1 is killed
+- WHEN a new conversation is started in that project
+- THEN it reuses number 1 rather than taking 3
+** Restart in place from inside a conversation
+- GIVEN point is in a conversation buffer whose turn has ended
+- WHEN a new conversation is started from there
+- THEN the same buffer is reused and no additional buffer appears
+
+* Conversations can be listed and reached
+The Claude client SHALL provide commands to list the live conversations and
+to switch to one, and a toggle that MUST be frame-aware: a conversation
+shown on the selected frame is hidden, one displayed only on another frame
+is raised rather than hidden, and when the project has no conversation the
+toggle MUST start one.  Hiding a conversation that is the sole ordinary
+window on its frame MUST iconify that frame rather than signalling.
+** Toggling with no conversation starts one
+- GIVEN the current project has no conversation
+- WHEN the toggle runs
+- THEN a conversation is started
+** A conversation on this frame is hidden
+- GIVEN a conversation is displayed on the selected frame
+- WHEN the toggle runs
+- THEN its window is hidden and the buffer is not re-displayed
+** A conversation on another frame is raised
+- GIVEN a conversation is displayed only on a frame other than the selected one
+- WHEN the toggle runs
+- THEN that frame is raised and its window selected, rather than hidden or
+  displayed a second time
+** A conversation alone on its frame is iconified
+- GIVEN a conversation is the sole ordinary window on its own frame
+- WHEN it is hidden
+- THEN that frame is iconified instead of ~delete-window~ signalling
+** The toggle stays within the project
+- GIVEN another project has a conversation and the current one has none
+- WHEN the toggle runs
+- THEN the other project's conversation is not a candidate and a new
+  conversation is started
+
+* The conversation keys work under evil
+The conversation buffer's single-letter commands SHALL be reachable in an
+evil configuration: they MUST be registered for evil's normal and motion
+states, because evil's state maps take precedence over a major mode's own
+keymap, and the mode MUST be excluded from ~evil-snipe~, whose ~s~ binding
+lives in a minor-mode map that outranks even an evil-registered major-mode
+map.  Evil MUST remain a soft dependency, so the package still
+byte-compiles and works where evil is absent.
+** Letter keys reach their commands in normal state
+- GIVEN an evil configuration with evil-snipe active
+- WHEN the conversation buffer is in normal state
+- THEN ~s~ sends a prompt and ~n~ ~i~ ~r~ ~k~ ~g~ reach their own commands
+  rather than evil's
+** The shared C-c vocabulary keeps working
+- GIVEN either a plain or an evil configuration
+- WHEN the C-c-prefixed keys inherited from ~agent-backend-mode~ are used
+- THEN they reach the shared commands
+** Evil stays optional
+- GIVEN an Emacs without evil installed
+- WHEN the package is byte-compiled and loaded
+- THEN it compiles without warnings and the plain keymap still binds the
+  letter keys

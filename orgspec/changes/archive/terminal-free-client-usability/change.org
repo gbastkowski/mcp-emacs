@@ -1,0 +1,170 @@
+#+TITLE: terminal-free-client-usability
+
+* Intent
+The terminal-free Claude client (~claude-client.el~) is the first-class path
+now that ~agent-backend~ dispatches to it, but exercising it interactively
+turned up three defects that made it unusable next to the eat runner it is
+meant to replace.
+
+1. *One conversation per Emacs, and it destroyed the others.*
+   ~claude-client-start~ hardcoded the buffer name ~*claude-client*~, so
+   there was exactly one conversation frame-wide.  Worse than a missing
+   feature: starting a conversation in project B reused that buffer and ran
+   ~delete-process~ on project A's live CLI.  The guard above it only refused
+   while a turn was in flight, so an *idle* conversation was discarded with no
+   prompt — and any ediff it was blocked on was orphaned, left waiting for a
+   human whose answer no longer went anywhere.
+
+2. *No way to see or reach a conversation.*  With multiple conversations
+   possible there was nothing to enumerate them, and no equivalent of
+   ~mcp-emacs-run-toggle~ — the runner's most-used window verb.
+
+3. *Every single-letter key was dead.*  ~claude-client-mode-map~ bound
+   ~s n i r k g~, but evil's state maps take precedence over a major mode's
+   own keymap, so ~s~ ran ~evil-snipe-s~, ~k~ moved the cursor up, and ~i~/~r~
+   hit Doom's read-only no-ops.  Only the ~C-c~ vocabulary inherited from
+   ~agent-backend-mode~ was reachable.
+
+This change is a *backfill*: the work already shipped (commits ~3e18381~,
+~d1971b8~, ~7cf1dc8~, ~7e3fa8f~) and the spec is being brought up to it, so
+~specs/claude-client.org~ stops describing a client that no longer exists.
+
+* Scope
+In scope: ~claude-client.el~ only — conversation buffer naming and allocation,
+the list/switch/toggle window verbs, and the evil key registration.
+
+Out of scope, deliberately:
+- The ~agent-backend~ protocol.  Adding session generics (create/switch/list)
+  and a selection-sharing generic stays with issue #56; these are
+  claude-client's own commands for now, bound directly.
+- ~opencode-client~, which is already multi-session under its own scheme.
+- Deleting ~mcp-emacs-run.el~, also #56.
+- The leader bindings themselves, which live in the dotfiles Doom module, not
+  in this package.
+
+* Approach
+Mirror the eat runner wherever it already solved the same problem, so the two
+runners stay legible side by side.
+
+- Name buffers ~*claude-client:<project>:<n>*~, the runner's
+  ~*claude:<project>:<n>*~ scheme with this client's own prefix.  Allocate a
+  fresh buffer per start; called from *inside* a conversation buffer (the ~g~
+  binding) restart that one in place instead of piling up buffers.
+- Derive a buffer's project from its own ~default-directory~, pinned at
+  creation, rather than re-running project detection inside it.  Detection can
+  resolve to a different root than the buffer was created for, which
+  mis-scopes the numbering.
+- Number per project, refilling the lowest free slot so numbers stay compact.
+- Add ~list~/~switch~/~toggle~, factoring the "pick one of N buffers" step so
+  switch and toggle share it.
+- Make ~toggle~ frame-aware, and asymmetric on purpose: hide a conversation on
+  this frame, but *raise* one that is only on another frame.  Uniform "hide if
+  visible anywhere" would delete a window on a frame the user is not looking
+  at and leave them with nothing new.
+- Register the letter keys via ~evil-define-key*~ for normal and motion
+  states, and add the mode to ~evil-snipe-disabled-modes~ — ~s~ loses to
+  snipe's *minor*-mode map even after evil registration.  Keep evil a soft
+  dependency behind ~with-eval-after-load~ plus ~fboundp~/~boundp~ guards: the
+  package must byte-compile and work in plain Emacs, and CI has no evil.
+
+* Tasks
+- [X] Name conversation buffers per project and allocate one per start
+- [X] Read a buffer's project from its own ~default-directory~, pinned at creation
+- [X] Refill the lowest free per-project number
+- [X] Restart in place when ~start~ runs inside a conversation buffer
+- [X] Add ~claude-client-list~ and ~claude-client-switch~
+- [X] Add a frame-aware ~claude-client-toggle~, raising an off-frame conversation
+- [X] Iconify rather than signal when hiding a frame's sole window
+- [X] Register the single-letter keys for evil normal and motion states
+- [X] Add ~claude-client-mode~ to ~evil-snipe-disabled-modes~
+- [X] Keep evil optional: byte-compiles clean with ~-Q~, CI has no evil
+- [X] Tests: naming, numbering, cross-project isolation, toggle branches, keymap
+
+* Delta
+** Conversations are per project, one buffer each                :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The Claude client SHALL give each conversation its own buffer, named
+~*claude-client:<project>:<n>*~, and MUST NOT disturb any other
+conversation's process when a new one starts.  A buffer's project MUST be
+read from its own ~default-directory~, pinned when the buffer is created,
+rather than by re-running project detection inside it; per-project numbers
+MUST refill the lowest free slot.  Starting from inside a conversation
+buffer MUST restart that conversation in place rather than allocating
+another.
+*** Starting in another project spares the first
+- GIVEN a live conversation for project A
+- WHEN a conversation is started while visiting project B
+- THEN a second buffer is created for B and A's process is left running
+*** Numbering is per project
+- GIVEN project A already has conversations 1 and 2
+- WHEN a third is started in project A
+- THEN it is numbered 3, while project B's first is still numbered 1
+*** A killed conversation frees its number
+- GIVEN conversations 1 and 2 exist and 1 is killed
+- WHEN a new conversation is started in that project
+- THEN it reuses number 1 rather than taking 3
+*** Restart in place from inside a conversation
+- GIVEN point is in a conversation buffer whose turn has ended
+- WHEN a new conversation is started from there
+- THEN the same buffer is reused and no additional buffer appears
+
+** Conversations can be listed and reached                       :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The Claude client SHALL provide commands to list the live conversations and
+to switch to one, and a toggle that MUST be frame-aware: a conversation
+shown on the selected frame is hidden, one displayed only on another frame
+is raised rather than hidden, and when the project has no conversation the
+toggle MUST start one.  Hiding a conversation that is the sole ordinary
+window on its frame MUST iconify that frame rather than signalling.
+*** Toggling with no conversation starts one
+- GIVEN the current project has no conversation
+- WHEN the toggle runs
+- THEN a conversation is started
+*** A conversation on this frame is hidden
+- GIVEN a conversation is displayed on the selected frame
+- WHEN the toggle runs
+- THEN its window is hidden and the buffer is not re-displayed
+*** A conversation on another frame is raised
+- GIVEN a conversation is displayed only on a frame other than the selected one
+- WHEN the toggle runs
+- THEN that frame is raised and its window selected, rather than hidden or
+  displayed a second time
+*** A conversation alone on its frame is iconified
+- GIVEN a conversation is the sole ordinary window on its own frame
+- WHEN it is hidden
+- THEN that frame is iconified instead of ~delete-window~ signalling
+*** The toggle stays within the project
+- GIVEN another project has a conversation and the current one has none
+- WHEN the toggle runs
+- THEN the other project's conversation is not a candidate and a new
+  conversation is started
+
+** The conversation keys work under evil                         :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The conversation buffer's single-letter commands SHALL be reachable in an
+evil configuration: they MUST be registered for evil's normal and motion
+states, because evil's state maps take precedence over a major mode's own
+keymap, and the mode MUST be excluded from ~evil-snipe~, whose ~s~ binding
+lives in a minor-mode map that outranks even an evil-registered major-mode
+map.  Evil MUST remain a soft dependency, so the package still
+byte-compiles and works where evil is absent.
+*** Letter keys reach their commands in normal state
+- GIVEN an evil configuration with evil-snipe active
+- WHEN the conversation buffer is in normal state
+- THEN ~s~ sends a prompt and ~n~ ~i~ ~r~ ~k~ ~g~ reach their own commands
+  rather than evil's
+*** The shared C-c vocabulary keeps working
+- GIVEN either a plain or an evil configuration
+- WHEN the C-c-prefixed keys inherited from ~agent-backend-mode~ are used
+- THEN they reach the shared commands
+*** Evil stays optional
+- GIVEN an Emacs without evil installed
+- WHEN the package is byte-compiled and loaded
+- THEN it compiles without warnings and the plain keymap still binds the
+  letter keys
