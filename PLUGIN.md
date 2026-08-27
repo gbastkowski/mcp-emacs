@@ -41,6 +41,7 @@ claude --plugin-dir /path/to/mcp-emacs
   - `edit-at-point` — edit the buffer/selection the user is actually looking at.
   - `review-diagnostics` — fix code problems the checker reports.
   - `diagnose-emacs` — troubleshoot the Emacs/tooling setup itself.
+  - `report-issue` — file a bug or feature request about mcp-emacs itself.
 
 ## opencode
 

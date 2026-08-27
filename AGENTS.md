@@ -2,13 +2,24 @@
 
 ## Project Overview
 
-**Read `README.md` first** for the project overview, feature list, install,
-and the architecture diagram. This is a pure Emacs Lisp MCP server that runs
-inside the live Emacs session over HTTP. This file only covers conventions and
-gotchas that matter when changing the code.
+**Read `README.md` first** for the project overview, the map of parts, install,
+and the architecture diagram. This file only covers conventions and gotchas that
+matter when changing the code.
 
-Two files: `elisp/mcp-emacs.el` (the `mcp-emacs-*` helpers) and
-`elisp/mcp-emacs-server.el` (the HTTP server, registries, dispatch, lifecycle).
+Everything is Emacs Lisp under `elisp/`. Four groups:
+
+- **MCP server** — `mcp-emacs.el` (the `mcp-emacs-*` helpers) and
+  `mcp-emacs-server.el` (HTTP server, registries, dispatch, lifecycle). Details
+  in `docs/tools.md`.
+- **Agent clients** — `agent-backend.el` (shared EIEIO base + event
+  vocabulary), `claude-client.el`, `opencode-client.el`, `mcp-emacs-run*.el`,
+  `mcp-emacs-ide.el`, `mcp-emacs-remote.el`. Details in `docs/clients.md`.
+- **orgspec** — `orgspec*.el`, an org-native spec workflow that is effectively a
+  second project sharing the same host. Details in `docs/orgspec.md`.
+- **Misc** — `mcp-emacs-report.el` (tooling-issue filing).
+
+`docs/reference.md` is a full guided tour of the source; it is regenerated
+deliberately in a separate pass, so don't hand-edit it alongside code changes.
 
 ## Architecture Decisions
 
