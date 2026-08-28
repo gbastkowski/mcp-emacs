@@ -79,7 +79,13 @@
     (setq major-mode 'claude-client-mode)
     (setq-local claude-client--turn-active nil)
     (setq-local claude-client--process nil))
-  (cl-letf (((symbol-function 'claude-client-mode) #'ignore))
+  ;; The mode only has to be fbound for `--mode-match-p' to consult it, and
+  ;; the stub must be a lambda rather than a symbol like #'ignore: Emacs
+  ;; 29's `provided-mode-derived-p' treats a symbol-valued function as an
+  ;; alias and follows it, so `derived-mode-p' would compare against
+  ;; `ignore' and the buffer would not match.  Emacs 30 dropped that branch,
+  ;; which is why #'ignore passed locally and failed on CI's 29.4.
+  (cl-letf (((symbol-function 'claude-client-mode) (lambda () nil)))
     (let ((e (entry-for "*claude-client*")))
       (check "unnumbered session is listed" (and e t) t)
       (check "unnumbered session backend" (plist-get e :label) "claude")
@@ -177,6 +183,18 @@
 
 ;;;; Actions
 
+(defmacro with-row-at-point (entry &rest body)
+  "Run BODY in a buffer whose point sits on a row carrying ENTRY as its id.
+`tabulated-list-get-id' is a `defsubst', so a `cl-letf' on its symbol
+function is inlined away when this file's callee is byte-compiled and the
+stub never fires.  Put the real text property in a real buffer instead,
+which is what the compiled and uncompiled paths both read."
+  (declare (indent 1))
+  `(with-temp-buffer
+     (insert (propertize "row\n" 'tabulated-list-id ,entry))
+     (goto-char (point-min))
+     ,@body))
+
 ;; Interrupting a session that is not mid-turn is refused rather than
 ;; attempted.
 (with-session-buffers '("*claude-client:p:1*")
@@ -184,7 +202,7 @@
     (setq-local claude-client--turn-active nil)
     (setq-local claude-client--process nil))
   (let ((entry (entry-for "*claude-client:p:1*")))
-    (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () entry)))
+    (with-row-at-point entry
       (check "interrupt refuses when idle"
              (condition-case err
                  (progn (agent-session-overview-interrupt-session) 'no-error)
@@ -195,7 +213,7 @@
 (let ((entry (list :buffer (generate-new-buffer "*overview-dead*")
                    :backend 'claude-client :state 'idle)))
   (kill-buffer (plist-get entry :buffer))
-  (cl-letf (((symbol-function 'tabulated-list-get-id) (lambda () entry)))
+  (with-row-at-point entry
     ;; `user-error' curls the apostrophe, so match on substance not glyph.
     (check "dead buffer is reported"
            (condition-case err
