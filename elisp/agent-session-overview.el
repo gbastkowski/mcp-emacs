@@ -320,6 +320,29 @@ which is what fits in a mode line."
   "Keymap for `agent-session-overview-mode'.
 `g' (revert) and `q' (bury) come from `tabulated-list-mode'.")
 
+(declare-function evil-define-key* "evil-core"
+                  (state keymap key def &rest bindings))
+
+(defun agent-session-overview--setup-evil ()
+  "Re-register this mode's keys in evil's normal and motion states.
+Evil's state maps outrank a major mode's own keymap, so without this
+every binding here is dead in a Doom-style config: `?' searches
+backward, `k' moves up a line, `i' enters insert state, and `g' is a
+prefix map.  Evil is not a dependency (this must work in plain Emacs),
+so it is called from an `evil-mode' load hook and no-ops when absent.
+
+`g' and `q' are deliberately left to evil and `tabulated-list-mode':
+`g' is already a prefix whose `g r' reverts, and `q' quits the window."
+  (when (fboundp 'evil-define-key*)
+    (pcase-dolist (`(,key ,_) agent-session-overview--help)
+      (unless (member key '("g" "q"))
+        (when-let* ((cmd (lookup-key agent-session-overview-mode-map (kbd key))))
+          (evil-define-key* '(normal motion) agent-session-overview-mode-map
+                            (kbd key) cmd))))))
+
+(with-eval-after-load 'evil
+  (agent-session-overview--setup-evil))
+
 (define-derived-mode agent-session-overview-mode tabulated-list-mode "ai-sessions"
   "Major mode listing every live AI session across all backends."
   (setq tabulated-list-format

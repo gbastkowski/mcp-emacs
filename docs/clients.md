@@ -46,6 +46,10 @@ fuller help buffer that also explains the state column. Both are generated from
 one list of bindings, so a new action cannot be documented in one place and
 missing from the other.
 
+Under evil, the single-letter keys are re-registered in normal and motion states
+(they would otherwise be shadowed — `?` searches backward, `k` moves up). `g`
+and `q` are left alone: `g r` reverts, as elsewhere in evil.
+
 **State is only as precise as the backend allows.** `claude-client` publishes
 turn events and tracks a turn flag, so its rows read `working` / `idle` /
 `finished`. The eat runner is a TUI with no turn events, and opencode keeps no

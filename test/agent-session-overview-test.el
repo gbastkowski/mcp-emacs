@@ -259,6 +259,36 @@
     (check "hint renders the keys"
            (and (string-match-p "RET" hint) (string-match-p "\\?" hint) t) t)))
 
+;;;; Evil integration
+
+;; Evil's state maps outrank a major mode's keymap, so the single-letter
+;; keys must be re-registered per state or they are all dead in a
+;; Doom-style config.  Evil is absent in batch, so record what the setup
+;; would bind by capturing `evil-define-key*' calls.
+(let (registered)
+  (cl-letf (((symbol-function 'evil-define-key*)
+             (lambda (states _map key def &rest _)
+               (push (list states (key-description key) def) registered))))
+    (agent-session-overview--setup-evil)
+    (let ((keys (mapcar #'cadr registered)))
+      (check "evil gets RET" (and (member "RET" keys) t) t)
+      (check "evil gets k" (and (member "k" keys) t) t)
+      (check "evil gets i" (and (member "i" keys) t) t)
+      (check "evil gets ?" (and (member "?" keys) t) t)
+      ;; `g' is already an evil prefix whose `g r' reverts, and `q'
+      ;; quits the window -- taking either would break a convention.
+      (check "evil keeps g" (member "g" keys) nil)
+      (check "evil keeps q" (member "q" keys) nil))
+    (check "evil bindings target normal and motion"
+           (seq-every-p (lambda (r) (equal (car r) '(normal motion))) registered) t)
+    (check "evil bindings are commands"
+           (seq-every-p (lambda (r) (commandp (nth 2 r))) registered) t)))
+
+;; Absent evil, setup must be a silent no-op rather than an error.
+(cl-letf (((symbol-function 'fboundp) (lambda (s) (not (eq s 'evil-define-key*)))))
+  (check "no-op without evil"
+         (progn (agent-session-overview--setup-evil) 'survived) 'survived))
+
 (princ (format "\n%s\n" (if (zerop failures) "ALL PASS" (format "%d FAILURE(S)" failures))))
 (kill-emacs (if (zerop failures) 0 1))
 ;;; agent-session-overview-test.el ends here
