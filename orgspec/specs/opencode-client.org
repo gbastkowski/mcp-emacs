@@ -54,3 +54,168 @@ GIVEN no native resume picker
 WHEN agent-backend-resume is called
 THEN a user-error names the alternative (switch-session)
 
+* The client connects to a running opencode server
+The system SHALL connect to an ~opencode serve~ HTTP endpoint at a
+configurable host and port, verify it with a health check, and support an
+optional server password for HTTP basic auth.
+The password MAY be configured directly or resolved by running a configured
+shell command and using its trimmed standard output, so it can come from a
+secret store.
+When starting a server on demand, the client SHALL, if a launchd label is
+configured, start it by kickstarting that launchd agent (so the server is
+owned by launchd and outlives Emacs); otherwise it MAY start the server as a
+child process.
+** A healthy server is ready for requests
+- GIVEN a reachable opencode server
+- WHEN the client connects
+- THEN the health check succeeds and the client is ready to issue requests
+** An unreachable server errors clearly
+- GIVEN a host and port the client cannot reach
+- WHEN the client connects
+- THEN a clear connection error is reported rather than an opaque failure
+** A direct password authenticates
+- GIVEN a password configured directly
+- WHEN the client issues a request
+- THEN it authenticates with HTTP basic auth using that value
+** A password command authenticates
+- GIVEN no direct password but a configured password command
+- WHEN the client issues a request
+- THEN it runs the command and authenticates with its trimmed output
+** No configured password sends no header
+- GIVEN neither a direct password nor a password command
+- WHEN the client issues a request
+- THEN it sends no authorization header
+** An on-demand start prefers launchd
+- GIVEN a configured launchd label
+- WHEN the user starts the server on demand
+- THEN the client kickstarts that launchd agent rather than spawning a child
+  process
+
+* The client manages opencode sessions
+The system SHALL list, create, select, and delete opencode sessions through
+the server API, and track which session is currently active.
+** Sessions are listed with enough detail to choose
+- GIVEN a server with sessions
+- WHEN the user lists them
+- THEN the server's sessions are returned with enough detail to choose one
+** A created session becomes active
+- GIVEN the user creates a new session
+- WHEN it is created on the server
+- THEN it becomes the active session
+** A deleted session is cleared
+- GIVEN the user deletes a session
+- WHEN it is removed on the server
+- THEN if it was active the active session is cleared
+
+* The client sends prompts and can interrupt
+The system SHALL send a user prompt to the active session with a selectable
+delivery mode (steer or queue) and SHALL be able to interrupt a running
+session.
+** A prompt starts streaming
+- GIVEN an active session
+- WHEN the user submits a prompt
+- THEN the client posts it to the server and the response begins streaming
+  into the chat buffer
+** Steer delivery does not queue
+- GIVEN a turn is in progress
+- WHEN the user submits a prompt with steer delivery
+- THEN the client delivers it as a steering message rather than queuing it
+** An interrupt stops the turn
+- GIVEN an active session running a turn
+- WHEN the user interrupts it
+- THEN the client asks the server to stop the running turn
+
+* The conversation renders incrementally from the event stream
+The system SHALL subscribe to the session's Server-Sent Events stream and
+render the conversation incrementally into an Emacs buffer, applying message
+and message-part events (message updated, part updated/removed, and
+text/reasoning/tool/step lifecycle events) as they arrive.
+** Assistant text streams in
+- GIVEN the server emits message-part update events for assistant text
+- WHEN they arrive
+- THEN the chat buffer updates incrementally as the parts arrive, without
+  waiting for the full turn
+** Tool and reasoning activity is visible
+- GIVEN the server emits tool-input or reasoning lifecycle events
+- WHEN they arrive
+- THEN the client reflects that activity in the buffer so the user can see
+  what the agent is doing
+** A lost stream is reported, not hung
+- GIVEN an active event stream
+- WHEN it ends unexpectedly or the server disconnects
+- THEN the client stops rendering cleanly and reports the disconnection rather
+  than hanging
+
+* The client surfaces and answers permission and question requests
+The system SHALL detect opencode permission requests and questions for the
+active session and let the user answer them from Emacs, sending the reply back
+to the server.
+** A permission request is answered
+- GIVEN the server requests permission during a turn, for example to run a
+  tool
+- WHEN the user decides
+- THEN the client presents the request and sends the decision back to the
+  server
+** A question is answered
+- GIVEN the server asks the user a question during a turn
+- WHEN the user replies or rejects
+- THEN the client presents the question and sends the reply back to the server
+
+* The client adds no hard package dependency
+The client SHALL use ~plz~ for HTTP and SSE only when it is available, loaded
+as a soft/optional dependency, so installing mcp-emacs does not require ~plz~.
+** With plz it is used for HTTP and SSE
+- GIVEN an Emacs where ~plz~ is loaded
+- WHEN the client issues requests
+- THEN it uses ~plz~ for HTTP requests and the SSE stream
+** Without plz loading still succeeds
+- GIVEN an Emacs where ~plz~ is not loaded
+- WHEN mcp-emacs is loaded
+- THEN loading succeeds and the client reports that it needs ~plz~ only when a
+  client command is invoked
+
+* The client unwraps the server response envelope
+The opencode server returns most responses wrapped in a ~data~ envelope (and
+list responses alongside a ~cursor~).
+The client SHALL unwrap this envelope before use: when a parsed JSON response
+is a map carrying a ~data~ key, the client SHALL use the value of ~data~;
+otherwise it SHALL use the parsed response unchanged, so flat responses such
+as the health check continue to work.
+** A wrapped object is unwrapped
+- GIVEN a wrapped object response such as a created session ~{"data": {"id":
+  …}}~
+- WHEN the client reads it
+- THEN it uses the inner object, so fields like the session id are read
+  correctly
+** A wrapped list is unwrapped
+- GIVEN a wrapped list response such as ~{"data": [ … ], "cursor": …}~
+- WHEN the client reads it
+- THEN it uses the inner list as the collection
+** A flat response passes through
+- GIVEN a flat object with no ~data~ key, such as the health check
+  ~{"healthy": true}~
+- WHEN the client reads it
+- THEN it uses the response unchanged
+
+* Session history loads when a session is opened
+When the client opens a chat buffer for a session, it SHALL fetch the
+session's existing message history from the server, seed the conversation
+model from it, and render it before subscribing to the live event stream, so
+reconnecting to a persistent session shows the prior conversation rather than
+an empty buffer.
+** Reattaching shows the prior conversation
+- GIVEN a session that already has messages on the server
+- WHEN the client opens it
+- THEN the existing messages are rendered into the chat buffer before any new
+  live events arrive
+** A new session renders empty
+- GIVEN a freshly created session with no messages
+- WHEN the client opens it
+- THEN the buffer renders empty and streaming proceeds normally
+** History parts map to the render model
+- GIVEN history containing a user message with text and an assistant message
+  with text, reasoning, and tool content parts
+- WHEN it is rendered
+- THEN each part is rendered the same way the equivalent live streamed part
+  would be
+

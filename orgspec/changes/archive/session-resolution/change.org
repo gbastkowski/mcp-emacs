@@ -1,0 +1,280 @@
+#+TITLE: session-resolution
+
+* Intent
+The Claude runner keeps a ~mcp-emacs-run--sessions~ hashtable mapping a
+project root to its runner buffer. It is the *only* link between a project
+and its session, and it is volatile: reloading ~mcp-emacs-run.el~,
+restarting Emacs, or any ~clrhash~ wipes it while the live ~*claude:...*~
+buffers survive. After that, send commands fail with "No live runner session
+for this project" even though the buffer is right there on screen.
+
+The buffer name (~*claude:<project>*~) and the buffer's ~default-directory~
+already encode everything needed to find the right session, so the registry
+is redundant state that only creates a class of stale-lookup bugs. It also
+cannot express "there are several sessions, which one?".
+
+~mcp-emacs-run.el~ tracks sessions in ~mcp-emacs-run--sessions~, a
+~root -> buffer~ hashtable, populated by ~--launch~ (~puthash~) and read by
+~--live-buffer~ (~gethash~). Every send command resolves the current project
+root and looks it up. The hashtable is volatile: reload / restart /
+~clrhash~ empties it while ~*claude:<project>*~ buffers stay alive, so sends
+then fail with "No live runner session" despite a visible buffer.
+
+Investigation confirmed each live runner buffer's ~default-directory~ equals
+its project root (e.g. ~*claude:mcp-emacs*~ ->
+~.../gbastkowski/mcp-emacs/~), so the buffer alone carries enough to
+re-derive its project. The registry is redundant.
+
+* Scope
+In scope:
+- *Support multiple concurrent sessions per project.* Rename runner
+  buffers to ~*claude:<project>:<n>*~ where ~<n>~ is a per-project counter
+  (always numbered, starting at 1).
+- *Command model* (BREAKING): drop the plain ~mcp-emacs-run~ command.
+  ~mcp-emacs-run-new~ always launches a fresh next-numbered session;
+  ~mcp-emacs-run-switch~ picks an existing session and displays it.
+- *Remove* the ~mcp-emacs-run--sessions~ registry entirely (~--sessions~,
+  ~puthash~, ~--live-buffer~, and the ~clrhash~/~remhash~ usages).
+- *Resolve the target session live* from the set of live ~*claude:*~
+  buffers each time keys/text are sent, using the buffer's own
+  ~default-directory~ resolved to a project root as the match key.
+- Resolution order (highest priority first), picking with
+  ~completing-read~ whenever a tier still has more than one candidate: 1.
+  same project as the current buffer, *and visible* in a window 2. same
+  project, hidden 3. any project, *visible* (cross-project fallback) 4.
+  any project, hidden
+- Exactly one candidate at the winning tier is used without prompting.
+- *BREAKING* (internal): commands that took a project root and looked it
+  up in the registry now operate on a resolved buffer instead.
+
+Out of scope:
+- The popup window; opencode.
+
+* Approach
+- Buffer naming and numbering: ~mcp-emacs-run--buffer-name~ becomes
+  ~(root n)~ -> ~*claude:<project>:<n>*~. A new helper
+  ~mcp-emacs-run--next-number (root)~ scans live session buffers for that
+  project, parses their ~<n>~, and returns the lowest positive integer not
+  in use (so a killed middle slot is refilled).
+- Candidate discovery: ~mcp-emacs-run--sessions-list~ returns live buffers
+  whose name matches the numbered runner pattern. For each, its project
+  root comes from ~mcp-emacs-run--project-root~ evaluated in that buffer,
+  reusing the existing project resolver against its ~default-directory~.
+- Resolution priority: ~mcp-emacs-run--resolve-session~ builds the
+  candidate list, computes the current buffer's project root once, and
+  partitions into four tiers, taking the first non-empty one; if all are
+  empty it signals a ~user-error~.
+- Resolve-once for multi-keystroke sends: ~--send~ is split:
+  - ~mcp-emacs-run--send-to-buffer (buf string)~ -- low level, no
+    resolution.
+  - ~mcp-emacs-run--send (string)~ -- resolves once, then sends. Commands
+    emitting several keystrokes (~send-prompt~ = text then ~\r~) resolve
+    the buffer once via ~--resolve-session~ and call ~--send-to-buffer~
+    twice. Single-keystroke commands call ~--send~.
+- Command rewrites
+  - ~--launch~: allocate ~<n>~ via ~--next-number~, name the buffer,
+    spawn; drop the ~puthash~; still returns the buffer, still may display
+    it.
+  - Drop ~mcp-emacs-run~; add ~mcp-emacs-run-new~ = always ~--launch~ a
+    fresh numbered session and display it. ~-start~ stays "launch without
+    display" (also numbered).
+  - ~-list~: iterate ~--sessions-list~.
+  - ~-switch~: ~completing-read~ over ~--sessions-list~ (this is the
+    picker for reaching an existing session), then display the pick.
+
+* Tasks
+- [X] Change ~mcp-emacs-run--buffer-name~ to ~(root n)~ ->
+  ~*claude:<project>:<n>*~
+- [X] Add ~mcp-emacs-run--next-number (root)~: lowest positive int not in
+  use by a live session of that project
+- [X] Add ~mcp-emacs-run--sessions-list~: return live buffers whose name
+  matches the numbered runner pattern
+- [X] Add ~mcp-emacs-run--buffer-project~ helper: resolve a runner
+  buffer's project root from its ~default-directory~
+- [X] Add ~mcp-emacs-run--resolve-session~: partition candidates into the
+  4 tiers (same/other project × visible/hidden), take first non-empty
+  tier, ~completing-read~ when >1, ~user-error~ when none
+- [X] Disambiguate picker labels by buffer name when two projects share a
+  display name
+- [X] Rename low-level send to
+  ~mcp-emacs-run--send-to-buffer (buf string)~ (no resolution)
+- [X] Add ~mcp-emacs-run--send (string)~ that resolves once then calls
+  ~--send-to-buffer~
+- [X] Update all single-keystroke ~send-*~ commands to call
+  ~mcp-emacs-run--send~ with no root
+- [X] Update ~mcp-emacs-run-send-prompt~ to resolve once and send text +
+  ~\r~ to the same buffer
+- [X] Remove ~mcp-emacs-run--sessions~ defvar and
+  ~mcp-emacs-run--live-buffer~; drop ~puthash~ in ~--launch~
+- [X] Drop ~mcp-emacs-run~; add ~mcp-emacs-run-new~ (always launch fresh
+  numbered + display); keep ~-start~ (numbered, no display)
+- [X] Rewrite ~-list~, ~-switch~, ~-kill~, ~-toggle~ to use
+  ~--sessions-list~ / ~--resolve-session~; drop ~remhash~; multi-session
+  ~-kill~/~-toggle~ use a picker
+- [X] Update ~-continue~ / ~-resume~ to launch numbered sessions
+- [X] Rebind ~SPC E e~ from ~mcp-emacs-run~ to ~mcp-emacs-run-new~ in the
+  Doom config (separate dotfiles repo)
+- [X] Update ~buffer-name~ test for the ~:<n>~ suffix; add ~--next-number~
+  tests (fresh=1, next=2, refill gap)
+- [X] Remove registry-specific tests (~puthash~/~--live-buffer~/~clrhash~
+  setups)
+- [X] Add resolution tests stubbing ~buffer-list~ + ~get-buffer-window~:
+  single same-project visible; one-of-many same-project;
+  visible-beats-hidden; cross-project fallback; ambiguous -> picker; none
+  -> user-error
+- [X] Add a test that ~send-prompt~ resolves once (picker invoked at most
+  once) for an ambiguous tier
+- [X] Adjust headless launch tests that asserted registration to assert
+  discovery via ~--sessions-list~
+- [X] Byte-compile ~elisp/mcp-emacs-run.el~ clean
+- [X] ~emacs -Q --batch -L elisp -l test/mcp-emacs-run-test.el~ green
+- [X] Live check in the running Emacs (stubbed eat): two sessions
+  ~:1~/~:2~; ambiguous send prompts once and delivers text+return; single
+  visible session auto-resolves; kill ~:1~ -> next number refills 1;
+  cross-project fallback resolves the visible other-project session
+
+* Delta
+** Manage per-project runner sessions                         :MODIFIED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL support multiple concurrent runner sessions per project.
+Each session's buffer SHALL be named ~*claude:<project>:<n>*~, where ~<n>~
+is a positive integer allocated per project starting at 1 (the lowest
+number not currently in use by a live session for that project). The
+system SHALL provide a command to start a new session (always allocating a
+fresh number), and commands to list, switch to, and kill sessions. The set
+of live sessions SHALL be derived from the live runner buffers themselves
+(matched by name and each buffer's own project directory), not from a
+separately maintained root-to-buffer registry.
+*** Starting allocates a new numbered session
+- WHEN the user starts a new runner and the project already has a live
+  session numbered 1
+- THEN a new session is started in buffer ~*claude:<project>:2*~ without
+  disturbing session 1
+*** Numbering fills the lowest free slot
+- WHEN the user starts a new runner and sessions 1 and 3 are live but 2
+  was killed
+- THEN the new session reuses number 2
+*** Listing and switching
+- WHEN the user lists sessions and selects one
+- THEN the runner shows that session's buffer
+*** Killing a session
+- WHEN the user kills a session
+- THEN the runner terminates the CLI process and cleans up its buffer
+*** Sessions discoverable without a registry
+- WHEN a runner buffer is live but no in-memory registry entry exists for
+  it
+- THEN the session is still listed, switchable, and killable
+** Send input to a live runner session                        :MODIFIED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL provide commands that feed input to a runner session
+resolved from the live sessions (see the ~runner-session-resolution~
+capability): sending a prompt string (submitting it), sending an
+escape/interrupt, and inserting a newline into the prompt without
+submitting. Input SHALL be delivered to the resolved session's terminal.
+*** Send and submit a prompt
+- WHEN the user sends a prompt string and a target session resolves
+- THEN the prompt text is delivered to the resolved session's terminal and
+  submitted
+*** Send an escape
+- WHEN the user sends an escape and a target session resolves
+- THEN an escape/interrupt is delivered to the resolved session's terminal
+*** Insert a newline without submitting
+- WHEN the user inserts a newline and a target session resolves
+- THEN a newline is delivered to the prompt and the prompt is not
+  submitted
+** Require a live session for input commands                  :MODIFIED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL require at least one live runner session when sending
+input; these commands SHALL NOT launch a new session. When no live session
+exists anywhere, the system SHALL report this rather than starting the
+CLI.
+*** No live session
+- WHEN the user sends input and no live runner session exists anywhere
+- THEN the system reports that there is no session and does not launch the
+  CLI
+** Runner sessions are discovered from live buffers              :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL determine the set of available Claude runner sessions by
+scanning live buffers whose names match the runner naming pattern
+(~*claude:<project>:<n>*~), not from a stored registry. Each such buffer's
+project SHALL be derived from that buffer's own ~default-directory~
+resolved to a project root.
+*** Session survives a registry-less reload
+- WHEN a ~*claude:<project>*~ runner buffer is live but no in-memory
+  session registry entry exists for it (e.g. after reloading the library)
+- THEN the buffer is still discovered as an available session
+*** Dead buffers are not sessions
+- WHEN scanning for sessions and a former runner buffer has been killed
+- THEN it is not included among the available sessions
+** Send target is resolved by project and visibility priority    :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+When sending keys or text, the system SHALL resolve exactly one target
+runner session from the available sessions using this priority order,
+where "same project" means the session's resolved project root equals the
+current buffer's resolved project root, and "visible" means the session
+buffer is displayed in some window:
+
+1. same project AND visible 2. same project AND hidden 3. any project AND
+visible 4. any project AND hidden
+
+The system SHALL use the highest-priority non-empty tier as the candidate
+set for the pick.
+*** Single same-project visible session
+- WHEN exactly one runner session is visible and belongs to the current
+  buffer's project
+- THEN that session is the target without prompting
+*** One of several belongs to the current project
+- WHEN multiple runner sessions are visible but only one belongs to the
+  current buffer's project
+- THEN that same-project session is the target without prompting
+*** Visible preferred over hidden within the same project
+- WHEN the current project has both a visible and a hidden runner session
+- THEN the visible one is chosen (tier 1 beats tier 2)
+*** Cross-project fallback when none match
+- WHEN no runner session belongs to the current buffer's project but at
+  least one session exists for another project
+- THEN resolution falls back to the visible-first cross-project tiers
+** Ambiguous resolution prompts the user                         :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL prompt the user to choose (via ~completing-read~) when
+the highest-priority non-empty tier contains more than one candidate, and
+SHALL send to the chosen session.
+*** Multiple same-project sessions
+- WHEN the winning tier contains more than one session
+- THEN the user is prompted to pick one and the send goes to the pick
+*** Exactly one candidate is not a prompt
+- WHEN the winning tier contains exactly one session
+- THEN no prompt is shown and that session is used
+** No available session yields a clear error                     :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL signal a clear ~user-error~ when no live runner session
+exists at all, rather than silently doing nothing.
+*** No sessions anywhere
+- WHEN a send is attempted and no live ~*claude:<project>:<n>*~ runner
+  buffer exists
+- THEN a ~user-error~ is signalled indicating there is no runner session
+** A multi-keystroke send resolves the target once               :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL resolve the target session once per user-initiated send
+operation, so operations that emit several keystrokes (e.g. text followed
+by a submit) do not prompt more than once.
+*** Prompt-and-submit resolves once
+- WHEN the user sends a prompt that emits the text and then a submit
+  keystroke, and the winning tier is ambiguous
+- THEN the user is prompted at most once for that operation

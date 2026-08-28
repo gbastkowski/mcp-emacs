@@ -1,0 +1,107 @@
+#+TITLE: add-opencode-launchd-serve
+
+* Intent
+The intended opencode workflow is a long-lived server whose sessions survive
+Emacs restarts. ~opencode-client-serve~ currently starts the server with
+~start-process~, making it a child of Emacs -- so it dies when Emacs exits,
+taking the sessions with it. On macOS the natural way to run an on-demand,
+Emacs-independent server is a launchd user agent that Emacs starts by
+kickstarting it, not by spawning a child. That server should also be
+password-protected, with the password resolved the same way the rest of the
+setup resolves secrets (via a command such as ~pass~).
+
+~opencode-client--headers~ reads ~opencode-client-password~ directly.
+~opencode-client-serve~ spawns the server with ~start-process~ (child of
+Emacs -> dies with Emacs). Auth on this box is file-based
+(~~/.local/share/opencode/auth.json~), so the server needs no provider keys
+in its environment; only the HTTP basic-auth password matters here. Secrets
+in the user's setup are resolved via ~pass~.
+
+* Scope
+In scope:
+- Add ~opencode-client-launchd-label~: when set, ~opencode-client-serve~
+  starts the server by ~launchctl kickstart gui/<uid>/<label>~ (launchd
+  owns the process, so it outlives Emacs) instead of spawning a child;
+  when unset, it falls back to the current ~start-process~ behavior.
+- Add ~opencode-client-password-command~: a shell command whose stdout
+  (trimmed) is used as the server password when ~opencode-client-password~
+  is not set directly, so the password can come from ~pass~ or similar.
+- Resolve the password through a single helper used by request headers.
+
+Out of scope:
+- No launchd agent definition here (that lives in dotfiles/home-manager).
+- No change to session/stream logic.
+- No caching of the resolved password (resolve per request; simple and
+  correct).
+
+* Approach
+- single password resolver: Add ~opencode-client--password~: return
+  ~opencode-client-password~ when non-nil; else, when
+  ~opencode-client-password-command~ is set, run it via the shell and
+  return the trimmed stdout; else nil. ~--headers~ calls this.
+- kickstart when a label is set: ~opencode-client-serve~: if
+  ~opencode-client-launchd-label~ is non-nil, run
+  ~launchctl kickstart gui/<uid>/<label>~ (uid from ~(user-uid)~), then
+  health-poll as today. Kickstart starts (or restarts) the agent under
+  launchd, not as an Emacs child.
+  - Note: ~launchctl kickstart~ requires the agent to be loaded
+    (home-manager loads it at login). If it is not loaded, kickstart
+    fails; the health-poll then reports the server did not come up, which
+    is an acceptable clear error.
+
+* Tasks
+- [X] Add ~opencode-client-password-command~ defcustom (shell command
+  string or nil)
+- [X] Add ~opencode-client--password~: return ~opencode-client-password~
+  if set; else run ~opencode-client-password-command~ via the shell and
+  return trimmed stdout; else nil
+- [X] ~opencode-client--headers~ uses ~opencode-client--password~ instead
+  of the raw variable
+- [X] Add ~opencode-client-launchd-label~ defcustom (string or nil)
+- [X] In ~opencode-client-serve~, when the label is set, start via
+  ~launchctl kickstart gui/<uid>/<label>~ (uid from ~(user-uid)~);
+  otherwise keep the ~start-process~ fallback. Health-poll unchanged
+- [X] Byte-compile cleanly
+- [X] Batch tests: ~--password~ returns the direct value when set; runs
+  the command and trims when only the command is set; nil when neither;
+  and ~--headers~ includes basic auth iff a password resolves
+- [X] Update README opencode section: password-command and launchd label
+  options, and the "run opencode as a launchd agent that outlives Emacs"
+  workflow
+
+* Delta
+** Client connects to a running opencode server               :MODIFIED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+The system SHALL connect to an ~opencode serve~ HTTP endpoint at a
+configurable host and port, verify it with a health check, and support an
+optional server password for HTTP basic auth. The password MAY be
+configured directly or resolved by running a configured shell command and
+using its trimmed standard output, so it can come from a secret store.
+When starting a server on demand, the client SHALL, if a launchd label is
+configured, start it by kickstarting that launchd agent (so the server is
+owned by launchd and outlives Emacs); otherwise it MAY start the server as
+a child process.
+*** Healthy server
+- WHEN the client connects to a reachable opencode server
+- THEN the health check succeeds and the client is ready to issue requests
+*** Server not reachable
+- WHEN the client cannot reach the configured host/port
+- THEN the client reports a clear connection error rather than failing
+  opaquely
+*** Password from a direct value
+- WHEN a password is configured directly
+- THEN the client authenticates with HTTP basic auth using that value
+*** Password from a command
+- WHEN no direct password is set but a password command is configured
+- THEN the client runs the command and authenticates with its trimmed
+  output
+*** No password configured
+- WHEN neither a direct password nor a password command is configured
+- THEN the client sends no authorization header
+*** On-demand start via launchd
+- WHEN the user starts the server on demand and a launchd label is
+  configured
+- THEN the client kickstarts that launchd agent rather than spawning a
+  child process

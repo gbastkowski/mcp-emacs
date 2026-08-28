@@ -1,0 +1,304 @@
+#+TITLE: claude-remote-control
+
+* Intent
+Today, driving the mcp-emacs-launched Claude means typing into the eat
+terminal buffer and reading its scrollback. That works, but it keeps the
+interaction locked inside the TUI: prompts must be typed at the terminal,
+and there is no structured, Org-native record of what Claude did.
+
+The native-edit diff-review change (#20, shipped in v1.1.0/v1.1.1) already
+turned Emacs into a Claude Code IDE client with an interactive ediff gate on
+every native edit. That gives us the two hard pieces for free -- a
+launched-from-Emacs interactive session and a per-tool-call approval
+surface. The missing piece is a way to *drive* that session from ordinary
+Emacs input and *see* what it is doing as Org. This change adds that,
+reusing the IDE surface rather than building a second runner.
+
+See proposal.md -- Why. The native-edit diff-review change (#20) already
+stands up an interactive Claude Code session launched from Emacs
+(~mcp-emacs-run.el~), connected over WebSocket to the IDE surface
+(~mcp-emacs-ide.el~), with an ediff gate on every native edit. The relevant
+existing seams:
+
+- ~mcp-emacs-run-send-prompt~ delivers text to the current project's runner
+session (eat buffer). - ~mcp-emacs-run--resolve-session~ resolves the target
+session for the current project, prompting when there is more than one
+candidate. - ~mcp-emacs-ide--call-tool~ is the single dispatch point for
+every ~tools/call~ the session makes (~openDiff~, ~getDiagnostics~,
+~closeAllDiffTabs~). - ~mcp-emacs-ide--complete-open-diff~ is where an
+~openDiff~ review resolves to FILE_SAVED (accepted) or DIFF_REJECTED
+(rejected). - The IDE ~ide_connected~ notification and the WebSocket close
+callback bracket a session's life.
+
+The constraint that shapes everything: *the IDE WebSocket socket carries
+structured tool calls but not assistant prose.* Prose is rendered by Claude
+directly to its eat terminal. So a transcript built from IDE-surface events
+can be faithful about *tool activity* but cannot show prose without a second
+event source.
+
+* Scope
+In scope:
+- Add a new opt-in module ~mcp-emacs-remote.el~ providing a "remote
+  control" over the interactive Claude session.
+- *Prompt from Emacs, not the terminal.* A ~mcp-emacs-remote-prompt~
+  command reads a prompt from the minibuffer (or the active region /
+  current buffer) and sends it to the current project's runner session via
+  the existing ~mcp-emacs-run-send-prompt~.
+- *Live Org transcript.* A dedicated ~*claude: <project>*~ Org buffer per
+  session records tool activity as it happens: one heading per tool call
+  with its arguments, the accept/reject outcome of each ~openDiff~, and a
+  run-metadata drawer.
+- *Tool approval stays the ediff review.* No new approval mechanism --
+  native Edit/Write flow through ~openDiff~ -> the ediff gate shipped in
+  #20; the transcript just records the outcome.
+- The transcript renders *tool activity only* in this version; assistant
+  prose stays in the eat TUI (the IDE WebSocket surface does not carry
+  prose -- see design.md).
+
+* Approach
+- 1. Reuse the interactive IDE session; do not run headless ~-p~: Claude
+  Code 2.1.212 removed ~--permission-prompt-tool~, so headless ~-p~ cannot
+  route per-call approval back to an Emacs MCP tool. The interactive IDE
+  session already provides the approval gate (ediff) for free.
+- 2. Tap the IDE dispatch point, don't parse the socket separately: The
+  renderer subscribes at ~mcp-emacs-ide--call-tool~ (tool calls +
+  arguments) and ~mcp-emacs-ide--complete-open-diff~ (accept/reject
+  outcome), plus the connect notification and socket-close callback for
+  metadata. *Alternative considered:* a second WebSocket observer.
+- 3. Transcript source is tool activity only; prose is deferred: Because
+  the socket carries no prose, v1 records tool activity + metadata and
+  leaves prose in the TUI. This is stated as an explicit spec requirement
+  (~remote-org-transcript~ -> "Scope limited to tool activity") so it is a
+  deliberate contract, not an omission.
+- 4. One Org buffer per session, keyed by the session: Each session gets
+  one long-lived ~*claude: <project>*~ Org buffer; events append to it.
+  Keying by session (not by project) keeps two sessions for different
+  projects cleanly separated, per the spec.
+- 5. Passive rendering -- failures never block the session: Rendering runs
+  after the surface has decided how to answer a call. A rendering error is
+  caught and logged, never propagated into the tool-call answer path, so a
+  transcript bug cannot stall an edit.
+
+* Tasks
+- [X] Add ~elisp/mcp-emacs-remote.el~ with header, ~provide~, and requires
+  (~mcp-emacs-run~, ~mcp-emacs-ide~, ~org~, ~json~, ~cl-lib~);
+  byte-compiles clean
+- [X] Add a ~mcp-emacs-remote-enabled~ defcustom (default off), matching
+  the IDE surface's opt-in posture; the event tap is a no-op when disabled
+- [X] Lifecycle: ~mcp-emacs-remote-enable~ / ~mcp-emacs-remote-disable~
+  install and remove the event tap idempotently
+- [X] ~mcp-emacs-remote-prompt~: read a prompt from the minibuffer and
+  submit it (auto-submit, session begins responding); empty or
+  whitespace-only input sends nothing and reports "no prompt provided"
+- [X] When a region is active, pre-fill the minibuffer with the region
+  text so the user edits/confirms before it is sent (not sent raw)
+- [X] ~mcp-emacs-remote-prompt-buffer~: send the whole current buffer as
+  the prompt and submit it; empty/whitespace-only buffer sends nothing and
+  reports "nothing to send"
+- [X] Deliver the prompt via ~mcp-emacs-run-send-prompt~ (auto-submits);
+  resolve the target session with ~mcp-emacs-run--resolve-session~
+  (prompts on multiple candidates)
+- [X] Require a live session: if the project has no running session,
+  report it and do not launch one
+- [X] Per-session transcript buffer keyed by session, named
+  ~*claude: <project>*~, created lazily on first recordable event and
+  reused thereafter; distinct sessions get distinct buffers
+- [X] Tap ~mcp-emacs-ide--call-tool~ (behind the enabled flag) to append
+  an Org heading per tool call: tool name, timestamp, and arguments in a
+  readable ~#+begin_src json~ block
+- [X] Collapse or suppress ~getDiagnostics~ / ~closeAllDiffTabs~ entries
+  so per-edit noise doesn't dominate the transcript
+- [X] Tap ~mcp-emacs-ide--complete-open-diff~ to record each diff outcome
+  (accepted -> FILE_SAVED, rejected -> DIFF_REJECTED) with the target
+  file, under the matching tool entry
+- [X] Run metadata drawer: on ~ide_connected~, record session start +
+  workspace root as Org properties; on socket close, record session end
+- [X] Rendering runs after the surface has decided how to answer a call;
+  the tap returns control to the surface unchanged (never blocks or alters
+  the answer)
+- [X] Wrap all rendering in error handling: a rendering failure is caught
+  and logged, never propagated into the tool-call answer path
+- [X] Prompt input: empty input sends nothing; region pre-fills;
+  no-session case reports and does not launch; multi-session case resolves
+  via the runner's picker (drive commands headlessly as the existing
+  suites do)
+- [X] Transcript: one buffer per session; a tool call appends a heading
+  with name/timestamp/args; distinct sessions stay isolated
+- [X] Diff outcome: accept records FILE_SAVED + file; reject records
+  DIFF_REJECTED + file, under the right entry
+- [X] Passive safety: with the tap installed,
+  ~openDiff~/~getDiagnostics~/~closeAllDiffTabs~ are still answered
+  normally; a forced rendering error does not stall the tool-call answer
+- [X] CI byte-compiles the new module and runs the new suite
+- [X] README: document the remote-control surface, the opt-in defcustom,
+  the ~mcp-emacs-remote-prompt~ command, and the tool-activity-only
+  transcript scope (prose stays in the TUI)
+- [X] Note the interactive-vs-headless rationale and the prose-transcript
+  follow-up (link issue #23)
+- [X] Live end-to-end in the running Emacs: enable the feature, launch an
+  IDE session, prompt via ~mcp-emacs-remote-prompt~, drive a native edit,
+  confirm the transcript records the tool call + accept/reject outcome +
+  metadata and that approval still runs through the ediff gate
+
+* Delta
+** One Org transcript buffer per session                         :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The system SHALL maintain a dedicated Org-mode buffer per Claude session,
+named for the session's project, and SHALL reuse that buffer for the
+lifetime of the session rather than creating a new one per event.
+*** Transcript buffer created on first activity
+- WHEN a Claude session produces its first recordable tool event and no
+  transcript buffer exists for that session
+- THEN an Org-mode buffer is created for the session
+- AND subsequent events for the same session are appended to that same
+  buffer
+*** Distinct sessions get distinct buffers
+- WHEN two Claude sessions for different projects are active
+- THEN each has its own transcript buffer
+- AND events from one session are never written into the other's buffer
+** Record each tool call as an Org entry                         :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The system SHALL append an Org heading for each tool call the session
+makes, including the tool name, a timestamp, and the call's arguments in a
+form that is readable in Org.
+*** Tool call recorded
+- WHEN the session invokes a tool
+- THEN a new Org heading is appended to the transcript naming the tool and
+  carrying a timestamp
+- AND the tool's arguments are recorded under that heading
+** Record diff-review outcomes                                   :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The system SHALL record the outcome of each ~openDiff~ review -- accepted
+or rejected -- together with the file the diff targeted, so the transcript
+reflects what was actually written.
+*** Diff accepted
+- WHEN the user accepts an ~openDiff~ review
+- THEN the transcript entry for that diff records the accepted outcome and
+  the target file
+*** Diff rejected
+- WHEN the user rejects an ~openDiff~ review (or it is otherwise dismissed
+  unchanged)
+- THEN the transcript entry for that diff records the rejected outcome and
+  the target file
+** Record per-session run metadata                               :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The system SHALL record run metadata for the session in an Org properties
+drawer, including at least the session start time and the workspace root,
+and SHALL note when the session disconnects.
+*** Session connects
+- WHEN a Claude session connects to the IDE surface
+- THEN the transcript records the session start and workspace root as
+  properties
+*** Session disconnects
+- WHEN the session's connection closes
+- THEN the transcript records that the session ended
+** Do not alter tool-approval behavior                           :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The transcript SHALL be a passive record: recording an event MUST NOT
+change whether or how a tool call is approved, executed, or answered.
+Approval remains the interactive diff review.
+*** Recording does not gate execution
+- WHEN the transcript records a tool call or its outcome
+- THEN the recording does not block, delay beyond rendering, or alter the
+  tool call's approval or execution
+- AND if transcript rendering fails, the session's tool calls are still
+  answered normally
+** Scope limited to tool activity                                :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+In this version the transcript SHALL record tool activity and run metadata
+only; assistant prose is out of scope and is not required to appear in the
+transcript.
+*** Assistant prose not required
+- WHEN the session produces assistant prose that is visible only in the
+  terminal
+- THEN the transcript is not required to contain that prose
+- AND the absence of prose is not treated as an error
+** Send a prompt from the minibuffer                             :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The system SHALL provide an interactive command that reads a prompt string
+from the minibuffer and delivers it to the current project's running
+Claude session, submitting it so the session begins responding without the
+user having to switch to the terminal buffer.
+*** Prompt entered in the minibuffer
+- WHEN the user invokes the remote-prompt command and types a non-empty
+  string at the minibuffer
+- THEN the string is delivered to the current project's runner session and
+  submitted
+- AND focus is not required to move to the terminal buffer for the session
+  to begin responding
+*** Empty or whitespace-only prompt is not sent
+- WHEN the user invokes the remote-prompt command and submits an empty or
+  whitespace-only string
+- THEN nothing is sent to the session
+- AND the command reports that no prompt was provided
+** Seed the prompt from the active region                        :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The system SHALL, when a region is active, seed the minibuffer with the
+region text so the user can edit or confirm it before it is sent, rather
+than sending the raw selection immediately.
+*** Region active
+- WHEN a region is active and the user invokes the remote-prompt command
+- THEN the minibuffer is pre-filled with the region text
+- AND the user may edit it before confirming
+- AND on confirmation the resulting text is delivered to the session and
+  submitted
+** Send the whole current buffer as the prompt                   :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The system SHALL provide a way to send the entire current buffer as the
+prompt, so the user can hand a whole file's contents to the session
+without selecting it. An empty or whitespace-only buffer is not sent.
+*** Whole buffer sent
+- WHEN the user invokes the send-buffer variant of the remote-prompt
+  command in a non-empty buffer
+- THEN the entire buffer text is delivered to the current project's runner
+  session and submitted
+*** Empty buffer is not sent
+- WHEN the user invokes the send-buffer variant in an empty or
+  whitespace-only buffer
+- THEN nothing is sent to the session
+- AND the command reports that there was nothing to send
+** Require a live session                                        :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The system SHALL require an already-running Claude session for the current
+project and SHALL NOT launch one implicitly.
+*** No session running
+- WHEN the user invokes the remote-prompt command and the current project
+  has no running Claude session
+- THEN the command reports that no session is available
+- AND no prompt is sent and no session is launched
+*** Session running
+- WHEN the user invokes the remote-prompt command and the current project
+  has exactly one running Claude session
+- THEN the prompt is delivered to that session
+** Resolve the target session unambiguously                      :ADDED:
+:PROPERTIES:
+:AREA: remote
+:END:
+The system SHALL resolve which session receives the prompt using the same
+project-scoped session resolution the runner already uses, and SHALL
+prompt the user to choose when more than one candidate session exists.
+*** Multiple sessions for the project
+- WHEN the current project has more than one running Claude session and
+  the user invokes the remote-prompt command
+- THEN the user is asked to choose the target session
+- AND the prompt is delivered to the chosen session

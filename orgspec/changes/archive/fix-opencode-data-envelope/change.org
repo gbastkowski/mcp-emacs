@@ -1,0 +1,81 @@
+#+TITLE: fix-opencode-data-envelope
+
+* Intent
+Verified against a live ~opencode serve~ (opencode 1.18.0): the server wraps
+most JSON responses in a ~data~ envelope (~{"data": …}~, list responses as
+~{"data": […], "cursor": …}~). The client reads top-level fields, so session
+create/list/switch, single-session fetch, message history, and the prompt
+response all mis-parse -- e.g. a created session's ~id~ is ~nil~. Only
+~/api/health~ is flat (~{"healthy": true}~), which is why ~connect~ still
+works and masked the breakage.
+
+The endpoints, paths, prompt body (~{prompt:{text}, delivery}~ with
+~delivery~ ∈ ~steer|queue~) are all correct against 1.18.0 -- only the
+response envelope is unhandled.
+
+~opencode-client--request~ returns the raw parsed JSON. opencode 1.18.0
+wraps object and list responses in ~{"data": …}~ (lists add a sibling
+~cursor~), except flat control responses like ~/api/health~ ->
+~{"healthy": true}~. Callers read top-level fields, so everything but health
+mis-parses. Verified live against ~opencode serve~.
+
+* Scope
+In scope:
+- Unwrap the ~data~ envelope centrally in ~opencode-client--request~: when
+  the parsed JSON is an alist carrying a ~data~ key, return that value;
+  otherwise return the parsed body unchanged (so flat responses like
+  health keep working).
+- No change to request bodies, endpoints, or delivery modes -- those
+  already match the server.
+
+Out of scope:
+- No pagination handling yet (drop ~cursor~).
+- No per-endpoint schema modelling.
+
+* Approach
+- conditional unwrap in ~--request~: After parsing, if the result is an
+  alist that contains a ~data~ key, return ~(alist-get 'data result)~;
+  else return the result. Health has no ~data~ key, so it passes through.
+  - *Risk:* a real payload with a legitimate top-level ~data~ field would
+    be unwrapped incorrectly. In the current API the envelope is
+    consistent and control responses are flat, so this does not occur;
+    revisit if a flat response ever legitimately carries ~data~.
+
+* Tasks
+- [X] In ~opencode-client--request~, after parsing, unwrap: if the result
+  is an alist with a ~data~ key, return its value; otherwise return the
+  result unchanged
+- [X] Confirm callers (~--sessions~, ~create-session~, ~switch-session~,
+  single-session fetch, message render, prompt) now read the right shape
+  with no per-caller change
+- [X] Byte-compile ~elisp/opencode-client.el~ cleanly
+- [X] Batch tests (stub ~plz~): wrapped-object response unwraps to the
+  inner object; wrapped-list unwraps to the inner list; flat health
+  response passes through unchanged
+- [X] Update README opencode section if any user-facing behavior notes are
+  needed (likely none)
+
+* Delta
+** Client unwraps the server response envelope                   :ADDED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+The opencode server returns most responses wrapped in a ~data~ envelope
+(and list responses alongside a ~cursor~). The client SHALL unwrap this
+envelope before use: when a parsed JSON response is a map carrying a
+~data~ key, the client SHALL use the value of ~data~; otherwise it SHALL
+use the parsed response unchanged, so flat responses (such as the health
+check) continue to work.
+*** Wrapped object response
+- WHEN the server returns a wrapped object such as a created session
+  ~{"data": {"id": …}}~
+- THEN the client uses the inner object, so fields like the session id are
+  read correctly
+*** Wrapped list response
+- WHEN the server returns a wrapped list such as
+  ~{"data": [ … ], "cursor": …}~
+- THEN the client uses the inner list as the collection
+*** Flat response
+- WHEN the server returns a flat object with no ~data~ key, such as the
+  health check ~{"healthy": true}~
+- THEN the client uses the response unchanged

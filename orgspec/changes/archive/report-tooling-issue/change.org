@@ -1,0 +1,219 @@
+#+TITLE: report-tooling-issue
+
+* Intent
+The sibling GitLab AI-tooling repos recently shipped a "report a tooling
+issue" feature: a user who hits a bug or wants a feature in the tooling
+itself can file it from inside the assistant, without leaving the session.
+mcp-emacs has no equivalent -- a user who finds a broken tool or a clumsy
+skill has to context-switch to GitHub and hand-write an issue.
+
+This change ports that feature to mcp-emacs, adapted from GitLab (two repos,
+fault-domain routing) to mcp-emacs's single GitHub repo
+(~gbastkowski/mcp-emacs~).
+
+See proposal.md -- Why. This ports a feature that already shipped in the
+sibling GitLab tooling. The reference implementation is three parts across
+two repos:
+
+- ~report_tooling_issue~ (mcp-gitlab) -- the filer: a hard-coded repo map +
+~glab issue create --no-editor --yes~, returns the printed issue URL, no
+labels/template. - ~get_origin~ (mcp-jira-confluence) -- a router that
+declares ~{repo, url, newIssueUrl, reportFor}~ per fault domain so a caller
+can pick the target repo. Files nothing. - ~report-issue~ skill
+(jira-assistant) -- orchestrates: classify -> get_origin -> draft -> confirm
+-> file (via the gitlab filer) or hand back a prefilled new-issue URL.
+
+mcp-emacs differs in two ways that shape the port: it is a *single GitHub
+repo* (~gbastkowski/mcp-emacs~), and its MCP server is *Emacs-resident
+elisp*, registered as ~(:name :description :schema :handler)~ plists in
+~mcp-emacs-server--tools~ (~elisp/mcp-emacs-server.el~), with schemas built
+from the ~--obj~/~--prop~/~--no-args~ helpers.
+
+* Scope
+In scope:
+- Add a *~report_tooling_issue~* MCP tool that files a GitHub issue
+  against ~gbastkowski/mcp-emacs~.
+- Params: ~title~ (required), ~description~ (optional), ~kind~ (optional
+  enum: ~bug~ / ~feature~ / ~skill~ / ~server~, applied as a GitHub
+  label).
+- Filing uses a fallback chain: the GitHub MCP tool if available -> the
+  ~gh~ CLI -> ~gh api~ directly.
+- Returns the created issue URL.
+- Add a *~report-issue~* skill that orchestrates the flow: classify the
+  report, draft a lean issue, *confirm with the user*, file it via the
+  tool, and report back the URL.
+- No fault-domain router (the GitLab ~get_origin~ tool). mcp-emacs is one
+  repo, so there is nothing to route between; the ~kind~ label carries the
+  server-vs-skill signal instead.
+
+* Approach
+- 1. Drop the router; collapse fault domains to a ~kind~ label: The GitLab
+  feature routed between two repos by fault domain. mcp-emacs is one repo,
+  so routing is moot. The signal the router carried -- "is this a server
+  bug or a skill/prompt bug?" -- is preserved as an optional ~kind~ label
+  (~bug~ / ~feature~ / ~skill~ / ~server~) on the issue.
+- 2. GitHub, via a three-step fallback chain: The reference filer shells
+  out to ~glab~. mcp-emacs is GitHub, and the environment may expose
+  GitHub access in more than one way, so the filer tries, in order: 1.
+  *the ~github~ MCP tool* (~issue_write~ / equivalent) if that server is
+  connected, 2.
+- 3. Label creation is best-effort: Applying a ~kind~ label must not fail
+  the filing if the label doesn't exist in the repo yet. The filer applies
+  the label when it can and does not treat a missing-label error as a
+  filing failure -- the issue (the important artifact) is created
+  regardless.
+- 4. Skill mirrors the reference's classify -> draft -> confirm -> file ->
+  report: Kept intact from ~report-issue~, minus the router call: classify
+  (server tool / skill / feature), draft a lean title +
+  what/expected/repro body, *confirm with the user before filing*
+  (explicit gate, per the reference and the spec), file via
+  ~report_tooling_issue~, report the URL back. The confirmation gate is a
+  spec requirement ("User declines the draft" -> nothing filed), not just
+  skill prose.
+
+* Tasks
+- [X] Add ~mcp-emacs-report-tooling-issue~ (new helper, e.g. in
+  ~mcp-emacs.el~ or a small ~mcp-emacs-report.el~): takes title, optional
+  description, optional kind; targets ~gbastkowski/mcp-emacs~;
+  byte-compiles clean
+- [X] Filing via ~gh~ CLI:
+  ~call-process gh issue create --repo gbastkowski/mcp-emacs --title ... [--body ...]~,
+  capture the printed issue URL, trim, return it
+- [X] Fallback to ~gh api~: ~POST /repos/gbastkowski/mcp-emacs/issues~
+  when ~gh issue create~ is unavailable/fails for a non-content reason;
+  parse the returned URL
+- [X] Best-effort ~kind~ label: apply the label when creating the issue; a
+  missing-label error must NOT fail the filing (issue is created
+  regardless)
+- [X] No mechanism available: report failure and return the composed title
+  + body so the caller can file manually
+- [X] Add a ~report_tooling_issue~ entry to ~mcp-emacs-server--tools~:
+  ~:name~, ~:description~ (scoped to mcp-emacs itself, not arbitrary
+  repos), ~:schema~ (title required; description optional; kind optional
+  enum bug/feature/skill/server), ~:handler~ calling the filing helper
+- [X] Handler validation: reject a missing title and an out-of-set ~kind~
+  with a clear message; do not create an issue in those cases
+- [X] Handler success returns the created issue URL as text; failure
+  returns an error result with the manual-fallback text
+- [X] Add ~skills/report-issue/SKILL.md~ (repo skill location): front
+  matter (name, description, when-to-use -- tooling issues about
+  mcp-emacs, not the user's own project)
+- [X] Workflow: classify (server-tool bug / skill-or-prompt issue /
+  feature request) -> draft a lean title + what-happened / expected /
+  reproduction body
+- [X] Filing preference in the skill: prefer the ~github~ MCP tool if that
+  server is connected; otherwise call ~report_tooling_issue~ (which itself
+  falls back gh CLI -> gh api)
+- [X] Confirmation gate: confirm the drafted issue with the user before
+  filing; if the user declines, file nothing
+- [X] Report back the resulting issue URL (or, on total failure, the
+  drafted text for manual filing) and which ~kind~ it was tagged
+- [X] Handler validation: missing title rejected; invalid ~kind~ rejected
+  with accepted-values message; neither creates an issue (drive the
+  handler headlessly, stubbing the filing helper)
+- [X] Fallback chain: with the CLI path stubbed present, filing uses it;
+  with it stubbed absent, filing falls to ~gh api~; with all absent,
+  returns the manual-fallback text -- assert the order and that the
+  first-available wins
+- [X] Best-effort label: a simulated missing-label error still yields a
+  created-issue result (issue URL returned, not an error)
+- [X] CI byte-compiles the new elisp and runs the new suite
+- [X] README: document the ~report_tooling_issue~ tool and the
+  ~report-issue~ skill (what they file, the fixed target repo, the ~kind~
+  labels, the filing fallback chain)
+- [X] Note the port origin (GitLab tooling feature) and the single-repo /
+  GitHub adaptation (no ~get_origin~ router). Link issue #26
+- [X] Live end-to-end: from the running Emacs, invoke
+  ~report_tooling_issue~ with a test title/kind, confirm a real issue is
+  created on ~gbastkowski/mcp-emacs~ with the label and the URL is
+  returned; then close the test issue
+
+* Delta
+** File a tooling issue as a GitHub issue                        :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL provide a ~report_tooling_issue~ tool that creates a
+GitHub issue on the mcp-emacs repository from a supplied title and
+optional description, and SHALL return the URL of the created issue.
+*** Issue filed with title and description
+- WHEN the tool is called with a title and a description
+- THEN a GitHub issue is created on the mcp-emacs repository with that
+  title and body
+- AND the tool returns the URL of the created issue
+*** Title is required
+- WHEN the tool is called without a title
+- THEN no issue is created
+- AND the tool reports that a title is required
+** Optional category applied as a label                          :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL accept an optional ~kind~ categorizing the report as one
+of ~bug~, ~feature~, ~skill~, or ~server~, and SHALL apply the chosen
+value as a label on the created issue. When ~kind~ is omitted, the issue
+is created without a category label.
+*** Kind provided
+- WHEN the tool is called with ~kind~ set to one of the accepted values
+- THEN the created issue carries that value as a label
+*** Kind omitted
+- WHEN the tool is called with no ~kind~
+- THEN the issue is still created
+- AND no category label is required for the call to succeed
+*** Invalid kind
+- WHEN the tool is called with a ~kind~ outside the accepted set
+- THEN the call is rejected with a message naming the accepted values
+- AND no issue is created
+** Resilient filing chain                                        :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL attempt to create the issue through more than one
+mechanism so that filing succeeds whenever any one of them is available,
+trying in order: the GitHub MCP tool if available, then the ~gh~ CLI, then
+a direct ~gh api~ call. If none is available, the system SHALL report that
+it could not file the issue and SHALL surface the issue title and body so
+the user can file it manually.
+*** Preferred mechanism available
+- WHEN the GitHub MCP tool is available
+- THEN the issue is created through it
+- AND the lower-priority mechanisms are not attempted
+*** Fallback to the CLI
+- WHEN the GitHub MCP tool is not available but the ~gh~ CLI is
+- THEN the issue is created through the ~gh~ CLI
+*** No mechanism available
+- WHEN none of the filing mechanisms is available
+- THEN no issue is created
+- AND the system reports the failure and returns the composed title and
+  body for manual filing
+** Report about mcp-emacs, not arbitrary repositories            :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The tool SHALL be scoped to filing issues about mcp-emacs itself and SHALL
+target the mcp-emacs repository; it is not a general-purpose issue creator
+for arbitrary repositories.
+*** Target repository is fixed
+- WHEN the tool creates an issue
+- THEN the issue is created on the mcp-emacs repository
+- AND the caller does not choose an arbitrary target repository
+** Guided reporting via a skill                                  :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL provide a ~report-issue~ skill that guides the user
+through reporting: it classifies the report (a server-tool bug, a
+skill/prompt issue, or a feature request), drafts a concise issue (title
+plus what-happened / expected / reproduction), confirms the draft with the
+user before filing, files it via the ~report_tooling_issue~ tool, and
+reports back the resulting issue URL.
+*** Guided report end to end
+- WHEN the user asks to report a bug or feature request about the tooling
+  and the skill runs
+- THEN the skill classifies the report and drafts a title and body
+- AND the skill confirms the draft with the user before filing
+- AND on confirmation the skill files the issue via ~report_tooling_issue~
+  and reports the URL
+*** User declines the draft
+- WHEN the user does not confirm the drafted issue
+- THEN no issue is filed

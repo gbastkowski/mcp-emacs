@@ -1,0 +1,134 @@
+#+TITLE: quit-session-keybinding
+
+* Intent
+There is a command to hard-kill a runner session (~mcp-emacs-run-kill~,
+~SPC E K~) that deletes the process and buffer immediately, but no way to
+end a session the way the user normally would -- letting the Claude CLI shut
+itself down cleanly first. A graceful quit lets the CLI flush and exit on
+its own, falling back to a force-kill only if it does not exit in time.
+
+~mcp-emacs-run-kill~ (in ~elisp/mcp-emacs-run.el~) already ends a session by
+~delete-process~ + ~kill-buffer~, targeting the current project's sessions
+with a picker. Sends resolve their target via
+~mcp-emacs-run--resolve-session~ (visibility + project tiers, picker on
+ambiguity) and deliver keystrokes with ~mcp-emacs-run--send-to-buffer~. The
+runner terminal is an ~eat~ buffer; its process is
+~(get-buffer-process buf)~.
+
+The new quit differs from kill only by attempting a clean CLI shutdown
+first: send Ctrl-C twice, then force-kill + remove buffer if the CLI has not
+exited within a timeout.
+
+* Scope
+In scope:
+- Add ~mcp-emacs-run-quit~: resolve the target runner session (same
+  visibility + project tiers as the send commands, prompting on
+  ambiguity), send the CLI's quit sequence (Ctrl-C twice, ~\003\003~),
+  then after a configurable timeout force-kill the process if it is still
+  alive and remove the session buffer.
+- Add a ~mcp-emacs-run-quit-timeout~ custom (seconds, default 10) for how
+  long to wait for a graceful exit before force-killing.
+- Bind the command to a key under the Claude runner leader prefix
+  (~SPC E q~) in the Doom config.
+
+Out of scope:
+- Changing or removing ~mcp-emacs-run-kill~.
+- Confirmation prompts (quit is deliberate; resolution already prompts on
+  ambiguity).
+
+* Approach
+- Command and resolution: ~mcp-emacs-run-quit~ calls
+  ~mcp-emacs-run--resolve-session~ (same as sends), so it prompts once
+  when the winning tier is ambiguous and errors when no session exists.
+  This is intentionally broader than ~mcp-emacs-run-kill~'s
+  current-project scope, matching the user's "resolve like sends".
+- Quit sequence: Send two Ctrl-C characters (~"\003\003"~) via
+  ~--send-to-buffer~ -- the Claude CLI exits on a double interrupt. Kept
+  as a ~defconst~ so it can be adjusted without touching logic.
+- Non-blocking timeout + buffer removal: The timer captures ~buf~ in a
+  closure (lexical binding is already on). If the CLI exits on its own,
+  ~eat~ may or may not auto-kill the buffer; the handler kills it if still
+  live, and the ~buffer-live-p~ guard makes an already-gone buffer a
+  no-op.
+
+* Tasks
+- [X] Add ~mcp-emacs-run-quit-timeout~ defcustom (number, seconds, default
+  10)
+- [X] Add ~mcp-emacs-run--quit-sequence~ defconst = ~"\003\003"~ (Ctrl-C
+  twice)
+- [X] Implement ~mcp-emacs-run-quit~: resolve target via
+  ~mcp-emacs-run--resolve-session~, send the quit sequence, arm a
+  non-blocking ~run-with-timer~ for the timeout
+- [X] In the timer handler: guard with ~buffer-live-p~; force-kill a
+  still-live process via ~delete-process~; then ~kill-buffer~
+- [X] Autoload cookie + message on quit initiation
+- [X] Bind ~SPC E q~ to ~mcp-emacs-run-quit~ in the Doom config (separate
+  dotfiles repo) and add it to the ~:commands~ list
+- [X] Quit sends ~\003\003~ to the resolved buffer (stub
+  ~--resolve-session~ + ~eat-term-send-string~)
+- [X] No live session -> ~user-error~, nothing killed (stub
+  ~--sessions-list~ nil)
+- [X] Timeout handler force-kills a still-live process and kills the
+  buffer (stub ~run-with-timer~ to invoke synchronously; fake process
+  live)
+- [X] Timeout handler with an already-dead process only kills the buffer,
+  no error
+- [X] Timeout handler with an already-killed buffer is a no-op (no error)
+- [X] Byte-compile ~elisp/mcp-emacs-run.el~ clean
+- [X] ~emacs -Q --batch -L elisp -l test/mcp-emacs-run-test.el~ green
+- [ ] Live check (deferred -- user will verify): start a session,
+  ~mcp-emacs-run-quit~ -> CLI exits and buffer disappears within the
+  timeout; a wedged process is force-killed at the timeout
+- [X] Update README with the quit command and its timeout custom
+
+* Delta
+** Gracefully quit a resolved runner session                     :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL provide a command that resolves a target runner session
+using the same priority as input commands (see
+~runner-session-resolution~: same-project and visible first, prompting
+when the winning tier is ambiguous) and initiates a graceful quit of that
+session's Claude CLI by sending the CLI quit sequence (Ctrl-C twice) to
+its terminal.
+*** Quit sends the CLI quit sequence
+- WHEN the user invokes the quit command and a target session resolves
+- THEN the CLI quit sequence (two Ctrl-C characters) is delivered to that
+  session's terminal
+*** No live session
+- WHEN the user invokes the quit command and no live runner session exists
+  anywhere
+- THEN a ~user-error~ is signalled and nothing is killed
+** Force-kill fallback after a timeout                           :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL wait a configurable timeout
+(~mcp-emacs-run-quit-timeout~, in seconds, default 10) after sending the
+quit sequence, without blocking Emacs, and if the session's process is
+still live when the timeout elapses it SHALL force-kill that process.
+*** CLI exits on its own before the timeout
+- WHEN the CLI process exits on its own after receiving the quit sequence
+  and before the timeout elapses
+- THEN the system does not force-kill it
+*** CLI does not exit within the timeout
+- WHEN the CLI process is still live when the timeout elapses
+- THEN the system force-kills the process
+** The session buffer is removed after quitting                  :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL remove the session's buffer once the quit has completed
+(whether the CLI exited on its own or was force-killed), so the end state
+has no process and no buffer for that session.
+*** Buffer removed after graceful exit
+- WHEN the CLI exits on its own after the quit sequence
+- THEN the session buffer is killed
+*** Buffer removed after force-kill
+- WHEN the process is force-killed at the timeout
+- THEN the session buffer is killed
+*** Buffer already gone is not an error
+- WHEN the timeout handler runs but the session buffer has already been
+  killed
+- THEN no error is signalled

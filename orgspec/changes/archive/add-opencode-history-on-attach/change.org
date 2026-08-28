@@ -1,0 +1,101 @@
+#+TITLE: add-opencode-history-on-attach
+
+* Intent
+Sessions live on the opencode server and survive Emacs restarts, so the
+intended workflow is to run ~opencode serve~ separately and reconnect from
+Emacs. But opening an existing session only starts the live SSE stream -- it
+never loads prior messages, so the chat buffer is blank until the next turn.
+That defeats the point of persistent sessions.
+
+~opencode-client--open-buffer~ sets up buffer-local state and calls
+~--start-stream~ (live SSE) but never loads prior messages. The renderer
+reads three buffer-local structures: ~--messages~ (ordered message ids),
+~--message-parts~ (message id -> ordered part ids), and ~--parts~ (part id
+-> part alist). SSE fills these from standalone ~part~ events.
+
+History has a different shape (verified against opencode 1.18.0 ~/doc~): -
+~GET /api/session/{id}/message~ -> ~{data:[SessionMessage], cursor}~ (our
+~--request~ already unwraps ~data~). - A user message carries ~text~ (and
+files/agents) directly -- no separate parts. - An assistant message carries
+~content: [ … ]~ whose items are
+~SessionMessageAssistantText | …Reasoning | …Tool~, each with ~id~, ~type~,
+and ~text~ (tool uses ~name~ instead of the SSE part's ~tool~ key, and
+~state~ is an enum rather than an object).
+
+* Scope
+In scope:
+- When opening a chat buffer for a session, fetch the session's message
+  history (~GET /api/session/{id}/message~), seed the conversation model
+  from it, render, and only then start the live stream -- so reconnecting
+  shows the existing conversation.
+- Map history messages into the same in-buffer model the SSE renderer
+  uses:
+- user messages contribute their ~text~ as a text part;
+- assistant messages contribute their ~content~ items (text / reasoning /
+  tool), normalizing the tool part's ~name~ field to the ~tool~ key the
+  renderer reads.
+
+Out of scope:
+- No pagination (first page only; ~cursor~ ignored, as elsewhere).
+- No change to the SSE path or the renderer.
+- No new part types beyond what the renderer already handles
+  (text/reasoning/tool).
+
+* Approach
+- adapt history into the existing SSE render model: Add
+  ~opencode-client--seed-history~: fetch the message list, and for each
+  message push its id to ~--messages~ and populate
+  ~--message-parts~/~--parts~:
+  - user message -> synthesize one text part
+    ~((id . <mid>:text) (type . "text") (text . <text>))~.
+  - assistant message -> each ~content~ item becomes a part; normalize by
+    copying ~name~ -> ~tool~ so ~--render-part~ (which reads ~tool~)
+    works, and coerce ~state~ to the status string it expects. Then call
+    ~--render~, then ~--start-stream~. Because SSE ~seq~ handling ignores
+    stale events and parts are keyed by id, later live updates for the
+    same ids overwrite cleanly.
+- fetch synchronously before streaming: Keep it simple: synchronous
+  history fetch in ~--open-buffer~ before ~--start-stream~, so the
+  transcript is present before any live event. History is bounded (one
+  page) and this path is user-initiated.
+
+* Tasks
+- [X] Add ~opencode-client--seed-history (id)~: GET
+  ~/api/session/{id}/message~, iterate the returned messages, and for each
+  append its id to ~--messages~ and populate ~--parts~ / ~--message-parts~
+- [X] User message -> synthesize a text part (~id~ = ~<mid>:text~, ~type~
+  = "text", ~text~ from the message)
+- [X] Assistant message -> map each ~content~ item to a part; normalize
+  the tool item by copying ~name~ -> ~tool~ and coercing ~state~ to its
+  status string
+- [X] In ~opencode-client--open-buffer~, call ~--seed-history~ and
+  ~--render~ before ~--start-stream~
+- [X] Byte-compile cleanly
+- [X] Batch test: seed the model from a canned history payload (one user
+  text message, one assistant message with text + reasoning + tool) and
+  assert ~--render~ produces the expected transcript, including the tool
+  line with its name
+- [X] Batch test: empty history seeds nothing and renders empty
+
+* Delta
+** Client loads session history when opening a session           :ADDED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+When the client opens a chat buffer for a session, it SHALL fetch the
+session's existing message history from the server, seed the conversation
+model from it, and render it before subscribing to the live event stream,
+so reconnecting to a persistent session shows the prior conversation
+rather than an empty buffer.
+*** Reattach shows prior conversation
+- WHEN the client opens a session that already has messages on the server
+- THEN the existing messages are rendered into the chat buffer before any
+  new live events arrive
+*** New session has no history
+- WHEN the client opens a freshly created session with no messages
+- THEN the buffer renders empty and streaming proceeds normally
+*** History parts map to the render model
+- WHEN history contains a user message with text and an assistant message
+  with text, reasoning, and tool content parts
+- THEN each part is rendered the same way the equivalent live streamed
+  part would be

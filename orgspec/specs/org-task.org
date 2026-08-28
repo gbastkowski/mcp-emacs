@@ -1,0 +1,181 @@
+* Session task files are read through an explicit path
+The system SHALL expose read-only MCP tools that accept the target Org task
+file path (or a session id resolving to a path) as an explicit argument, and
+the server MUST NOT hold ambient "current task file" state — each read is
+scoped to the path given in the call.
+** A session file is read by path
+- GIVEN a valid Org task file path
+- WHEN a session read tool is invoked with it
+- THEN the tool reads that file and returns its session contents
+** A missing or invalid path is friendly
+- GIVEN a path that does not resolve to a readable Org file
+- WHEN a session read tool is invoked with it
+- THEN a friendly plain-text message is returned rather than a raw error
+
+* Reads reflect live buffer state
+When the target Org file is open in an Emacs buffer, the read tools SHALL
+reflect the current buffer contents, including unsaved human edits, rather
+than the last-saved disk contents.
+** Unsaved human edits are visible
+- GIVEN a human has unsaved edits in the buffer for the target Org file
+- WHEN a client reads the session
+- THEN the returned contents include the unsaved edits
+
+* Session contents are structured, readable text
+The read tools SHALL return the task heading, the assigned session id, the
+session status, the TODO checklist with each item's Org keyword, and a change
+token identifying the current state of the file.
+The output MUST be plain text that is both human-glanceable and parseable by a
+harness, and the change token MUST advance whenever the file's buffer is
+edited, so a caller can pass it to the wait tool to detect later changes.
+** The full session view is returned
+- GIVEN a populated session task file
+- WHEN a client reads it
+- THEN the response includes the task heading, session id, session status,
+  each TODO item with its current Org keyword, and a change token
+** An empty checklist is still a view
+- GIVEN a task file with a task heading but no TODO items
+- WHEN a client reads it
+- THEN the response includes the heading, session metadata, a change token,
+  and indicates an empty checklist
+** The token advances after an edit
+- GIVEN a client that has read the session once
+- WHEN the file's buffer is edited and the client reads again
+- THEN the change token in the second response differs from the first
+
+* Session id and status live in the Org file
+The session id and session status SHALL be stored in and derived from the Org
+task file itself (heading, properties, or keyword) rather than from
+server-side state.
+** Recorded metadata is returned as stored
+- GIVEN an Org task file recording a session id and a status
+- WHEN a client reads the session
+- THEN those values are returned as stored in the file
+** Absent metadata has a defined fallback
+- GIVEN an Org task file with no recorded session id or status
+- WHEN a client reads the session
+- THEN a defined fallback indication is returned rather than a raw nil
+
+* Updates are performed through the live Emacs buffer
+The mutating MCP tools SHALL modify the target Org task file through its live
+Emacs buffer (opening it if necessary) and MUST NOT write the file directly on
+disk behind Emacs.
+Mutations MUST be scoped to specific subtrees or items rather than rewriting
+the whole buffer.
+** Concurrent human edits survive a mutation
+- GIVEN the target file has unsaved human edits in its buffer
+- WHEN a client performs an update
+- THEN the update is applied to the live buffer, preserving those edits
+** A closed file is opened first
+- GIVEN the target file is not currently open in a buffer
+- WHEN a client performs an update
+- THEN the tool opens it in Emacs and applies the update through that buffer
+
+* Session status can be updated
+The system SHALL expose a tool to set the session status of the task file,
+using the Org TODO keyword machinery configured in the environment.
+** A configured keyword is applied
+- GIVEN a status that is a configured Org keyword
+- WHEN a client sets the session status to it
+- THEN the task file's session status reflects the new keyword
+** An unrecognized status is refused
+- GIVEN a status that is not a configured Org keyword
+- WHEN a client requests it
+- THEN a friendly plain-text message is returned and the status is unchanged
+
+* A known TODO item's status can be updated
+The system SHALL expose a tool to set the Org keyword of an individual TODO
+item that the tool can identify (by item id property when present, otherwise
+by heading text), and the tool MUST use Org keywords rather than a separate
+status vocabulary.
+** An identifiable item is updated alone
+- GIVEN a TODO item that can be identified
+- WHEN a client sets its status
+- THEN that item's Org keyword is updated and no other item is changed
+** An unidentifiable item is refused
+- GIVEN a referenced TODO item that cannot be identified in the file
+- WHEN a client sets its status
+- THEN a friendly plain-text message is returned and no edit is made
+
+* Notes and items are appended without clobbering human content
+The system SHALL expose a tool to append a progress note and/or a new TODO
+item under the task heading at a defined insertion point, and the tools MUST
+NOT reorder, delete, or rewrite human-authored items they did not create.
+** A note is appended in place
+- GIVEN a session task file with existing human content
+- WHEN a client appends a progress note
+- THEN the note is added at the defined insertion point and existing content
+  is unchanged
+** A new item keeps existing order
+- GIVEN a session task file with existing items
+- WHEN a client appends a new TODO item
+- THEN the item is added under the task heading and existing items keep their
+  order and content
+** Deleting or reordering human items is refused
+- GIVEN an update that would reorder, delete, or rewrite a human-authored item
+  the AI did not create
+- WHEN the update is attempted
+- THEN the tool does not perform that operation
+
+* Mutations do not force a save unless defined
+Mutating tools SHALL apply edits to the buffer and MUST NOT save the buffer to
+disk unless a tool is explicitly defined to save; save decisions are otherwise
+left to the human or the existing save tool.
+** An update leaves the file unsaved
+- GIVEN a tool not defined to save
+- WHEN a client performs an update through it
+- THEN the buffer reflects the change and the file is not saved to disk by
+  that tool
+
+* Waiting blocks until the session file changes or a timeout elapses
+The system SHALL expose an MCP tool that accepts a session task file path, a
+baseline change token, and a timeout, and returns when the file's buffer has
+changed relative to the baseline token or when the timeout elapses.
+** A change during the wait wakes it
+- GIVEN a client waiting with a baseline token
+- WHEN the file's buffer is edited before the timeout
+- THEN the tool returns indicating a change occurred
+** A timeout is not an error
+- GIVEN a client waiting with a baseline token
+- WHEN no edit occurs before the timeout
+- THEN the tool returns indicating no change occurred, rather than raising an
+  error
+
+* Changes since the baseline are not missed
+When the file's buffer has already changed past the baseline token at the time
+the wait tool is called, the tool SHALL return immediately indicating a
+change, without waiting.
+** An edit between read and wait is caught
+- GIVEN the buffer was edited after the client obtained its baseline token
+- WHEN the client then calls the wait tool
+- THEN it returns immediately indicating a change occurred
+
+* Waiting does not block the Emacs event loop
+While waiting, the tool SHALL yield to the Emacs event loop so that human
+edits, timers, and other MCP tool calls continue to be processed.
+** Other work proceeds during a wait
+- GIVEN the wait tool is waiting
+- WHEN the file's buffer is edited
+- THEN the edit is still applied and observed, allowing the wait to detect it
+
+* Wake returns the change flag and the current session view
+On return, the tool SHALL provide whether a change occurred, an updated change
+token, and the current session view (task heading, session id, status, and
+TODO checklist).
+** One call is enough to react
+- GIVEN the wait tool returns after a change
+- WHEN the response is read
+- THEN it includes the change indication, a new change token, and the current
+  session contents
+
+* The wait timeout is bounded
+The tool SHALL apply a default timeout when none is given and MUST cap the
+timeout at a defined maximum, so a wait cannot hang indefinitely.
+** A missing timeout gets the default
+- GIVEN a wait call with no timeout
+- WHEN the tool runs
+- THEN it applies the default timeout
+** An excessive timeout is capped
+- GIVEN a requested timeout above the maximum
+- WHEN the tool runs
+- THEN it waits no longer than the maximum

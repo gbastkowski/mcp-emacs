@@ -1,0 +1,207 @@
+#+TITLE: add-claude-runner
+
+* Intent
+~mcp-emacs~ now exposes the pull-model editor tools Claude needs (buffers,
+Org, xref, diagnostics, diff/apply, project/workspace) over plain MCP. The
+one thing it cannot do -- and the last reason ~claude-code-ide.el~ is still
+installed -- is *run* Claude: launch and manage the Claude Code CLI inside
+Emacs. Adding a runner lets Claude connect to those editor tools through
+~mcp-emacs~ over MCP instead of the proprietary IDE WebSocket protocol,
+clearing the path to retire ~claude-code-ide.el~.
+
+~mcp-emacs~ now provides Claude's editor tools over MCP; the missing piece
+for retiring ~claude-code-ide.el~ is a way to *run* the Claude CLI inside
+Emacs. The CLI is a full-screen ANSI TUI, so it needs a real terminal
+emulator, not a comint line-mode. eat is chosen (pure Elisp, no C
+dependency, rewraps on resize, low flicker) and is already the terminal the
+user runs.
+
+eat exposes a single launch primitive:
+~eat-make NAME PROGRAM &optional STARTFILE &rest SWITCHES~ -- it creates a
+buffer ~*NAME*~ running PROGRAM (with SWITCHES) in an eat terminal and
+returns that buffer. The process inherits ~default-directory~ as its working
+directory. This is the same entry point ~claude-code.el~ uses.
+
+The runner lives in a new file, ~elisp/mcp-emacs-run.el~, separate from the
+MCP server so the server stays pure. eat is a soft dependency
+(~featurep~-guarded, ~declare-function~ for ~eat-make~), so loading
+~mcp-emacs~ never requires eat.
+
+* Scope
+In scope:
+- Add a new file ~elisp/mcp-emacs-run.el~ (kept separate from the MCP
+  server so the server stays a pure MCP server).
+- Use *eat* as the terminal backend: the Claude CLI is a full-screen ANSI
+  TUI that needs a real terminal emulator, not a comint line-mode; eat is
+  pure Elisp (no hard C dependency), rewraps on resize, and flickers less.
+  eat is a soft/optional dependency, loaded when present, matching
+  ~mcp-emacs~'s dependency-light design.
+- *Launch*: start the ~claude~ CLI in an eat terminal buffer,
+  project-aware (cwd = project root via ~project.el~), so it connects to
+  editor tools through ~mcp-emacs~ over MCP.
+- *Session management*: per-project named sessions with buffer names like
+  ~*claude:<project>*~; commands to list, switch, and kill sessions.
+- *Window management*: toggle / show / hide the Claude window, with
+  side-window placement and focus control.
+- *Continue/resume*: support ~claude --continue~ and ~claude --resume~ for
+  prior conversations.
+- The ~claude~ executable path and extra CLI flags are customizable.
+- Out of scope: the IDE WebSocket protocol and its push notifications
+  (~selection_changed~ / ~at_mentioned~) are intentionally dropped; editor
+  integration is entirely via ~mcp-emacs~ MCP tools.
+
+Out of scope:
+- The IDE WebSocket protocol and push notifications (editor tools come
+  from mcp-emacs over MCP).
+- Reading or parsing the CLI's output (it is an opaque TUI); the runner
+  only launches, places, and manages the terminal.
+- Any shared abstraction with the opencode client (deliberately separate
+  -- the two are architecturally different).
+
+* Approach
+- Launch via ~eat-make~ with the project root as ~default-directory~: Bind
+  ~default-directory~ to the current project's root (via ~project-current~
+  / ~project-root~, falling back to the buffer's directory when not in a
+  project), then call ~eat-make~ with the runner buffer name, the
+  configured executable, and the configured switches plus any mode flag
+  (continue/resume). Reference: ~claude-code.el~ uses ~eat-make~ the same
+  way. chosen backend (proposal), and ~eat-make~ is its supported entry
+  point.
+- One primary session per project, keyed by project root: Maintain a
+  registry (alist or hash) from project root to runner buffer. Buffer name
+  is ~*claude:<project-name>*~.
+- Side-window placement via ~display-buffer~ rules: Show the runner with
+  ~display-buffer~ using a ~side~/~slot~ alist entry so it occupies a side
+  window rather than replacing the user's main window. Toggle hides the
+  window (without killing the process) when visible and shows it
+  otherwise.
+- Continue/resume are launch-time flags: Continue and resume are separate
+  entry commands that add the CLI's continue or resume flag to the
+  switches passed to ~eat-make~. No session state is tracked by the runner
+  beyond the live buffer; conversation history is the CLI's concern.
+- eat is a soft dependency: ~(require 'eat nil t)~,
+  ~declare-function eat-make~, and a ~featurep 'eat~ guard in each
+  command. Runner commands error with a clear "install eat" message when
+  eat is absent; loading the file never hard-requires it -- consistent
+  with the plz (opencode client) and projectile (project tools) patterns
+  in this repo.
+
+* Tasks
+- [X] Create ~elisp/mcp-emacs-run.el~ with header, ~(require 'eat nil t)~
+  soft dep, ~declare-function eat-make~, and an
+  ~mcp-emacs~/~mcp-emacs-run~ customization group
+- [X] Add defcustoms: ~claude~ executable path, extra CLI flags, and
+  whether showing the runner window selects it (focus)
+- [X] Add an eat-availability guard helper that errors clearly ("install
+  eat") when eat is absent
+- [X] Implement project-root resolution (via
+  ~project-current~/~project-root~, falling back to the buffer's
+  ~default-directory~)
+- [X] Implement the launch function: bind ~default-directory~ to the
+  project root and call ~eat-make~ with the runner buffer name, configured
+  executable, and switches (design D1)
+- [X] Honour the configured executable path and extra CLI flags
+- [X] Implement a per-project registry (project root -> runner buffer)
+  with buffer name ~*claude:<project>*~ (design D2)
+- [X] Reuse an existing live session for a project instead of launching a
+  duplicate
+- [X] Implement list (over live registry entries), switch
+  (~completing-read~), and kill (terminate process, drop registry entry)
+- [X] Implement show via ~display-buffer~ with a side-window alist entry
+  (design D3)
+- [X] Implement hide (without killing the process) and toggle
+- [X] Honour the focus defcustom when showing the window
+- [X] Implement a continue entry command that adds the CLI continue flag
+  to the launch switches (design D4)
+- [X] Implement a resume entry command that adds the CLI resume flag
+- [X] Byte-compile ~elisp/mcp-emacs-run.el~ clean (no unconditional eat
+  require; soft-dep guard verified)
+- [X] Headless checks that need no terminal: project-root resolution
+  returns the expected root; the registry reuses a buffer for the same
+  project; eat-absent path returns the clear error
+- [ ] Live smoke test in a real Emacs: launch the runner in a project,
+  verify the CLI starts in an eat side window at the project root, toggle
+  the window, and exercise continue/resume (requires eat and the ~claude~
+  CLI; done manually)
+- [X] Update ~README.md~ with a runner section (commands, eat requirement,
+  that editor tools come from mcp-emacs over MCP)
+
+* Delta
+** Launch the Claude CLI in an Emacs terminal                    :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL launch the ~claude~ CLI inside an Emacs terminal buffer
+using eat as the terminal backend, with the working directory set to the
+current project root (via ~project.el~), so the CLI runs in the project's
+context and reaches editor tools through mcp-emacs over MCP.
+*** Launching in a project
+- WHEN the user starts the runner from a buffer inside a project
+- THEN the CLI starts in an eat terminal whose working directory is the
+  project root
+*** eat not available
+- WHEN eat is not available
+- THEN the runner reports that it requires eat rather than failing
+  opaquely
+*** Configurable executable and flags
+- WHEN the user has configured a custom ~claude~ executable path or extra
+  CLI flags
+- THEN the runner launches that executable with those flags
+** Manage per-project runner sessions                            :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL keep at most one primary runner session per project, name
+its buffer distinctly (for example ~*claude:<project>*~), and provide
+commands to list, switch to, and kill sessions.
+*** Reusing a project's session
+- WHEN the user starts the runner for a project that already has a live
+  session
+- THEN the runner switches to the existing session rather than starting a
+  duplicate
+*** Listing and switching
+- WHEN the user lists sessions and selects one
+- THEN the runner shows that session's buffer
+*** Killing a session
+- WHEN the user kills a session
+- THEN the runner terminates the CLI process and cleans up its buffer
+** Manage the runner window                                      :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL provide commands to show, hide, and toggle the runner
+window, using a side-window placement, with control over whether focus
+moves to the runner.
+*** Toggling visibility
+- WHEN the user toggles the runner window while it is visible
+- THEN the window is hidden, and toggling again shows it
+*** Side-window placement
+- WHEN the runner window is shown
+- THEN it appears in a side window rather than replacing the user's main
+  window
+** Continue and resume prior conversations                       :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL support starting the CLI with continue and resume options
+so the user can pick up a previous conversation.
+*** Continue the most recent conversation
+- WHEN the user starts the runner in continue mode
+- THEN the CLI is launched with its continue option
+*** Resume a chosen conversation
+- WHEN the user starts the runner in resume mode
+- THEN the CLI is launched with its resume option so a prior conversation
+  can be selected
+** Runner adds no hard package dependency                        :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The runner SHALL use eat only when it is available, loaded as a
+soft/optional dependency, so installing mcp-emacs does not require eat.
+*** eat present
+- WHEN eat is loaded
+- THEN the runner uses it as the terminal backend
+*** eat absent
+- WHEN eat is not loaded
+- THEN loading mcp-emacs still succeeds and the runner reports that it
+  needs eat only when a runner command is invoked

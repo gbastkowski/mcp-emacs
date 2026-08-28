@@ -1,0 +1,356 @@
+#+TITLE: native-edit-diff-review
+
+* Intent
+~mcp-emacs~ already has an interactive ~apply_diff~ tool that opens ediff
+and blocks until the human accepts or rejects (see the archived
+~explicit-diff-accept~ change). But ~apply_diff~ is a plain MCP tool: Claude
+Code only invokes it when the model explicitly chooses to. Claude Code's
+*native* Edit / Write / MultiEdit operations never route through it -- they
+write to disk directly, with no in-editor review.
+
+claude-code-ide.el gets automatic diff review because it does not register
+as an ordinary MCP server. It registers as an *IDE*: a WebSocket server
+(subprotocol ~mcp~), plus it *launches the Claude Code CLI itself* with
+~CLAUDE_CODE_SSE_PORT=<port>~ and ~ENABLE_IDE_INTEGRATION=true~ in the
+environment. The CLI reads those env vars and connects back to
+~ws://127.0.0.1:<port>~ as an IDE client; its built-in edit flow then calls
+the IDE-side ~openDiff~ tool before writing any file. (A
+~~/.claude/ide/<port>.lock~ file is also written, but the spike found the
+env vars are what actually drive this CLI's connection -- see
+spike-findings.md.) The diff review is a property of being the *IDE that
+spawned the CLI*, not of exposing a tool named ~openDiff~.
+
+Because ~mcp-emacs~ speaks only streamable-HTTP MCP, it cannot participate
+in that flow. This is the largest UX gap blocking retirement of
+claude-code-ide.el (#10).
+
+~mcp-emacs~ exposes an HTTP streamable MCP server (~mcp-emacs-server.el~,
+~http://localhost:<port>/mcp~) and, among its tools, ~apply_diff~
+(~mcp-emacs.el~) which opens ~ediff-buffers~ (Buffer A = file, Buffer B =
+proposal), cooperatively polls a ~result~ cell, and returns ~applied~ /
+~rejected~ / ~timeout~ from an explicit accept/reject action.
+
+Claude Code treats an HTTP MCP server purely as a tool provider. Its
+built-in Edit/Write/MultiEdit tools never consult an MCP server; they write
+files directly. So ~apply_diff~ only fires when the model explicitly calls
+it -- never on a native edit.
+
+Claude Code *does* route native edits through a review step when it detects
+an *IDE*. The IDE integration is a separate channel from MCP. The spike (see
+spike-findings.md) established how, from the claude-code-ide.el reference:
+
+1. The IDE runs a WebSocket server (~websocket.el~, ~127.0.0.1~, subprotocol
+~mcp~), speaking JSON-RPC 2.0 (~initialize~ -> protocol ~2024-11-05~,
+~tools/list~, ~tools/call~, ~prompts/list~). 2. The IDE *launches the Claude
+Code CLI itself* with ~CLAUDE_CODE_SSE_PORT=<port>~ and
+~ENABLE_IDE_INTEGRATION=true~ in its environment
+(~claude-code-ide.el:798-801~). The CLI connects back to
+~ws://127.0.0.1:<port>~. This env push -- not a lockfile scan -- is what
+actually drives the connection. 3. A lockfile ~~/.claude/ide/<port>.lock~ =
+~{pid, workspaceFolders, ideName, transport:"ws"}~
+(~claude-code-ide-mcp.el:176-201~) is also written; secondary/informational,
+no auth token. 4. Native edits call ~openDiff~ (~old_file_path~,
+~new_file_path~, ~new_file_contents~, ~tab_name~) as a *deferred* call: the
+IDE responds only when the human resolves -- accept -> ~FILE_SAVED~ + final
+content (Claude Code then writes the file), reject -> ~DIFF_REJECTED~ + tab
+name. Followed by ~close_tab~ / ~closeAllDiffTabs~.
+
+The gap: ~mcp-emacs~ speaks only HTTP MCP, publishes no lockfile, and --
+crucially -- does not launch Claude Code with the IDE env vars, so it is
+never seen as an IDE and native edits bypass ediff.
+
+* Scope
+In scope:
+- Add an *IDE-protocol integration surface* to ~mcp-emacs~, alongside the
+  existing HTTP MCP server, so Claude Code discovers Emacs as an IDE and
+  routes native file edits through an in-editor diff review.
+- Run a WebSocket server (subprotocol ~mcp~) that speaks Claude Code's IDE
+  MCP-over-WebSocket protocol (JSON-RPC 2.0;
+  ~initialize~/~tools/list~/~tools/call~, protocol version ~2024-11-05~).
+- Launch the Claude Code CLI from mcp-emacs with
+  ~CLAUDE_CODE_SSE_PORT=<port>~ and ~ENABLE_IDE_INTEGRATION=true~ so it
+  connects to that WS server (extends the existing claude-runner). Also
+  publish ~~/.claude/ide/<port>.lock~
+  (~{pid, workspaceFolders, ideName, transport:"ws"}~) and remove it on
+  shutdown.
+- Implement the IDE-side diff tools Claude Code calls during native edits:
+  ~openDiff~, ~close_tab~, and ~closeAllDiffTabs~, using the protocol's
+  *deferred*-response mechanism so the socket isn't blocked during human
+  review.
+- Reuse the existing ediff accept/reject flow from ~apply_diff~ for the
+  ~openDiff~ review; on resolution complete the deferred call with
+  ~FILE_SAVED~ + final content (accept) or ~DIFF_REJECTED~ + tab name
+  (reject).
+- Keep the existing HTTP MCP server and ~apply_diff~ unchanged; the IDE
+  surface is additive and independently toggleable.
+
+Out of scope:
+- Not replacing the HTTP MCP transport with WebSocket for the existing
+  tools.
+- Not implementing the full Claude Code IDE tool set (selection sync,
+  diagnostics push, at-mention, etc.) -- only what native-edit diff review
+  requires (~openDiff~, ~close_tab~, ~closeAllDiffTabs~). Other IDE tools
+  are future work.
+- Not auto-saving beyond what the accept path already does; the return
+  contract to Claude Code (~FILE_SAVED~) governs whether Claude Code
+  itself writes.
+
+* Approach
+- A separate IDE-protocol server module, additive to the HTTP server: Add
+  a new module (e.g. ~mcp-emacs-ide.el~) owning the WebSocket server, the
+  lockfile lifecycle, and the IDE tool handlers.
+- Reuse the ~apply_diff~ ediff flow for ~openDiff~: ~openDiff~ receives
+  ~old_file_contents~ / ~new_file_contents~ / ~tab_name~. Drive the same
+  ediff accept/reject session ~apply_diff~ already implements (Buffer A =
+  old/current, Buffer B = new), reusing its cooperative-poll ~result~ cell
+  and accept/reject commands.
+  - accept -> ~FILE_SAVED~ (and apply the accepted content),
+  - reject -> ~DIFF_REJECTED~,
+  - timeout -> treat as reject (~DIFF_REJECTED~), consistent with "did not
+    accept." Rationale: the review UX is already built and tested; only
+    the transport and result-string mapping are new. Factor the
+    ediff-session core out of ~mcp-emacs-apply-diff~ so both callers share
+    it.
+- Lockfile lifecycle tied to IDE-server start/stop: On IDE-server start:
+  pick/confirm a port, write ~~/.claude/ide/<port>.lock~ with ~pid~,
+  ~workspaceFolders~ (the project root), ~ideName~ ("Emacs"), ~transport~
+  ("ws"). On stop / Emacs kill: remove the lockfile.
+- WebSocket transport via ~websocket.el~: The IDE transport is ~ws~; the
+  current HTTP server cannot serve it. Depend on ~websocket.el~ (load
+  lazily; error with an install hint when the IDE surface is enabled but
+  the package is missing, mirroring the existing optional-feature pattern
+  in the codebase).
+- Opt-in, off by default: Gate the IDE surface behind an explicit enable
+  (defcustom / command), off by default. Rationale: the protocol is
+  reverse-engineered and version-fragile; users retiring claude-code-ide
+  opt in deliberately, and a protocol break never affects users who only
+  use the HTTP MCP tools.
+- Discovery is env-injection via a runner, not a lockfile scan: The spike
+  showed the Claude CLI connects because it is *launched with*
+  ~CLAUDE_CODE_SSE_PORT~ + ~ENABLE_IDE_INTEGRATION=true~, not because it
+  scans ~~/.claude/ide/~. So the IDE surface only works for Claude Code
+  processes mcp-emacs itself starts. mcp-emacs must own a runner that
+  injects these env vars (extends the existing claude-runner).
+
+* Tasks
+- [X] Lockfile schema confirmed: ~~/.claude/ide/<port>.lock~ =
+  ~{pid, workspaceFolders, ideName:"Emacs", transport:"ws"}~, no auth
+  token
+- [X] Transport confirmed: ~websocket.el~ server on ~127.0.0.1~,
+  subprotocol ~mcp~, JSON-RPC 2.0; methods ~initialize~ (protocolVersion
+  ~2024-11-05~), ~tools/list~, ~tools/call~, ~prompts/list~;
+  ~notifications/tools/list_changed~ sent after init
+- [X] ~openDiff~ args = ~old_file_path~, ~new_file_path~,
+  ~new_file_contents~, ~tab_name~; deferred response -- accept ->
+  ~FILE_SAVED~ + final content, reject -> ~DIFF_REJECTED~ + tab_name; also
+  ~close_tab~/~closeAllDiffTabs~
+- [X] *KEY*: discovery is push-by-env -- Claude CLI is launched with
+  ~CLAUDE_CODE_SSE_PORT=<port>~ + ~ENABLE_IDE_INTEGRATION=true~; it
+  connects to ~ws://127.0.0.1:<port>~. Lockfile is secondary. -> mcp-emacs
+  must *run* Claude Code (runner dependency)
+- [X] Live-verified against Claude Code *v2.1.212* (2026-07-28): env-var
+  launch connects (interactive only), handshake, ~openDiff~ args, and
+  ~FILE_SAVED~/~DIFF_REJECTED~ accept/reject all confirmed. Findings
+  recorded in spike-findings.md. Drift found -- see 1.6
+- [X] Record live-only findings that change the design: protocolVersion is
+  *~2025-11-25~* (not ~2024-11-05~); *~-p~ headless does NOT connect* --
+  runner must be interactive; Claude shows a *trust prompt* the runner
+  must handle; *every ~tools/call~ must be answered or Claude blocks* --
+  before each edit Claude calls ~closeAllDiffTabs~+~getDiagnostics~ then
+  ~openDiff~, so those two must be implemented/stubbed; new
+  ~ide_connected~ notification
+- [X] Add ~mcp-emacs-ide.el~ (new module) with a WebSocket server via
+  ~websocket.el~, lazy-loaded with an install-hint error when the IDE
+  surface is enabled but the package is absent
+- [X] Implement MCP-over-WebSocket session negotiation matching the spike
+  findings (initialize, tool list = diff tools only)
+- [X] Lifecycle commands: ~mcp-emacs-ide-start~ / ~mcp-emacs-ide-stop~,
+  off by default behind a defcustom opt-in
+- [X] Launch Claude Code from mcp-emacs with ~CLAUDE_CODE_SSE_PORT=<port>~
+  and ~ENABLE_IDE_INTEGRATION=true~ in its environment so it connects to
+  the IDE WS server. *Must be interactive* (a TTY/eat buffer) -- ~-p~
+  headless does not connect. Extends ~mcp-emacs-run.el~ (already uses
+  ~eat-make~); inject the env vars there
+- [X] 3.1a Trust prompt: *documented* (README) as a one-time manual Enter
+  on first launch in a project. Auto-confirm/pre-trust deferred -- claude
+  has no trust flag and pre-seeding ~~/.claude.json~ is invasive; revisit
+  if it proves annoying
+- [X] On IDE-server start, write ~~/.claude/ide/<port>.lock~ with ~pid~,
+  ~workspaceFolders~ (project root), ~ideName~ "Emacs", ~transport~ "ws"
+- [X] Remove the lockfile on ~mcp-emacs-ide-stop~ and best-effort on
+  ~kill-emacs-hook~
+- [X] Factor the ediff accept/reject session core out of
+  ~mcp-emacs-apply-diff~ into a shared function (Buffer A = old, Buffer B
+  = new; cooperative poll; explicit accept/reject; timeout) without
+  changing ~apply_diff~ behaviour
+- [X] ~openDiff~: drive the shared ediff flow; accept -> ~FILE_SAVED~
+  (apply accepted content), reject -> ~DIFF_REJECTED~, timeout ->
+  ~DIFF_REJECTED~
+- [X] ~close_tab~ and ~closeAllDiffTabs~: tear down the ediff session(s)
+  for the named tab / all tabs and clean up buffers. *Required, not
+  optional* -- Claude calls ~closeAllDiffTabs~ before every edit and
+  blocks until answered
+- [X] Track active diff sessions by tab name so ~close_tab~ can target the
+  right one. ~tab_name~ is Claude-generated and opaque (e.g.
+  ~"✻ [Claude Code] hello.txt (61e49d) ⧉"~) -- echo it back verbatim on
+  reject
+- [X] ~getDiagnostics~: implement/stub (accepts ~{}~ and
+  ~{uri:"file://…"}~). Claude calls it before and after every edit and
+  blocks until answered; can return an empty diagnostics result initially
+  (a full impl could wire Flycheck/Flymake later)
+- [X] Answer *every* ~tools/call~ -- an unanswered call stalls the whole
+  edit. ~initialize~ must echo protocolVersion ~2025-11-25~
+- [X] IDE WS server (random port 10000-65535) and the HTTP MCP server (own
+  port) use independent ports and tool sets; no conflict. Live end-to-end
+  run connected Claude Code to the IDE server while the HTTP server config
+  was untouched
+- [X] Confirmed: ~mcp-emacs-ide-stop~ removes the lockfile (verified live
+  -- ~40386.lock~ gone after stop). Crash-stale case: a hard Emacs kill
+  leaves a ~.lock~ with a dead ~pid~; ~kill-emacs-hook~ handles normal
+  exit, and the ~pid~ field lets a future cleanup detect staleness
+- [X] Lockfile written on start with the expected schema; removed on stop
+- [X] Shared ediff-flow unit tests still cover accept / reject /
+  edit-then-accept / quit (regression parity with ~apply_diff~)
+- [X] ~openDiff~ maps accept -> ~FILE_SAVED~, reject/timeout ->
+  ~DIFF_REJECTED~ (drive the bound commands headlessly, as the existing
+  apply-diff tests do)
+- [X] ~close_tab~ / ~closeAllDiffTabs~ clean up their sessions and buffers
+- [X] 6a.1a Applied the fix in ~mcp-emacs--ediff-review~: delete side
+  windows (Treemacs etc.) and force ~ediff-setup-windows-plain~ +
+  ~split-window-horizontally~ before ~ediff-buffers~, with a per-tab
+  ~ediff-control-buffer-suffix~. Mirrors claude-code-ide's handler.
+  Byte-compiles clean; both test suites still green
+- [X] 6a.1b Re-verified live in the running Emacs (server on :8765): drove
+  ~mcp-emacs-ide--open-diff~ in a real frame -- ediff control panel +
+  buffer-A + buffer-B all open in live windows (the old "Buffer B created,
+  no control buffer" symptom is gone). Accept (~C-c C-c~) completed the
+  deferred request with ~FILE_SAVED~+content; reject (~C-c C-k~) completed
+  with ~DIFF_REJECTED~+tab and left the file unchanged; session
+  diff/deferred entries cleaned up on resolve, and ~:control~ is stored
+  live on a pending diff. The Claude-TUI-over-socket leg was already
+  confirmed in 7.4 (v2.1.212); this task only re-checked the window setup
+  + accept/reject deferred drive, both now confirmed
+- [X] README: document the IDE surface, the opt-in, the ~websocket.el~
+  dependency, and the "disable claude-code-ide first" transition note
+- [X] Record the verified Claude Code version and the unofficial-protocol
+  caveat
+- [X] Byte-compile clean (new files: no warnings); apply-diff tests 9/9
+  and IDE tests 20/20 pass
+- [X] Verified live with the real module (Claude Code 2.1.212):
+  env-launched Claude connected to ~mcp-emacs-ide~, called
+  closeAllDiffTabs/getDiagnostics/openDiff (all answered), openDiff
+  registered as deferred, and completing it with ~FILE_SAVED~+content
+  drove Claude to apply the edit (~line one~->~HELLO~ written). Stop
+  removed the lockfile. *Caveat:* when driven from ~eval~ the ediff window
+  did not auto-open (Buffer B created, no control buffer) -- a known
+  "ediff needs a real non-side window" issue also seen in the apply-diff
+  change; needs one more check inside an actual runner session where
+  Claude's terminal is a live window. Also note: Claude's own manual-mode
+  permission gate ("make this edit? Yes/No") is separate from and
+  orthogonal to the ediff review
+
+* Delta
+** Emacs registers as a Claude Code IDE and launches Claude Code against it :ADDED:
+:PROPERTIES:
+:AREA: ide-protocol
+:END:
+The system SHALL make a running Emacs act as the Claude Code IDE for a
+workspace by (a) launching the Claude Code process with the IDE
+integration environment (~CLAUDE_CODE_SSE_PORT~ set to the WebSocket
+server port and ~ENABLE_IDE_INTEGRATION~ enabled) so it connects back to
+Emacs, and (b) publishing a discovery lockfile at
+~~/.claude/ide/<port>.lock~ describing the IDE. The lockfile SHALL include
+the Emacs process id, the workspace folder(s), an IDE name, and the
+WebSocket transport marker, and SHALL be removed when the IDE surface
+stops.
+*** Claude Code launched with IDE environment
+- WHEN the IDE integration surface starts Claude Code for a project
+- THEN the Claude Code process is started *interactively* (in a terminal
+  buffer, not headless ~-p~) with ~CLAUDE_CODE_SSE_PORT~ set to the IDE
+  WebSocket port and IDE integration enabled, and it connects to the Emacs
+  WebSocket server
+*** Workspace trust does not block the connection
+- WHEN Claude Code shows its first-run "do you trust this folder?" prompt
+  for the workspace
+- THEN the integration ensures the workspace is trusted so Claude Code
+  proceeds to connect rather than waiting at the prompt
+*** Lockfile published on start
+- WHEN the IDE integration surface is started for a project
+- THEN a lockfile exists at ~~/.claude/ide/<port>.lock~ containing the
+  Emacs pid, the project workspace folder, an IDE name, and a ~ws~
+  transport marker
+*** Lockfile removed on stop
+- WHEN the IDE integration surface is stopped or Emacs exits normally
+- THEN the corresponding ~~/.claude/ide/<port>.lock~ file no longer exists
+** IDE surface serves the diff tools over WebSocket              :ADDED:
+:PROPERTIES:
+:AREA: ide-protocol
+:END:
+The system SHALL run a WebSocket server that speaks Claude Code's IDE
+protocol (JSON-RPC 2.0; ~initialize~ echoing the protocol version Claude
+Code offers) and advertises the tools Claude Code invokes around native
+file edits: ~openDiff~, ~close_tab~, ~closeAllDiffTabs~, and
+~getDiagnostics~. The surface SHALL respond to every tools/call Claude
+Code makes, because an unanswered call blocks the edit. The surface SHALL
+be opt-in and disabled by default, and SHALL not alter or replace the
+existing HTTP MCP server or its tools.
+*** Tools advertised to a connecting IDE client
+- WHEN Claude Code connects to the advertised WebSocket port and
+  negotiates a session
+- THEN the IDE surface advertises ~openDiff~, ~close_tab~,
+  ~closeAllDiffTabs~, and ~getDiagnostics~
+*** Pre-edit calls are answered so the edit proceeds
+- WHEN Claude Code calls ~closeAllDiffTabs~ and ~getDiagnostics~
+  immediately before a native edit
+- THEN the surface responds to both so Claude Code proceeds to call
+  ~openDiff~ rather than blocking
+*** HTTP MCP server unaffected
+- WHEN the IDE surface is enabled alongside the HTTP MCP server for the
+  same project
+- THEN the HTTP MCP server and its tools continue to function unchanged
+*** Surface off by default
+- WHEN the user has not opted into the IDE surface
+- THEN no WebSocket server runs and no ~~/.claude/ide~ lockfile is
+  published by ~mcp-emacs~
+** Native edits are reviewed via ediff before writing            :ADDED:
+:PROPERTIES:
+:AREA: ide-protocol
+:END:
+When Claude Code calls ~openDiff~ during a native edit, the system SHALL
+present the proposed change in an interactive ediff session (current
+contents versus proposed contents) reusing the existing accept/reject
+review flow, and SHALL return a result that tells Claude Code whether the
+edit was applied. Accepting SHALL return an applied/saved result carrying
+the accepted content; rejecting or timing out SHALL return a rejected
+result and leave the file unchanged.
+*** Human accepts a native edit
+- WHEN Claude Code calls ~openDiff~ for a native edit and the human
+  accepts the proposal in the ediff session
+- THEN the tool returns a ~FILE_SAVED~ result with the accepted content
+  and the change is applied
+*** Human rejects a native edit
+- WHEN Claude Code calls ~openDiff~ for a native edit and the human
+  rejects the proposal
+- THEN the tool returns a ~DIFF_REJECTED~ result and the file is left
+  unchanged
+*** Review times out
+- WHEN the human neither accepts nor rejects before the diff review
+  timeout elapses
+- THEN the tool abandons the ediff session, leaves the file unchanged, and
+  returns a ~DIFF_REJECTED~ result
+** Diff tabs can be closed by Claude Code                        :ADDED:
+:PROPERTIES:
+:AREA: ide-protocol
+:END:
+The system SHALL handle Claude Code's ~close_tab~ and ~closeAllDiffTabs~
+calls by tearing down the corresponding ediff session(s) and cleaning up
+their buffers. ~close_tab~ SHALL target the session identified by its tab
+name; ~closeAllDiffTabs~ SHALL close all open diff sessions for the
+current connection.
+*** Close a single diff tab
+- WHEN Claude Code calls ~close_tab~ with the name of an open diff tab
+- THEN the matching ediff session is torn down and its buffers cleaned up
+*** Close all diff tabs
+- WHEN Claude Code calls ~closeAllDiffTabs~
+- THEN all open diff sessions for the current connection are torn down and
+  their buffers cleaned up

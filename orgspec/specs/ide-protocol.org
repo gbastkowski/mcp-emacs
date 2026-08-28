@@ -1,0 +1,101 @@
+* Emacs registers as a Claude Code IDE and launches Claude Code against it
+The system SHALL make a running Emacs act as the Claude Code IDE for a
+workspace by launching the Claude Code process with the IDE integration
+environment (~CLAUDE_CODE_SSE_PORT~ set to the WebSocket server port and
+~ENABLE_IDE_INTEGRATION~ enabled) so it connects back to Emacs, and by
+publishing a discovery lockfile at ~~/.claude/ide/<port>.lock~ describing the
+IDE.
+The lockfile SHALL include the Emacs process id, the workspace folder(s), an
+IDE name, and the WebSocket transport marker, and SHALL be removed when the
+IDE surface stops.
+** Claude Code launches with the IDE environment
+- GIVEN the IDE integration surface starts Claude Code for a project
+- WHEN the process is launched
+- THEN it is started interactively in a terminal buffer rather than headless
+  ~-p~, with ~CLAUDE_CODE_SSE_PORT~ set to the IDE WebSocket port and IDE
+  integration enabled, and it connects to the Emacs WebSocket server
+** Workspace trust does not block the connection
+- GIVEN Claude Code shows its first-run "do you trust this folder?" prompt
+- WHEN the integration starts it for that workspace
+- THEN the workspace is ensured trusted so Claude Code proceeds to connect
+  rather than waiting at the prompt
+** The lockfile is published on start
+- GIVEN the IDE integration surface is started for a project
+- WHEN it comes up
+- THEN a lockfile exists at ~~/.claude/ide/<port>.lock~ containing the Emacs
+  pid, the project workspace folder, an IDE name, and a ~ws~ transport marker
+** The lockfile is removed on stop
+- GIVEN a published lockfile
+- WHEN the IDE integration surface is stopped or Emacs exits normally
+- THEN the corresponding ~~/.claude/ide/<port>.lock~ file no longer exists
+
+* The IDE surface serves the diff tools over WebSocket
+The system SHALL run a WebSocket server that speaks Claude Code's IDE protocol
+(JSON-RPC 2.0, with ~initialize~ echoing the protocol version Claude Code
+offers) and advertises the tools Claude Code invokes around native file edits:
+~openDiff~, ~close_tab~, ~closeAllDiffTabs~, and ~getDiagnostics~.
+The surface SHALL respond to every tools/call Claude Code makes, because an
+unanswered call blocks the edit.
+The surface SHALL be opt-in and disabled by default, and SHALL NOT alter or
+replace the existing HTTP MCP server or its tools.
+** The tools are advertised to a connecting client
+- GIVEN Claude Code connects to the advertised WebSocket port
+- WHEN it negotiates a session
+- THEN the IDE surface advertises ~openDiff~, ~close_tab~,
+  ~closeAllDiffTabs~, and ~getDiagnostics~
+** Pre-edit calls are answered so the edit proceeds
+- GIVEN Claude Code is about to make a native edit
+- WHEN it calls ~closeAllDiffTabs~ and ~getDiagnostics~ immediately before it
+- THEN the surface responds to both so Claude Code proceeds to call
+  ~openDiff~ rather than blocking
+** The HTTP MCP server is unaffected
+- GIVEN the IDE surface is enabled alongside the HTTP MCP server for the same
+  project
+- WHEN both run
+- THEN the HTTP MCP server and its tools continue to function unchanged
+** The surface is off by default
+- GIVEN a user who has not opted into the IDE surface
+- WHEN Emacs runs
+- THEN no WebSocket server runs and no ~~/.claude/ide~ lockfile is published
+  by mcp-emacs
+
+* Native edits are reviewed via ediff before writing
+When Claude Code calls ~openDiff~ during a native edit, the system SHALL
+present the proposed change in an interactive ediff session (current contents
+versus proposed contents) reusing the existing accept/reject review flow, and
+SHALL return a result that tells Claude Code whether the edit was applied.
+Accepting SHALL return an applied/saved result carrying the accepted content;
+rejecting or timing out SHALL return a rejected result and leave the file
+unchanged.
+** An accepted native edit is saved
+- GIVEN Claude Code calls ~openDiff~ for a native edit
+- WHEN the human accepts the proposal in the ediff session
+- THEN the tool returns a ~FILE_SAVED~ result with the accepted content and
+  the change is applied
+** A rejected native edit changes nothing
+- GIVEN Claude Code calls ~openDiff~ for a native edit
+- WHEN the human rejects the proposal
+- THEN the tool returns a ~DIFF_REJECTED~ result and the file is left
+  unchanged
+** A timed-out review is a rejection
+- GIVEN a native edit review in progress
+- WHEN the human neither accepts nor rejects before the diff review timeout
+  elapses
+- THEN the ediff session is abandoned, the file is left unchanged, and a
+  ~DIFF_REJECTED~ result is returned
+
+* Diff tabs can be closed by Claude Code
+The system SHALL handle Claude Code's ~close_tab~ and ~closeAllDiffTabs~ calls
+by tearing down the corresponding ediff session(s) and cleaning up their
+buffers.
+~close_tab~ SHALL target the session identified by its tab name;
+~closeAllDiffTabs~ SHALL close all open diff sessions for the current
+connection.
+** A single diff tab is closed by name
+- GIVEN an open diff tab
+- WHEN Claude Code calls ~close_tab~ with its name
+- THEN the matching ediff session is torn down and its buffers cleaned up
+** All diff tabs are closed at once
+- GIVEN open diff sessions for the current connection
+- WHEN Claude Code calls ~closeAllDiffTabs~
+- THEN all of them are torn down and their buffers cleaned up

@@ -1,0 +1,192 @@
+#+TITLE: runner-send-prompt
+
+* Intent
+The runner (~mcp-emacs-run.el~) is launch-only: once the CLI is running in
+its eat terminal, there is no way to drive it from elsewhere in Emacs.
+claude-code-ide provides ~send-prompt~, ~send-escape~, ~insert-newline~, and
+~insert-at-mentioned~; these are parity gaps blocking its retirement (issues
+#11, #12). Concretely, the user cannot select code, hit a key, and have the
+running session explain it -- they must copy-paste into the terminal.
+
+~mcp-emacs-run.el~ launches the Claude CLI in an ~eat~ terminal, one primary
+session per project, tracked in ~mcp-emacs-run--sessions~ (project root ->
+buffer). Today it can only launch, display, and kill; it cannot feed input
+to a running session. claude-code-ide reaches parity here through
+~claude-code-ide--terminal-send-string~ (backend-dispatched) plus
+~send-prompt~ / ~send-escape~ / ~send-return~, and ~insert-at-mentioned~ for
+pushing a selection into the prompt.
+
+The eat terminal exposes a single primitive we need:
+~(eat-term-send-string TERMINAL STRING)~, where ~TERMINAL~ is the
+buffer-local ~eat-terminal~ object of the eat buffer. claude-code-ide's eat
+branch does exactly ~(eat-term-send-string eat-terminal string)~, sends
+~"\e"~ for escape and ~"\r"~ for return.
+
+* Scope
+In scope:
+- Add runner commands to drive the current project's live CLI terminal:
+- send a prompt string (submitting it to the CLI)
+- send an escape / interrupt
+- insert a newline into the prompt without submitting
+- Add an at-mention reference builder: for a file-backed buffer produce
+  ~@relative/path:startline-endline~ (or ~:line~ with no region); for a
+  non-file buffer fall back to the inline selected text.
+- Add ~mcp-emacs-explain-selection-in-current-session~: build a reference
+  for the region (or point) and send ~explain <ref>~ to the project's
+  session, as the first consumer of the above.
+
+Out of scope:
+- No terminal backend other than eat (matches the runner's existing
+  eat-only stance).
+- No MCP-server-side tool -- these are Emacs-side runner commands the
+  *user* invokes, not tools the agent calls.
+- No selection *push-tracking* / notifications (that is the separate
+  selection-push gap, out of scope).
+- No new keybindings shipped in this repo (documented for the user's Doom
+  config).
+
+* Approach
+- One low-level send helper, three thin commands: Add
+  ~mcp-emacs-run--send (root string)~ that looks up the live buffer for
+  ~root~, reads its buffer-local ~eat-terminal~, and calls
+  ~eat-term-send-string~. Build on it:
+  - ~mcp-emacs-run-send-prompt (text)~ -> send ~text~ then ~"\r"~.
+  - ~mcp-emacs-run-send-escape~ -> send ~"\e"~.
+  - ~mcp-emacs-run-send-newline~ -> send the newline-without-submit
+    sequence. Rationale: mirrors claude-code-ide's structure, keeps
+    backend detail (~eat-terminal~, control chars) in one place.
+    *Alternative considered:* a public MCP tool so the agent could
+    self-prompt -- rejected, this is a human-driven action and the runner
+    is deliberately not an MCP surface.
+- Newline-without-submit: The CLI treats ~\r~ as submit and a bare ~\n~ as
+  a literal newline in the prompt editor. ~send-newline~ sends ~"\n"~;
+  verified against the running CLI -- it inserts a newline without
+  submitting.
+- Reference builder -- prefer @mention, fall back to inline:
+  ~mcp-emacs-run--selection-reference~ returns a string:
+  - Buffer visits a file -> ~@PATH:START[-END]~, where ~PATH~ is relative
+    to the project root (so it matches how the CLI resolves at-mentions),
+    ~START~/~END~ are the region's line span (1-based), or a single
+    ~:LINE~ at point when no region is active.
+  - Buffer has no file -> the region text verbatim (or, with no region,
+    the current line), so the command still works in
+    scratch/compilation/etc. Rationale: at-mentions keep prompts small and
+    let the CLI read current on-disk content; inline text is the robust
+    fallback. Line numbers use Emacs' 1-based ~line-number-at-pos~.
+    *Alternative considered:* always inline text -- rejected, large
+    selections bloat the prompt and go stale; always @mention -- rejected,
+    breaks on non-file buffers.
+- ~explain-selection~ composition:
+  ~mcp-emacs-explain-selection-in-current-session~ =
+  ~(mcp-emacs-run-send-prompt (concat "explain " (mcp-emacs-run--selection-reference)))~
+  against the current project's session. No session -> ~user-error~,
+  consistent with ~mcp-emacs-run-kill~.
+- Session targeting: All commands resolve the project via the existing
+  ~mcp-emacs-run--project-root~ and reuse ~mcp-emacs-run--live-buffer~.
+  They never launch: if there is no live session they signal a
+  ~user-error~.
+
+* Tasks
+- [X] Add ~mcp-emacs-run--send (root string)~: resolve the live buffer via
+  ~mcp-emacs-run--live-buffer~, read its buffer-local ~eat-terminal~,
+  ~user-error~ if no session or no terminal, else ~eat-term-send-string~
+- [X] Add ~declare-function~ for ~eat-term-send-string~ and a ~defvar~
+  reference for ~eat-terminal~
+- [X] ~mcp-emacs-run-send-prompt (text)~ -- interactive (read string),
+  send ~text~ then ~"\r"~
+- [X] ~mcp-emacs-run-send-escape~ -- send ~"\e"~
+- [X] ~mcp-emacs-run-send-newline~ -- send the newline-without-submit
+  sequence; verify ~"\n"~ vs shift-enter escape against the running CLI
+- [X] Autoload cookies on the three commands
+- [X] Add ~mcp-emacs-run--selection-reference~: file buffer ->
+  ~@<project-relative-path>:<start>[-<end>]~ using 1-based
+  ~line-number-at-pos~; single ~:line~ when no region; non-file buffer ->
+  region text (or current line) verbatim
+- [X] Path relative to ~mcp-emacs-run--project-root~
+- [X] ~mcp-emacs-explain-selection-in-current-session~ -- build reference,
+  ~mcp-emacs-run-send-prompt (concat "explain " ref)~; autoload cookie
+- [X] Unit-test ~mcp-emacs-run--selection-reference~ headless:
+  file-with-region, file-no-region, non-file -- cover all three spec
+  scenarios
+- [X] Test the no-session guard: send command in a project with no live
+  session signals ~user-error~ and launches nothing (stub eat as in
+  existing headless tests)
+- [X] Test ~--send~ delivers the string to a stubbed terminal
+- [X] README runner section: document the send/explain commands
+- [X] Byte-compile clean; all tests pass
+- [X] Note suggested Doom ~SPC E~ bindings for explain in dotfiles (out of
+  repo; mention in change summary)
+
+* Delta
+** Send input to a live runner session                           :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL provide commands that feed input to the current project's
+live runner session: sending a prompt string (submitting it), sending an
+escape/interrupt, and inserting a newline into the prompt without
+submitting. Input SHALL be delivered to the session's terminal.
+*** Send and submit a prompt
+- WHEN the user sends a prompt string to a project with a live session
+- THEN the prompt text is delivered to the session's terminal and
+  submitted
+*** Send an escape
+- WHEN the user sends an escape to a project with a live session
+- THEN an escape/interrupt is delivered to the session's terminal
+*** Insert a newline without submitting
+- WHEN the user inserts a newline in a project with a live session
+- THEN a newline is delivered to the prompt and the prompt is not
+  submitted
+** Require a live session for input commands                     :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL require an existing live session for the current project
+when sending input; these commands SHALL NOT launch a new session. When no
+live session exists, the system SHALL report this rather than starting the
+CLI.
+*** No live session
+- WHEN the user sends input for a project that has no live session
+- THEN the system reports that there is no session and does not launch the
+  CLI
+** Build a reference for the current selection                   :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL build a textual reference for the current selection to
+embed in a prompt. For a buffer visiting a file, the reference SHALL be an
+at-mention of the file path relative to the project root with the line
+span of the active region (or the single line at point when no region is
+active). For a buffer not visiting a file, the reference SHALL be the
+selected text verbatim (or the current line when no region is active).
+*** File-backed buffer with a region
+- WHEN a reference is built in a file-backed buffer with an active region
+  spanning lines 12 to 20
+- THEN the reference is an at-mention of the project-relative path with
+  the span ~12-20~
+*** File-backed buffer without a region
+- WHEN a reference is built in a file-backed buffer with no active region,
+  point on line 12
+- THEN the reference is an at-mention of the project-relative path with
+  the single line ~12~
+*** Non-file buffer
+- WHEN a reference is built in a buffer that does not visit a file
+- THEN the reference is the selected text (or the current line when no
+  region is active)
+** Explain the current selection in the session                  :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL provide a command that builds a reference for the current
+selection and sends an explain request for it to the current project's
+live session.
+*** Explain a selection
+- WHEN the user invokes explain-selection with a region active in a
+  project with a live session
+- THEN an explain request referencing the selection is sent to and
+  submitted in the session
+*** Explain with no live session
+- WHEN the user invokes explain-selection for a project with no live
+  session
+- THEN the system reports that there is no session and does not launch the
+  CLI

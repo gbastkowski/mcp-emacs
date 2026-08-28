@@ -1,0 +1,445 @@
+* The Claude CLI is launched in an Emacs terminal
+The system SHALL launch the ~claude~ CLI inside an Emacs terminal buffer using
+eat as the terminal backend, with the working directory set to the current
+project root (via ~project.el~), so the CLI runs in the project's context and
+reaches editor tools through mcp-emacs over MCP.
+** Launching inside a project uses its root
+- GIVEN a buffer inside a project
+- WHEN the user starts the runner from it
+- THEN the CLI starts in an eat terminal whose working directory is the
+  project root
+** Missing eat is reported clearly
+- GIVEN an Emacs where eat is not available
+- WHEN the user starts the runner
+- THEN the runner reports that it requires eat rather than failing opaquely
+** A custom executable and flags are honoured
+- GIVEN a configured custom ~claude~ executable path or extra CLI flags
+- WHEN the user starts the runner
+- THEN that executable is launched with those flags
+
+* Runner sessions are managed per project
+The system SHALL support multiple concurrent runner sessions per project.
+Each session's buffer SHALL be named ~*claude:<project>:<n>*~, where ~<n>~ is
+a positive integer allocated per project starting at 1 (the lowest number not
+currently in use by a live session for that project).
+The system SHALL provide a command to start a new session (always allocating a
+fresh number), and commands to list, switch to, and kill sessions.
+The set of live sessions SHALL be derived from the live runner buffers
+themselves (matched by name and each buffer's own project directory), not from
+a separately maintained root-to-buffer registry.
+** Starting allocates a fresh number
+- GIVEN a project with a live session numbered 1
+- WHEN the user starts a new runner
+- THEN a new session is started in buffer ~*claude:<project>:2*~ without
+  disturbing session 1
+** Numbering fills the lowest free slot
+- GIVEN sessions 1 and 3 are live but 2 was killed
+- WHEN the user starts a new runner
+- THEN the new session reuses number 2
+** Sessions can be listed and switched to
+- GIVEN one or more live sessions
+- WHEN the user lists sessions and selects one
+- THEN the runner shows that session's buffer
+** Killing a session cleans it up
+- GIVEN a live session
+- WHEN the user kills it
+- THEN the runner terminates the CLI process and cleans up its buffer
+** Sessions are discoverable without a registry
+- GIVEN a live runner buffer with no in-memory registry entry for it
+- WHEN sessions are enumerated
+- THEN the session is still listed, switchable, and killable
+
+* The runner window is managed
+The system SHALL provide commands to show, hide, and toggle the runner window,
+placing the buffer in an ordinary (non-dedicated) window in a configurable
+direction, with control over whether focus moves to the runner.
+** Toggling hides and shows
+- GIVEN the runner window is visible
+- WHEN the user toggles it
+- THEN the window is hidden, and toggling again shows it
+** Placement follows the configured direction
+- GIVEN a configured window direction (default right)
+- WHEN the runner window is shown
+- THEN it appears in an ordinary window placed in that direction, so it can be
+  split, navigated, and closed like any other window rather than a dedicated
+  side window
+
+* A session can start without displaying its window
+The system SHALL provide a command to start a project's runner session
+headless: the CLI runs in its eat buffer and is registered as the project's
+primary session, but no window is displayed and focus does not move to it.
+The headless buffer SHALL be revealable afterwards through the existing
+show/toggle/switch commands, and SHALL participate in the one-session-per-
+project reuse model.
+** Starting headless displays nothing
+- GIVEN a project with no live session
+- WHEN the user starts the runner headless
+- THEN the CLI starts in an eat buffer registered as that project's session
+  and no window for it is displayed
+** A headless session can be revealed
+- GIVEN a session that was started headless
+- WHEN the user toggles or switches to it
+- THEN its buffer is displayed in the runner window
+** Headless start reuses an existing session
+- GIVEN a project that already has a live session
+- WHEN the user starts the runner headless
+- THEN the existing session is reused, no duplicate is started, and no window
+  is displayed
+
+* Prior conversations can be continued and resumed
+The system SHALL support starting the CLI with continue and resume options so
+the user can pick up a previous conversation.
+** Continue mode passes the continue option
+- GIVEN the user starts the runner in continue mode
+- WHEN the CLI is launched
+- THEN it is launched with its continue option
+** Resume mode passes the resume option
+- GIVEN the user starts the runner in resume mode
+- WHEN the CLI is launched
+- THEN it is launched with its resume option so a prior conversation can be
+  selected
+
+* The runner adds no hard package dependency
+The runner SHALL use eat only when it is available, loaded as a soft/optional
+dependency, so installing mcp-emacs does not require eat.
+** With eat it is the backend
+- GIVEN an Emacs where eat is loaded
+- WHEN the runner starts a session
+- THEN it uses eat as the terminal backend
+** Without eat loading still succeeds
+- GIVEN an Emacs where eat is not loaded
+- WHEN mcp-emacs is loaded
+- THEN loading succeeds and the runner reports that it needs eat only when a
+  runner command is invoked
+
+* The Claude window opens at a configurable width
+The system SHALL display the Claude Code buffer in a window whose width is
+controlled by a user-configurable variable, defaulting to 120 columns.
+** The default width is 120 columns
+- GIVEN a user who has not customized the width variable
+- WHEN the Claude Code buffer is displayed
+- THEN the window is sized to 120 columns wide
+** A customized width is honoured
+- GIVEN the width variable set to N columns
+- WHEN the Claude Code buffer is displayed
+- THEN the window is sized to N columns wide, subject to the frame fraction
+  clamp
+
+* The window width is clamped to a maximum frame fraction
+The system SHALL clamp the Claude window width so it never exceeds a
+user-configurable maximum fraction of the frame's total width, ensuring the
+code pane is not crushed on narrow frames.
+** A fitting width is used as configured
+- GIVEN a configured width at or below the max-fraction of the current frame
+  width
+- WHEN the window is displayed
+- THEN it uses the configured width
+** An oversized width is reduced
+- GIVEN a configured width exceeding the max-fraction of the current frame
+  width
+- WHEN the window is displayed
+- THEN the window width is reduced to the max-fraction of the frame width
+
+* The Claude window is a normal splittable window
+The system SHALL display the Claude Code buffer in an ordinary Emacs window
+(not an Emacs side window), so the window can be split, moved, and managed
+with standard window commands.
+** The window can be split
+- GIVEN the Claude window is displayed
+- WHEN the user issues a standard window-split command on it
+- THEN the split succeeds, because the window is not a side window that
+  refuses splitting
+
+* The Claude window is weakly dedicated to its buffer
+The system SHALL mark the Claude window as weakly dedicated to the Claude Code
+buffer, so the window prefers to keep showing that buffer but
+~display-buffer~ MAY still reuse it when no better window is available.
+** Ordinary display avoids the Claude window
+- GIVEN the Claude window shows the Claude Code buffer and another suitable
+  window exists
+- WHEN the user opens another buffer
+- THEN that buffer is displayed in a different window, leaving the Claude
+  buffer visible
+** display-buffer may override when necessary
+- GIVEN the Claude window is the only candidate window available
+- WHEN ~display-buffer~ runs
+- THEN it MAY reuse the Claude window, because dedication is weak rather than
+  strong
+
+* Markdown content renders in a popup output window
+The system SHALL provide a command that takes markdown content and a kind
+identifier and renders the content in a dedicated buffer shown in a regular
+split window.
+The buffer SHALL be rendered read-only with markdown formatting and native
+syntax highlighting for fenced code blocks, and the window SHALL NOT auto-hide
+— it SHALL persist until the user dismisses it.
+** Content renders read-only in a split window
+- GIVEN markdown content and a kind identifier
+- WHEN the command is invoked
+- THEN the content is rendered read-only in a dedicated buffer with markdown
+  formatting and highlighted fenced code blocks, shown in a regular split
+  window
+** Fenced code blocks are fontified
+- GIVEN content containing a fenced code block with a language tag
+- WHEN it is rendered
+- THEN the code inside the block is fontified for that language
+** The window persists
+- GIVEN the popup is shown
+- WHEN the user runs other commands that do not dismiss it
+- THEN the popup window remains visible
+
+* The output window supports scroll, select, and copy
+The buffer shown by the popup output window SHALL behave as a normal Emacs
+buffer, allowing the user to scroll it, set a region, and copy text from it.
+** Text can be selected and copied
+- GIVEN the popup buffer is shown
+- WHEN the user moves point into it, sets a region, and copies
+- THEN the selected text is placed on the kill ring
+
+* One buffer is reused per output kind
+The system SHALL reuse a single buffer per kind identifier; a new render with
+the same kind SHALL replace the previous content in that buffer and reuse its
+window rather than creating a new one.
+** Re-rendering replaces content in place
+- GIVEN the command was invoked with a kind identifier
+- WHEN it is invoked again with the same kind and different content
+- THEN the second render replaces the first content in the same buffer and
+  window
+** Different kinds get different buffers
+- GIVEN two different kind identifiers
+- WHEN the command is invoked with each
+- THEN each kind is rendered in its own dedicated buffer
+
+* Input is sent to a live runner session
+The system SHALL provide commands that feed input to a runner session resolved
+from the live sessions: sending a prompt string (submitting it), sending an
+escape/interrupt, and inserting a newline into the prompt without submitting.
+Input SHALL be delivered to the resolved session's terminal.
+** A prompt is sent and submitted
+- GIVEN a resolvable target session
+- WHEN the user sends a prompt string
+- THEN the prompt text is delivered to that session's terminal and submitted
+** An escape is sent
+- GIVEN a resolvable target session
+- WHEN the user sends an escape
+- THEN an escape/interrupt is delivered to that session's terminal
+** A newline does not submit
+- GIVEN a resolvable target session
+- WHEN the user inserts a newline
+- THEN a newline is delivered to the prompt and the prompt is not submitted
+
+* Input commands require a live session
+The system SHALL require at least one live runner session when sending input;
+these commands SHALL NOT launch a new session.
+When no live session exists anywhere, the system SHALL report this rather than
+starting the CLI.
+** No session is reported, not launched
+- GIVEN no live runner session exists anywhere
+- WHEN the user sends input
+- THEN the system reports that there is no session and does not launch the CLI
+
+* A reference is built for the current selection
+The system SHALL build a textual reference for the current selection to embed
+in a prompt.
+For a buffer visiting a file, the reference SHALL be an at-mention of the file
+path relative to the project root with the line span of the active region (or
+the single line at point when no region is active).
+For a buffer not visiting a file, the reference SHALL be the selected text
+verbatim (or the current line when no region is active).
+** A file-backed region becomes a span at-mention
+- GIVEN a file-backed buffer with an active region spanning lines 12 to 20
+- WHEN a reference is built
+- THEN it is an at-mention of the project-relative path with the span ~12-20~
+** A file-backed point becomes a single-line at-mention
+- GIVEN a file-backed buffer with no active region and point on line 12
+- WHEN a reference is built
+- THEN it is an at-mention of the project-relative path with the single line
+  ~12~
+** A non-file buffer yields its text
+- GIVEN a buffer that does not visit a file
+- WHEN a reference is built
+- THEN the reference is the selected text, or the current line when no region
+  is active
+
+* The current selection can be explained in the session
+The system SHALL provide a command that builds a reference for the current
+selection and produces an explanation for it.
+The command SHALL choose its output sink based on session-buffer visibility:
+when a window is showing the current project's session buffer, the explanation
+SHALL be sent to and submitted in that live session; otherwise — whether the
+project has a hidden session or no session at all — the explanation SHALL be
+fetched with a one-shot headless query and rendered in the popup output
+window.
+The command SHALL NOT require a live session and SHALL NOT launch a TUI
+session.
+** A visible session receives the explanation
+- GIVEN a region active in a project whose session buffer is visible in a
+  window
+- WHEN the user invokes explain-selection
+- THEN an explain request referencing the selection is sent to and submitted
+  in the session
+** A hidden session falls back to the popup
+- GIVEN a project with a live session whose buffer is not visible in any
+  window
+- WHEN the user invokes explain-selection
+- THEN the explanation is fetched with a headless query and rendered in the
+  popup output window
+** No session still explains
+- GIVEN a project with no live session
+- WHEN the user invokes explain-selection
+- THEN the explanation is fetched with a headless query and rendered in the
+  popup output window, and no TUI session is launched
+
+* Single keystrokes are sent to a live runner session
+The system SHALL provide commands that each feed a single keystroke to the
+current project's live runner session: a carriage return, the digits ~1~, ~2~,
+and ~3~ (for numbered menus), a shift-tab (to cycle mode), and the up and down
+arrow keys.
+Each command SHALL deliver the corresponding input to the session's terminal
+and SHALL require an existing live session, never launching a new one.
+** A carriage return is delivered
+- GIVEN a project with a live session
+- WHEN the user invokes the send-return command
+- THEN a carriage return is delivered to the session's terminal
+** A numbered menu choice is delivered
+- GIVEN a project with a live session
+- WHEN the user invokes a send-digit command for 1, 2, or 3
+- THEN the corresponding digit is delivered to the session's terminal
+** Shift-tab cycles mode
+- GIVEN a project with a live session
+- WHEN the user invokes the send-shift-tab command
+- THEN the shift-tab escape sequence is delivered to the session's terminal
+** An arrow key is delivered
+- GIVEN a project with a live session
+- WHEN the user invokes the send-up or send-down command
+- THEN the corresponding arrow-key escape sequence is delivered to the
+  session's terminal
+** A keystroke with no session is reported
+- GIVEN a project with no live session
+- WHEN the user invokes any single-keystroke command
+- THEN the system reports that there is no session and does not launch the CLI
+
+* Runner sessions are discovered from live buffers
+The system SHALL determine the set of available Claude runner sessions by
+scanning live buffers whose names match the runner naming pattern
+(~*claude:<project>:<n>*~), not from a stored registry.
+Each such buffer's project SHALL be derived from that buffer's own
+~default-directory~ resolved to a project root.
+** A session survives a registry-less reload
+- GIVEN a live runner buffer with no in-memory session registry entry, for
+  example after reloading the library
+- WHEN sessions are enumerated
+- THEN the buffer is still discovered as an available session
+** Dead buffers are not sessions
+- GIVEN a former runner buffer that has been killed
+- WHEN sessions are enumerated
+- THEN it is not included among the available sessions
+
+* The send target is resolved by project and visibility priority
+When sending keys or text, the system SHALL resolve exactly one target runner
+session from the available sessions using this priority order, where "same
+project" means the session's resolved project root equals the current buffer's
+resolved project root, and "visible" means the session buffer is displayed in
+some window:
+1. same project AND visible
+2. same project AND hidden
+3. any project AND visible
+4. any project AND hidden
+The system SHALL use the highest-priority non-empty tier as the candidate set
+for the pick.
+** A single same-project visible session wins outright
+- GIVEN exactly one runner session that is visible and belongs to the current
+  buffer's project
+- WHEN a send is attempted
+- THEN that session is the target without prompting
+** One of several matching the project wins
+- GIVEN multiple visible runner sessions of which only one belongs to the
+  current buffer's project
+- WHEN a send is attempted
+- THEN that same-project session is the target without prompting
+** Visible beats hidden within a project
+- GIVEN the current project has both a visible and a hidden runner session
+- WHEN a send is attempted
+- THEN the visible one is chosen, because tier 1 beats tier 2
+** Cross-project tiers are the fallback
+- GIVEN no runner session belongs to the current buffer's project but at least
+  one exists for another project
+- WHEN a send is attempted
+- THEN resolution falls back to the visible-first cross-project tiers
+
+* Ambiguous resolution prompts the user
+The system SHALL prompt the user to choose (via ~completing-read~) when the
+highest-priority non-empty tier contains more than one candidate, and SHALL
+send to the chosen session.
+** Multiple candidates prompt
+- GIVEN the winning tier contains more than one session
+- WHEN a send is attempted
+- THEN the user is prompted to pick one and the send goes to the pick
+** A single candidate does not prompt
+- GIVEN the winning tier contains exactly one session
+- WHEN a send is attempted
+- THEN no prompt is shown and that session is used
+
+* No available session yields a clear error
+The system SHALL signal a clear ~user-error~ when no live runner session
+exists at all, rather than silently doing nothing.
+** No sessions anywhere signals
+- GIVEN no live ~*claude:<project>:<n>*~ runner buffer exists
+- WHEN a send is attempted
+- THEN a ~user-error~ is signalled indicating there is no runner session
+
+* A multi-keystroke send resolves the target once
+The system SHALL resolve the target session once per user-initiated send
+operation, so operations that emit several keystrokes (for example text
+followed by a submit) do not prompt more than once.
+** Prompt-and-submit resolves once
+- GIVEN the winning tier is ambiguous
+- WHEN the user sends a prompt that emits the text and then a submit keystroke
+- THEN the user is prompted at most once for that operation
+
+* A resolved runner session can be quit gracefully
+The system SHALL provide a command that resolves a target runner session using
+the same priority as input commands (same-project and visible first, prompting
+when the winning tier is ambiguous) and initiates a graceful quit of that
+session's Claude CLI by sending the CLI quit sequence (Ctrl-C twice) to its
+terminal.
+** Quit sends the CLI quit sequence
+- GIVEN a target session resolves
+- WHEN the user invokes the quit command
+- THEN the CLI quit sequence of two Ctrl-C characters is delivered to that
+  session's terminal
+** No live session signals
+- GIVEN no live runner session exists anywhere
+- WHEN the user invokes the quit command
+- THEN a ~user-error~ is signalled and nothing is killed
+
+* A force-kill follows the quit timeout
+The system SHALL wait a configurable timeout
+(~mcp-emacs-run-quit-timeout~, in seconds, default 10) after sending the quit
+sequence, without blocking Emacs, and if the session's process is still live
+when the timeout elapses it SHALL force-kill that process.
+** An early exit is not force-killed
+- GIVEN the CLI process exits on its own after receiving the quit sequence
+- WHEN it exits before the timeout elapses
+- THEN the system does not force-kill it
+** A hung process is force-killed
+- GIVEN the CLI process is still live when the timeout elapses
+- WHEN the timeout handler runs
+- THEN the system force-kills the process
+
+* The session buffer is removed after quitting
+The system SHALL remove the session's buffer once the quit has completed,
+whether the CLI exited on its own or was force-killed, so the end state has no
+process and no buffer for that session.
+** A graceful exit removes the buffer
+- GIVEN the CLI exits on its own after the quit sequence
+- WHEN the quit completes
+- THEN the session buffer is killed
+** A force-kill removes the buffer
+- GIVEN the process is force-killed at the timeout
+- WHEN the quit completes
+- THEN the session buffer is killed
+** An already-gone buffer is not an error
+- GIVEN the session buffer has already been killed
+- WHEN the timeout handler runs
+- THEN no error is signalled

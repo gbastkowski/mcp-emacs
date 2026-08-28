@@ -1,0 +1,349 @@
+* Buffer diagnostics report the current buffer's code diagnostics
+The system SHALL expose an MCP tool named ~get_buffer_diagnostics~ that
+returns the code diagnostics for the current buffer, auto-detecting the active
+checker (Flycheck or Flymake).
+** Diagnostics are returned with location and severity
+- GIVEN a current buffer holding Flycheck or Flymake diagnostics
+- WHEN a client calls the buffer diagnostics tool
+- THEN those diagnostics are returned with location and severity information
+** No active checker is a status, not an error
+- GIVEN neither Flycheck nor Flymake is active in the current buffer
+- WHEN a client calls the buffer diagnostics tool
+- THEN a status message indicating no checker is active is returned rather
+  than an error
+** The old name maps to the new one
+- GIVEN a client that previously used ~get_diagnostics~
+- WHEN it calls ~get_buffer_diagnostics~
+- THEN it receives the same current-buffer code-diagnostics behaviour under
+  the new name
+
+* Project diagnostics aggregate across the project
+The system SHALL expose an MCP tool named ~get_project_diagnostics~ that
+aggregates code diagnostics across the current project: from all live project
+buffers (Flycheck/Flymake) and, when an eglot or lsp-mode session is active,
+the LSP workspace diagnostics.
+** Open project buffers are aggregated
+- GIVEN several project buffers holding diagnostics
+- WHEN a client calls the project diagnostics tool
+- THEN the aggregated diagnostics are returned, each attributed to its file
+** LSP workspace diagnostics are included when available
+- GIVEN an active eglot or lsp-mode workspace session
+- WHEN a client calls the project diagnostics tool
+- THEN the LSP workspace diagnostics are included in the aggregated result
+** Unopened non-LSP files are out of reach
+- GIVEN project files neither open in a buffer nor covered by an active LSP
+  session
+- WHEN a client calls the project diagnostics tool
+- THEN no diagnostics are reported for those files, and the limitation is
+  documented in the tool description
+** Outside a project is a status, not an error
+- GIVEN a buffer that is not inside a project
+- WHEN a client calls the project diagnostics tool
+- THEN a status message is returned rather than an error
+
+* An interactive diff/apply tool presents a proposal via ediff
+The system SHALL expose an MCP tool that accepts a file path and proposed new
+content, opens an ediff session comparing the file's current content against
+the proposal, and lets the human review, edit, accept, or reject it
+interactively before the tool returns.
+The outcome SHALL be determined by an explicit human accept or reject action
+during the session, not by whether the buffer content changed; accepting SHALL
+apply the proposal (or the human's edited version of it) to the file's buffer,
+rejecting SHALL leave the buffer unchanged, and quitting without an explicit
+accept SHALL be treated as a rejection.
+** An accepted proposal is applied
+- GIVEN a diff call with a path and new content
+- WHEN the human accepts the proposal without editing it
+- THEN the proposed content is applied to the buffer and a status of
+  ~applied~ is returned with the final content
+** A rejected proposal changes nothing
+- GIVEN a diff review in progress
+- WHEN the human rejects the proposal
+- THEN the file's buffer is left unchanged and a status of ~rejected~ is
+  returned
+** A human edit wins over the proposal
+- GIVEN a diff review in progress
+- WHEN the human edits the proposed content and then accepts
+- THEN a status of ~applied~ is returned with the human-edited content, not
+  the original proposal
+** Quitting without accepting is a rejection
+- GIVEN a diff review in progress
+- WHEN the human quits the ediff session without explicitly accepting
+- THEN the file's buffer is left unchanged and a status of ~rejected~ is
+  returned
+
+* Diff/apply waiting does not block the Emacs event loop
+While waiting for the human's decision, the diff tool SHALL yield to the Emacs
+event loop so that human edits, timers, and other MCP tool calls continue to
+be processed.
+** Other work proceeds during a diff wait
+- GIVEN the diff tool is waiting for the human to resolve the ediff session
+- WHEN other MCP tool calls arrive or buffers are edited
+- THEN they continue to be handled
+
+* The diff/apply wait is bounded by a timeout
+The diff tool SHALL apply a default timeout when none is given and MUST cap
+the timeout at a defined maximum, so the call cannot hang indefinitely.
+** An unanswered review times out
+- GIVEN a diff review the human neither accepts nor rejects
+- WHEN the timeout elapses
+- THEN the ediff session is abandoned, the buffer is left unchanged, and a
+  status of ~timeout~ is returned
+** An excessive timeout is capped
+- GIVEN a requested timeout above the maximum
+- WHEN the diff tool runs
+- THEN it waits no longer than the maximum
+
+* Open editors can be listed
+The system SHALL expose an MCP tool that returns the live file-visiting
+buffers, each with its file path, buffer name, and modified (dirty) flag.
+** Visited files are listed with their dirty flag
+- GIVEN files open in Emacs
+- WHEN a client calls the open-editors tool
+- THEN an entry is returned for each file-visiting buffer with its path,
+  buffer name, and whether it has unsaved changes
+** No open files is an empty list
+- GIVEN no file-visiting buffers exist
+- WHEN a client calls the open-editors tool
+- THEN an empty list is returned rather than an error
+
+* Document dirty state can be queried
+The system SHALL expose an MCP tool that reports whether a given file's buffer
+has unsaved changes.
+** A modified buffer reports dirty
+- GIVEN a file whose buffer has been modified since its last save
+- WHEN a client queries its dirty state
+- THEN the tool reports that the document is dirty
+** An unopened file is not an error
+- GIVEN a file that has no live buffer
+- WHEN a client queries its dirty state
+- THEN the tool reports that the document is not dirty (or not open) rather
+  than raising an error
+
+* Workspace folders can be listed
+The system SHALL expose an MCP tool named ~get_workspace_folders~ that returns
+the project/workspace roots Emacs currently knows about.
+** Known roots are returned
+- GIVEN Emacs knows one or more project roots
+- WHEN a client calls the workspace-folders tool
+- THEN those root paths are returned
+** No known roots is an empty list
+- GIVEN Emacs knows no project roots
+- WHEN a client calls the workspace-folders tool
+- THEN an empty list is returned rather than an error
+
+* Project files can be listed
+The system SHALL expose an MCP tool named ~list_project_files~ that returns
+the files tracked in the current project.
+** Files of the active project are returned
+- GIVEN a buffer inside a project
+- WHEN a client calls the list-project-files tool
+- THEN the paths of files tracked in that project are returned
+** Outside a project is a status, not an error
+- GIVEN a buffer not inside a project
+- WHEN a client calls the list-project-files tool
+- THEN a status message is returned rather than an error
+
+* The active project can be switched
+The system SHALL expose an MCP tool named ~switch_project~ that changes
+Emacs's active project so that subsequent tools operate in the selected
+project's context.
+** A valid target switches the project
+- GIVEN a valid project root or identifier
+- WHEN a client calls the switch-project tool with it
+- THEN Emacs's active project becomes that project and the switch is confirmed
+** An invalid target changes nothing
+- GIVEN a path that is not a project
+- WHEN a client calls the switch-project tool with it
+- THEN a status message is returned rather than an error, and the active
+  project is unchanged
+
+* A file can be found within the project
+The system SHALL expose an MCP tool named ~find_file_in_project~ that resolves
+a file by name within the current project and opens it.
+** A matching name is opened
+- GIVEN a name that matches a project file
+- WHEN a client calls the find-file-in-project tool with it
+- THEN the matching file is opened and its resolved path returned
+** No match is a status, not an error
+- GIVEN a name that matches no project file
+- WHEN a client calls the find-file-in-project tool with it
+- THEN a status message is returned rather than an error
+
+* Project tools need no hard projectile dependency
+The project/workspace tools SHALL use built-in ~project.el~ as their base and
+use ~projectile~ only when it is already loaded, so the tools function with no
+additional package dependency.
+** Without projectile they still work
+- GIVEN an Emacs where ~projectile~ is not loaded
+- WHEN the project tools run
+- THEN they operate using ~project.el~ and do not error for lack of
+  projectile
+** With projectile they may enrich
+- GIVEN an Emacs where ~projectile~ is loaded
+- WHEN the project tools run
+- THEN they may use projectile for richer results while returning the same
+  kind of information
+
+* A tooling issue can be filed as a GitHub issue
+The system SHALL provide a ~report_tooling_issue~ tool that creates a GitHub
+issue on the mcp-emacs repository from a supplied title and optional
+description, and SHALL return the URL of the created issue.
+** A titled report is filed
+- GIVEN a title and a description
+- WHEN the tool is called
+- THEN a GitHub issue is created on the mcp-emacs repository with that title
+  and body, and its URL is returned
+** A title is required
+- GIVEN a call with no title
+- WHEN the tool runs
+- THEN no issue is created and the tool reports that a title is required
+
+* An optional category is applied as a label
+The system SHALL accept an optional ~kind~ categorizing the report as one of
+~bug~, ~feature~, ~skill~, or ~server~, and SHALL apply the chosen value as a
+label on the created issue; when ~kind~ is omitted the issue is created
+without a category label.
+** A valid kind becomes a label
+- GIVEN a ~kind~ set to one of the accepted values
+- WHEN the tool is called
+- THEN the created issue carries that value as a label
+** An omitted kind still files
+- GIVEN a call with no ~kind~
+- WHEN the tool runs
+- THEN the issue is still created and no category label is required for the
+  call to succeed
+** An invalid kind is rejected
+- GIVEN a ~kind~ outside the accepted set
+- WHEN the tool is called
+- THEN the call is rejected with a message naming the accepted values and no
+  issue is created
+
+* The filing chain is resilient
+The system SHALL attempt to create the issue through more than one mechanism
+so that filing succeeds whenever any one of them is available, trying in
+order: the GitHub MCP tool if available, then the ~gh~ CLI, then a direct ~gh
+api~ call.
+If none is available, the system SHALL report that it could not file the issue
+and SHALL surface the issue title and body so the user can file it manually.
+** The preferred mechanism wins
+- GIVEN the GitHub MCP tool is available
+- WHEN the tool files an issue
+- THEN it is created through the MCP tool and the lower-priority mechanisms
+  are not attempted
+** The CLI is the fallback
+- GIVEN the GitHub MCP tool is unavailable but the ~gh~ CLI is
+- WHEN the tool files an issue
+- THEN it is created through the ~gh~ CLI
+** No mechanism surfaces the draft
+- GIVEN none of the filing mechanisms is available
+- WHEN the tool runs
+- THEN no issue is created, the failure is reported, and the composed title
+  and body are returned for manual filing
+
+* Reports target mcp-emacs, not arbitrary repositories
+The tool SHALL be scoped to filing issues about mcp-emacs itself and SHALL
+target the mcp-emacs repository; it is not a general-purpose issue creator for
+arbitrary repositories.
+** The target repository is fixed
+- GIVEN any call to the tool
+- WHEN it creates an issue
+- THEN the issue is created on the mcp-emacs repository and the caller does
+  not choose an arbitrary target repository
+
+* Reporting is guided by a skill
+The system SHALL provide a ~report-issue~ skill that guides the user through
+reporting: it classifies the report (a server-tool bug, a skill/prompt issue,
+or a feature request), drafts a concise issue (title plus what-happened /
+expected / reproduction), confirms the draft with the user before filing,
+files it via the ~report_tooling_issue~ tool, and reports back the resulting
+issue URL.
+** A guided report runs end to end
+- GIVEN a user asking to report a bug or feature request about the tooling
+- WHEN the skill runs and the user confirms the draft
+- THEN the skill classifies the report, drafts a title and body, files the
+  issue via ~report_tooling_issue~, and reports the URL
+** A declined draft files nothing
+- GIVEN a drafted issue
+- WHEN the user does not confirm it
+- THEN no issue is filed
+
+* The current clocked task is a read-only tool
+The system SHALL expose the current Org clock state through a read-only MCP
+tool for retrieving the currently clocked in task, and the capability MUST be
+exposed as a tool rather than a resource or a mutating operation.
+** The tool is advertised
+- GIVEN a client inspecting the server's available tools
+- WHEN the tool list is read
+- THEN it includes a tool for retrieving the currently clocked in Org task
+
+* An active Org clock returns the current task text
+When an Org task is currently clocked in, the tool SHALL return the heading
+text of that task as plain user-facing text, representing the current global
+Org clock state rather than the current buffer selection or point.
+** A clocked task returns its heading
+- GIVEN an Org task currently clocked in in Emacs
+- WHEN the tool is invoked
+- THEN the heading text of the currently clocked in task is returned
+
+* A missing clock returns friendly fallback text
+When no Org task is currently clocked in, the tool SHALL return a stable
+friendly fallback message, and MUST NOT surface raw nil or treat the absence
+of an active clock as an error.
+** No clock is not an error
+- GIVEN no Org task currently clocked in in Emacs
+- WHEN the tool is invoked
+- THEN a friendly plain-text message indicating no task is clocked in is
+  returned
+
+* The clocked-task response scope stays narrow
+The tool SHALL return only the current task text or the defined fallback
+message, and MUST NOT include additional structured metadata such as file
+path, tags, timestamps, or elapsed clock duration.
+** Only plain text comes back
+- GIVEN any invocation of the tool
+- WHEN the response is read
+- THEN it contains only plain text for the current task or the fallback
+  message
+
+* The current TODO task at point is a read-only tool
+The system SHALL expose the Org TODO task at the current point through a
+read-only MCP tool, and the capability MUST be exposed as a tool rather than a
+resource or a mutating operation.
+** The tool is advertised
+- GIVEN a client inspecting the server's available tools
+- WHEN the tool list is read
+- THEN it includes a tool for retrieving the current Org TODO task at point
+
+* A valid Org TODO context returns the task text
+When point is on or within a valid Org TODO task context, the tool SHALL
+return the heading text of the enclosing task as plain user-facing text, based
+on the current point in the active buffer rather than global Org clock state.
+** Point on a heading returns it
+- GIVEN point on an Org TODO task heading in Emacs
+- WHEN the tool is invoked
+- THEN the heading text of that task is returned
+** Point in a subtree returns the enclosing heading
+- GIVEN point within the subtree of an Org TODO task in Emacs
+- WHEN the tool is invoked
+- THEN the heading text of the enclosing task is returned
+
+* An invalid task context returns friendly fallback text
+When point is not on or within a valid Org TODO task context, the tool SHALL
+return a stable friendly fallback message, and MUST NOT surface raw nil or
+treat the absence of a valid TODO task at point as an error.
+** Point outside a task is not an error
+- GIVEN point outside any valid Org TODO task context in Emacs
+- WHEN the tool is invoked
+- THEN a friendly plain-text message indicating there is no current task at
+  point is returned
+
+* The task-at-point response scope stays narrow
+The tool SHALL return only the task heading text or the defined fallback
+message, and MUST NOT include additional structured metadata such as file
+path, tags, TODO state objects, outline path, or marker position.
+** Only plain text comes back
+- GIVEN any invocation of the tool
+- WHEN the response is read
+- THEN it contains only plain text for the task at point or the fallback
+  message

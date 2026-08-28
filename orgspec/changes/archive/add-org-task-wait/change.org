@@ -1,0 +1,185 @@
+#+TITLE: add-org-task-wait
+
+* Intent
+Today the AI harness only sees a human's edits to the shared Org task file
+when it chooses to poll (~org_task_session~). There is no way for the
+human's change to reach the AI without the AI re-reading on its own
+initiative. Claude Code exposes no inbound API, so an interrupt-style push
+is impossible -- but a *cooperative loop* is: the AI can call a tool that
+waits until the human edits, then wakes with the change. This turns the
+shared file into a real back-and-forth workspace where the AI works, then
+waits for the human's next direction.
+
+The org-task-sync feature (see [[org-task-session]] / [[org-task-update]])
+makes an Org file a shared human/AI workspace, but the AI only sees human
+edits when it re-reads on its own initiative. Claude Code has no inbound
+API, so a true interrupt-push is impossible. This change adds the missing
+piece for a *cooperative loop*: a tool the AI calls to wait for the human's
+next edit.
+
+Key constraint: Emacs runs single-threaded. A naive blocking wait would
+freeze the daemon and every other tool call. The wait must yield to the
+event loop.
+
+* Scope
+In scope:
+- Add a blocking-with-timeout MCP tool ~org_task_wait_for_change~ that
+  returns when the session task file changes (buffer edited) or a timeout
+  elapses.
+- The wait MUST NOT freeze Emacs: it yields to the event loop while
+  waiting, so human edits and other tool calls still process during the
+  wait.
+- Change detection is relative to a baseline the caller can establish, so
+  edits made between reads are not missed (not only edits during the wait
+  window).
+- On wake, the tool returns whether a change occurred and the current
+  session view (task, session id, status, TODO checklist), so the AI can
+  react without a second call.
+- On timeout with no change, the tool returns a defined "no change" result
+  rather than an error.
+
+Out of scope:
+- Interrupting a running AI turn (not possible with Claude Code).
+- Watching the file on disk (~file-notify~) -- we track the live buffer,
+  consistent with the rest of the feature.
+- Sub-second precision or a streaming change feed.
+
+* Approach
+- Baseline via a caller-supplied change token: ~org_task_session~ gains a
+  change token in its output (the buffer's ~buffer-chars-modified-tick~).
+  The caller passes the last token to ~org_task_wait_for_change~.
+  - *Why*: stateless (no ambient per-file server state, consistent with
+    path-per-call), and closes the read->wait race -- edits made in
+    between are not lost.
+- Event-loop-friendly wait: The wait loops on
+  ~(accept-process-output nil poll-interval)~ until the tick advances past
+  the baseline or the timeout elapses. This yields control to Emacs so
+  edits, timers, and other requests keep processing.
+  - *Why*: standard Emacs pattern for "wait but stay alive" in a
+    single-threaded process.
+- Change detection = buffer modification tick: Use
+  ~buffer-chars-modified-tick~ of the file's live buffer as the
+  token/comparison. Any edit (human or tool) advances it.
+  - *Why*: cheap, monotonic, built-in; no change-hook bookkeeping.
+  - Note: : tool-driven mutations also advance the tick; acceptable -- the
+    AI compares against its own last-seen token, so it only wakes for
+    changes it hasn't seen.
+- Payload on wake = flag + full session view: Return ~changed~ plus the
+  new token and the same structured view as ~org_task_session~.
+  - *Why*: the AI reacts in one call; no mandatory follow-up read.
+- Bounded timeout: The tool takes a timeout (seconds) with a sane default
+  and a hard cap, so a wait can never hang a client or hold the event loop
+  poll indefinitely.
+
+* Tasks
+- [X] Add a helper to compute the change token for a session file (its
+  buffer's ~buffer-chars-modified-tick~)
+- [X] Extend ~mcp-emacs-org-task-read~ to include a ~Token: <n>~ line in
+  the structured view
+- [X] Verify the token advances after a buffer edit (read, edit, read ->
+  different token)
+- [X] Add ~mcp-emacs-org-task-wait-for-change~ (path, token, timeout):
+  open/resolve the buffer, apply default/cap to timeout
+- [X] Return immediately when the current tick already differs from the
+  baseline token (no missed edits)
+- [X] Otherwise loop on ~accept-process-output~ at a poll interval until
+  the tick advances or the timeout elapses (event-loop friendly)
+- [X] Return a result carrying the change flag, the new token, and the
+  current session view; fail soft on invalid path/timeout
+- [X] Add ~org_task_wait_for_change~ tool plist (path required; token and
+  timeout optional) to ~mcp-emacs-server--tools~
+- [X] Handler calls the wait helper and returns its plain-text result
+- [X] Reload into the live daemon; confirm ~org_task_session~ now emits a
+  token
+- [X] Test change-during-wait: start a wait, edit the buffer from another
+  call, confirm it wakes with ~changed~
+- [X] Test immediate return: pass a stale token, confirm it returns at
+  once
+- [X] Test timeout: pass the current token, no edit, confirm it returns
+  "no change" within the timeout and Emacs stayed responsive
+- [X] Update README.md tool table and the "Org task session sync" section
+  with the cooperative-loop tool
+
+* Delta
+** Session contents are returned as structured, readable text :MODIFIED:
+:PROPERTIES:
+:AREA: org-task
+:END:
+The read tools SHALL return the task heading, the assigned session id, the
+session status, the TODO checklist with each item's Org keyword, and a
+change token identifying the current state of the file. The output MUST be
+plain text that is both human-glanceable and parseable by a harness. The
+change token MUST advance whenever the file's buffer is edited, so a
+caller can pass it to a wait tool to detect subsequent changes.
+*** Fetching the full session view
+- WHEN an MCP client reads a populated session task file
+- THEN the response includes the task heading, session id, session status,
+  each TODO item with its current Org keyword, and a change token
+*** Empty TODO checklist
+- WHEN the task file has a task heading but no TODO items
+- THEN the response includes the task heading, session metadata, a change
+  token, and indicates an empty checklist
+*** Token advances after an edit
+- WHEN an MCP client reads the session, the file's buffer is then edited,
+  and the client reads again
+- THEN the change token in the second response differs from the first
+** Wait tool blocks until the session file changes or a timeout elapses :ADDED:
+:PROPERTIES:
+:AREA: org-task
+:END:
+The system SHALL expose an MCP tool that accepts a session task file path,
+a baseline change token, and a timeout, and returns when the file's buffer
+has changed relative to the baseline token or when the timeout elapses.
+*** Change occurs during the wait
+- WHEN a client waits with a baseline token and the file's buffer is
+  edited before the timeout
+- THEN the tool returns indicating a change occurred
+*** Timeout with no change
+- WHEN a client waits with a baseline token and no edit occurs before the
+  timeout
+- THEN the tool returns indicating no change occurred, rather than raising
+  an error
+** Changes since the baseline are not missed                     :ADDED:
+:PROPERTIES:
+:AREA: org-task
+:END:
+When the file's buffer has already changed past the baseline token at the
+time the wait tool is called, the tool SHALL return immediately indicating
+a change, without waiting.
+*** Edit made between read and wait
+- WHEN the buffer is edited after the client obtained its baseline token
+  but before it calls the wait tool
+- THEN the wait tool returns immediately indicating a change occurred
+** Waiting does not block the Emacs event loop                   :ADDED:
+:PROPERTIES:
+:AREA: org-task
+:END:
+While waiting, the tool SHALL yield to the Emacs event loop so that human
+edits, timers, and other MCP tool calls continue to be processed.
+*** Other work proceeds during a wait
+- WHEN the wait tool is waiting
+- THEN edits to the file's buffer are still applied and observed, allowing
+  the wait to detect them
+** Wake returns the change flag and the current session view     :ADDED:
+:PROPERTIES:
+:AREA: org-task
+:END:
+On return, the tool SHALL provide whether a change occurred, an updated
+change token, and the current session view (task heading, session id,
+status, and TODO checklist).
+*** Reacting in a single call
+- WHEN the wait tool returns after a change
+- THEN the response includes the change indication, a new change token,
+  and the current session contents
+** Timeout is bounded                                            :ADDED:
+:PROPERTIES:
+:AREA: org-task
+:END:
+The tool SHALL apply a default timeout when none is given and MUST cap the
+timeout at a defined maximum, so a wait cannot hang indefinitely.
+*** No timeout provided
+- WHEN a client calls the wait tool without a timeout
+- THEN the tool applies the default timeout
+*** Excessive timeout requested
+- WHEN a client requests a timeout above the maximum
+- THEN the tool waits no longer than the maximum

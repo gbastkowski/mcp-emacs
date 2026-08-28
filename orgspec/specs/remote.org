@@ -14,3 +14,142 @@ THEN a per-project org transcript records it
 GIVEN the IDE surface
 WHEN advice taps on IDE functions fire
 THEN they still only apply to Claude
+
+* One Org transcript buffer exists per session
+The system SHALL maintain a dedicated Org-mode buffer per Claude session,
+named for the session's project, and SHALL reuse that buffer for the lifetime
+of the session rather than creating a new one per event.
+** The transcript buffer is created on first activity
+- GIVEN a Claude session with no transcript buffer yet
+- WHEN it produces its first recordable tool event
+- THEN an Org-mode buffer is created for the session and subsequent events for
+  the same session are appended to it
+** Distinct sessions get distinct buffers
+- GIVEN two Claude sessions for different projects are active
+- WHEN both produce events
+- THEN each has its own transcript buffer and events from one are never
+  written into the other's
+
+* Each tool call is recorded as an Org entry
+The system SHALL append an Org heading for each tool call the session makes,
+including the tool name, a timestamp, and the call's arguments in a form that
+is readable in Org.
+** A tool call becomes a heading
+- GIVEN an active session with a transcript
+- WHEN the session invokes a tool
+- THEN a new Org heading is appended naming the tool and carrying a timestamp,
+  with the tool's arguments recorded under it
+
+* Diff-review outcomes are recorded
+The system SHALL record the outcome of each ~openDiff~ review — accepted or
+rejected — together with the file the diff targeted, so the transcript
+reflects what was actually written.
+** An accepted diff records its outcome
+- GIVEN an ~openDiff~ review
+- WHEN the user accepts it
+- THEN the transcript entry for that diff records the accepted outcome and the
+  target file
+** A rejected diff records its outcome
+- GIVEN an ~openDiff~ review
+- WHEN the user rejects it or it is otherwise dismissed unchanged
+- THEN the transcript entry for that diff records the rejected outcome and the
+  target file
+
+* Per-session run metadata is recorded
+The system SHALL record run metadata for the session in an Org properties
+drawer, including at least the session start time and the workspace root, and
+SHALL note when the session disconnects.
+** A connecting session records its start
+- GIVEN a Claude session connecting to the IDE surface
+- WHEN the connection is established
+- THEN the transcript records the session start and workspace root as
+  properties
+** A disconnecting session records its end
+- GIVEN a session with a transcript
+- WHEN its connection closes
+- THEN the transcript records that the session ended
+
+* The transcript does not alter tool-approval behaviour
+The transcript SHALL be a passive record: recording an event MUST NOT change
+whether or how a tool call is approved, executed, or answered.
+Approval remains the interactive diff review.
+** Recording does not gate execution
+- GIVEN a tool call the transcript records
+- WHEN the recording happens
+- THEN it does not block, delay beyond rendering, or alter the call's approval
+  or execution, and if transcript rendering fails the session's tool calls are
+  still answered normally
+
+* The transcript's scope is limited to tool activity
+In this version the transcript SHALL record tool activity and run metadata
+only; assistant prose is out of scope and is not required to appear in the
+transcript.
+** Assistant prose is not required
+- GIVEN a session producing assistant prose visible only in the terminal
+- WHEN the transcript is read
+- THEN it is not required to contain that prose, and the absence of prose is
+  not treated as an error
+
+* A prompt can be sent from the minibuffer
+The system SHALL provide an interactive command that reads a prompt string
+from the minibuffer and delivers it to the current project's running Claude
+session, submitting it so the session begins responding without the user
+having to switch to the terminal buffer.
+** A typed prompt is delivered and submitted
+- GIVEN the user invokes the remote-prompt command
+- WHEN a non-empty string is typed at the minibuffer
+- THEN the string is delivered to the current project's runner session and
+  submitted, without focus needing to move to the terminal buffer
+** An empty prompt is not sent
+- GIVEN the user invokes the remote-prompt command
+- WHEN an empty or whitespace-only string is submitted
+- THEN nothing is sent to the session and the command reports that no prompt
+  was provided
+
+* The prompt is seeded from the active region
+The system SHALL, when a region is active, seed the minibuffer with the region
+text so the user can edit or confirm it before it is sent, rather than sending
+the raw selection immediately.
+** An active region pre-fills the minibuffer
+- GIVEN a region is active
+- WHEN the user invokes the remote-prompt command
+- THEN the minibuffer is pre-filled with the region text, the user may edit it,
+  and on confirmation the resulting text is delivered to the session and
+  submitted
+
+* The whole current buffer can be sent as the prompt
+The system SHALL provide a way to send the entire current buffer as the
+prompt, so the user can hand a whole file's contents to the session without
+selecting it; an empty or whitespace-only buffer is not sent.
+** A non-empty buffer is sent whole
+- GIVEN a non-empty buffer
+- WHEN the user invokes the send-buffer variant of the remote-prompt command
+- THEN the entire buffer text is delivered to the current project's runner
+  session and submitted
+** An empty buffer is not sent
+- GIVEN an empty or whitespace-only buffer
+- WHEN the user invokes the send-buffer variant
+- THEN nothing is sent and the command reports that there was nothing to send
+
+* Remote prompting requires a live session
+The system SHALL require an already-running Claude session for the current
+project and SHALL NOT launch one implicitly.
+** No session is reported, not launched
+- GIVEN the current project has no running Claude session
+- WHEN the user invokes the remote-prompt command
+- THEN the command reports that no session is available, no prompt is sent,
+  and no session is launched
+** A single running session receives the prompt
+- GIVEN the current project has exactly one running Claude session
+- WHEN the user invokes the remote-prompt command
+- THEN the prompt is delivered to that session
+
+* The target session is resolved unambiguously
+The system SHALL resolve which session receives the prompt using the same
+project-scoped session resolution the runner already uses, and SHALL prompt the
+user to choose when more than one candidate session exists.
+** Multiple sessions prompt for a choice
+- GIVEN the current project has more than one running Claude session
+- WHEN the user invokes the remote-prompt command
+- THEN the user is asked to choose the target session and the prompt is
+  delivered to the chosen one

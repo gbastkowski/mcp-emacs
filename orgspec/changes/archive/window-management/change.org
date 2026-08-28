@@ -1,0 +1,144 @@
+#+TITLE: window-management
+
+* Intent
+The Claude Code runner window (~mcp-emacs-run.el~) already opens in a normal
+splittable window via ~display-buffer-in-direction~, but its width is
+expressed only as a fraction of the frame (~mcp-emacs-run-window-width~,
+default 0.4), and the window is not dedicated -- so during normal editing
+Emacs may reuse it for other buffers and clobber the agent pane. There is
+already a ~TODO: specify size in columns/lines~ in the code. We want the
+runner to open at a configurable *character* width (default 120), clamped to
+a max frame fraction, and to stay showing Claude.
+
+The Claude runner lives in ~elisp/mcp-emacs-run.el~. Today
+~mcp-emacs-run--display~ (around line 145) calls ~display-buffer~ with a
+~display-buffer-in-direction~ action and a size cons cell:
+
+the size is chosen by orientation, using ~window-width~ for a horizontal
+split and ~window-height~ otherwise, each taken from its defcustom.
+
+~window-width~ in a ~display-buffer~ action already accepts either a
+fraction (0 < n < 1, interpreted vs frame) or an integer column count --
+Emacs' ~window--display-buffer~ / ~window-resize~ honour both. There is a
+standing "specify size in columns/lines" TODO at line 80.
+
+The window is an ordinary (splittable) window -- the "not a side window"
+requirement is already met. Nothing currently dedicates the window.
+
+* Scope
+In scope:
+- Allow the runner window width to be specified in *columns* (default 120)
+  in addition to / instead of the current frame fraction.
+- *Clamp* the resolved char width to a configurable maximum fraction of
+  the frame so the code pane is not crushed on narrow frames.
+- Make the runner window *weakly dedicated* to its Claude buffer, so it
+  prefers to keep showing Claude but ~display-buffer~ MAY still reuse it.
+- Keep the window a *normal splittable window* (already the case via
+  ~display-buffer-in-direction~) -- no move to Emacs side windows.
+
+Out of scope:
+- opencode, multiple/stacked windows, saveable presets.
+- The popup output window (~mcp-emacs-popup-show~) -- untouched.
+- Vertical (~above~/~below~) direction gets no char-height equivalent in
+  this change; height stays fractional.
+
+* Approach
+- Width in columns with a fraction clamp: Add two customs:
+  - ~mcp-emacs-run-window-width-columns~ (integer, default 120) -- the
+    desired width in columns when direction is ~left~/~right~.
+  - ~mcp-emacs-run-window-max-width-fraction~ (float, default e.g. 0.5) --
+    the hard cap as a fraction of frame width. Keep the existing
+    ~mcp-emacs-run-window-width~ fraction as the fallback for backwards
+    compatibility, but prefer the column custom when non-nil. Resolve the
+    effective width in a small helper: Feed the integer result to the
+    ~window-width~ action so ~display-buffer~ sizes the window in columns.
+- Weak dedication: After ~display-buffer~ returns the window, mark it
+  weakly dedicated: Weak dedication (value ~t~, not a non-nil non-~t~
+  "strong" value) means ~display-buffer~ still MAY reuse the window when
+  it is the only candidate, matching the spec. Do this inside
+  ~mcp-emacs-run--display~ right where the window is obtained, before the
+  optional ~select-window~.
+
+* Tasks
+- [X] Add ~mcp-emacs-run-window-width-columns~ custom (integer, default
+  120) to ~elisp/mcp-emacs-run.el~
+- [X] Add ~mcp-emacs-run-window-max-width-fraction~ custom (float, default
+  0.5)
+- [X] Add ~mcp-emacs-run--resolved-width~ helper: prefer columns custom,
+  fall back to existing fraction, clamp to max-fraction of ~frame-width~
+- [X] Update ~mcp-emacs-run--display~ to feed the resolved integer width
+  to the ~window-width~ action for ~left~/~right~ directions
+- [X] Remove the stale ~TODO specify size in columns/lines~ comment
+- [X] In ~mcp-emacs-run--display~, after obtaining the window,
+  ~(set-window-dedicated-p window t)~ (weak) before the optional
+  ~select-window~
+- [X] Update the ~mcp-emacs-run-window-direction~ docstring so it no
+  longer claims the window is "non-dedicated"
+- [X] Byte-compile / load ~elisp/mcp-emacs-run.el~ clean (no warnings)
+- [X] Run ~emacs -Q --batch -L elisp -l test/mcp-emacs-run-test.el~ green
+  (47 PASS, 0 FAIL); added ~--resolved-width~ tests
+- [X] Manual check in live Emacs: runner opens ~120 cols on a wide frame;
+  clamps on a narrow frame; opening another buffer via find-file lands
+  elsewhere while Claude stays visible; window still splits
+
+* Delta
+** Claude window opens at a configurable width                   :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL display the Claude Code buffer in a window whose width is
+controlled by a user-configurable variable, defaulting to 120 columns.
+*** Default width
+- WHEN the Claude Code buffer is displayed and the user has not customized
+  the width variable
+- THEN the window is sized to 120 columns wide
+*** Customized width
+- WHEN the user sets the width variable to N columns and the Claude Code
+  buffer is displayed
+- THEN the window is sized to N columns wide (subject to the frame
+  fraction clamp)
+** Width is clamped to a maximum frame fraction                  :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL clamp the Claude window width so it never exceeds a
+user-configurable maximum fraction of the frame's total width, ensuring
+the code pane is not crushed on narrow frames.
+*** Configured width fits within the clamp
+- WHEN the configured width in columns is at or below the max-fraction of
+  the current frame width
+- THEN the window uses the configured width
+*** Configured width exceeds the clamp on a narrow frame
+- WHEN the configured width in columns exceeds the max-fraction of the
+  current frame width
+- THEN the window width is reduced to the max-fraction of the frame width
+** Claude window is a normal splittable window                   :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL display the Claude Code buffer in an ordinary Emacs
+window (not an Emacs side window), so the window can be split, moved, and
+managed with standard window commands.
+*** Window can be split
+- WHEN the Claude window is displayed and the user issues a standard
+  window-split command on it
+- THEN the split succeeds (the window is not a side window that refuses
+  splitting)
+** Claude window is weakly dedicated to its buffer               :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL mark the Claude window as weakly dedicated to the Claude
+Code buffer, so the window prefers to keep showing that buffer but
+~display-buffer~ MAY still reuse it when no better window is available.
+*** Ordinary buffer display avoids the Claude window
+- WHEN the Claude window is showing the Claude Code buffer and the user
+  opens another buffer (e.g. via find-file) while another suitable window
+  exists
+- THEN the other buffer is displayed in a different window, leaving the
+  Claude buffer visible
+*** display-buffer may override when necessary
+- WHEN the Claude window is the only candidate window available to
+  ~display-buffer~
+- THEN ~display-buffer~ MAY reuse the Claude window (weak, not strong,
+  dedication)

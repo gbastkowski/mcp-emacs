@@ -1,0 +1,273 @@
+#+TITLE: add-opencode-client
+
+* Intent
+opencode ships a headless HTTP server (~opencode serve~, default
+~127.0.0.1:4096~, OpenAPI 3.1 at ~/doc~) with a Server-Sent Events stream
+for real-time updates. Unlike the Claude Code CLI -- a full-screen TUI
+reachable only through a proprietary IDE WebSocket -- opencode exposes a
+clean, documented API. That makes a *native Emacs client* feasible: drive
+opencode over HTTP/SSE and render the conversation in ordinary Emacs
+buffers, instead of embedding a terminal. Editor-tool integration is already
+handled: ~opencode.json~ wires the ~emacs~ MCP server, so opencode reaches
+Emacs tools through ~mcp-emacs~ over MCP.
+
+opencode ~serve~ exposes a documented HTTP API (~/api/*~) and a Server-Sent
+Events stream. Probing the live OpenAPI spec (v1.18.0) fixed the data model
+this design depends on:
+
+- *Event envelope* (SSE):
+#+begin_src js
+{ type: "sync", id: "evt_…",
+  syncEvent: { type: "message.part.updated.1" | "message.updated.1" | …,
+               seq: <number>, aggregateID,
+               data: { sessionID, part | info } } }
+#+end_src
+- *~Part~* is a discriminated union on a ~type~ field -- ~TextPart~,
+~ReasoningPart~, ~ToolPart~, ~StepStartPart~, ~StepFinishPart~, ~FilePart~,
+~PatchPart~, ~SubtaskPart~, ~AgentPart~, … -- and *every variant carries
+~id~, ~messageID~, ~sessionID~*. ~TextPart~ has ~text~; ~ToolPart~ has
+~tool~ + ~state~; ~ReasoningPart~ has ~text~. - *Ordering*: each sync event
+has a monotonic ~seq~.
+
+Emacs is single-threaded; the SSE stream must be consumed without blocking
+the UI. ~plz~ (curl-based) supports streaming responses via
+~:as '(stream …)~, delivering chunks to a process filter.
+
+* Scope
+In scope:
+- Add a new file ~elisp/opencode-client.el~ (a client, distinct from the
+  MCP server, kept in this repo alongside the runner work).
+- Use *plz.el* for HTTP and SSE (~:as (stream ...)~), loaded as a
+  soft/optional dependency (~featurep~-guarded), matching ~mcp-emacs~'s
+  dependency-light design -- no new hard package dependency.
+- *Connection*: start or attach to ~opencode serve~; health-check via
+  ~/api/health~; configurable host, port, and optional
+  ~OPENCODE_SERVER_PASSWORD~ basic auth.
+- *Sessions*: list (~GET /api/session~), create (~POST /api/session~),
+  select/switch the active session, delete.
+- *Prompt*: send via ~POST /api/session/{id}/prompt~ (PromptInput body,
+  ~delivery~ = ~steer~ | ~queue~); interrupt via
+  ~POST /api/session/{id}/interrupt~.
+- *Streaming*: subscribe to the per-session SSE stream
+  ~GET /api/session/{id}/event~ and render incrementally from the ~Sync*~
+  message-part events (~MessageUpdated~, ~MessagePartUpdated/Removed~,
+  Text/Reasoning/Tool/Step Started/Ended) into a chat buffer.
+- *Interactive prompts*: surface and reply to opencode permission requests
+  (~/api/session/{id}/permission~) and questions
+  (~/api/session/{id}/question~) from Emacs.
+- The ~opencode~ executable, host, port, and password are customizable.
+- Out of scope: reimplementing editor tools (opencode gets those from
+  ~mcp-emacs~ over MCP), and running the opencode TUI in a terminal (this
+  is a native API client, not a terminal wrapper).
+
+Out of scope:
+- Any backend abstraction over Claude/opencode (explicitly deferred -- the
+  API's richness would be lost to a lowest-common-denominator protocol).
+- Reimplementing editor tools (opencode gets those from ~mcp-emacs~ over
+  MCP via ~opencode.json~).
+- Running the opencode TUI in a terminal.
+
+* Approach
+- Model the conversation as parts keyed by id, grouped by message, ordered
+  by seq: Maintain per-session state: an ordered list of messages, and
+  within each a table of parts keyed by ~part.id~. Each
+  ~message.part.updated.1~ event is an *upsert* by ~part.id~;
+  ~message.part.removed~ deletes; ~message.updated.1~ upserts message
+  metadata.
+- Render into a dedicated chat buffer, re-rendering changed regions: Each
+  session has a buffer (name like ~*opencode:<session-title>*~) in a major
+  mode derived from ~special-mode~. On each applied event, re-render the
+  affected message's region from the part table (text parts as prose,
+  reasoning folded, tool parts as a compact ~tool: state~ line).
+- Consume SSE with plz streaming into a process filter: Open
+  ~GET /api/session/{id}/event~ with ~plz~ ~:as '(stream …)~. A filter
+  accumulates bytes, splits on SSE framing (~\n\n~), parses each ~data:~
+  payload as JSON, and dispatches by ~syncEvent.type~.
+- Prompt and interrupt map directly to endpoints:
+  ~POST /api/session/{id}/prompt~ with ~{ prompt, delivery }~ where
+  ~delivery~ is ~steer~ (mid-turn) or ~queue~;
+  ~POST /api/session/{id}/interrupt~ to stop. Sending does not wait for
+  the response body -- the reply arrives over the SSE stream (D3), so the
+  UI stays responsive.
+- Permission and question requests are handled off the event stream: When
+  the stream signals a pending permission or question (or via the
+  ~/permission~ and ~/question~ endpoints), prompt the user in Emacs
+  (~y-or-n-p~ / ~completing-read~ / minibuffer) and POST the reply to the
+  corresponding reply/reject endpoint for the request id. Never block the
+  SSE filter itself on user input -- schedule the prompt so the stream
+  keeps draining.
+- plz is a soft dependency: ~(require 'plz nil t)~. Loading the client
+  file never hard-requires plz; client commands check for it and error
+  with a clear "install plz" message if absent.
+- Server lifecycle -- attach first, optionally start: The client connects
+  to a configured host/port and health-checks (~GET /api/health~).
+  Starting a local ~opencode serve~ is a convenience command (spawn the
+  process, wait for health), but attach-to-existing is the primary path so
+  the client works against a server the user already runs.
+
+* Tasks
+- [X] Create ~elisp/opencode-client.el~ with header,
+  ~(require 'plz nil t)~ soft dep, ~(require 'json)~, and a
+  ~mcp-emacs~/~opencode-client~ customization group
+- [X] Add defcustoms: opencode executable, host (default 127.0.0.1), port
+  (default 4096), optional password
+- [X] Implement a request helper that issues HTTP calls via plz with
+  optional basic auth, erroring clearly when plz is absent
+- [X] Implement ~opencode-client-health~ against ~GET /api/health~ and a
+  connect/attach entry point that verifies the server before use
+- [X] Implement optional ~opencode-client-serve~ that spawns
+  ~opencode serve~ and waits for health (attach-to-existing remains the
+  primary path, per design D7)
+- [X] Implement list (~GET /api/session~), create (~POST /api/session~),
+  and delete (~DELETE /api/session/{id}~) session calls
+- [X] Track the active session; implement select/switch and
+  clear-active-on-delete
+- [X] Provide interactive commands to create, switch (with
+  ~completing-read~), and delete sessions
+- [X] Implement per-session state: ordered messages and a per-message
+  table of parts keyed by ~part.id~, tracking the highest ~seq~ seen
+  (design D1)
+- [X] Implement ~apply-sync-event~: upsert on ~message.part.updated.1~,
+  remove on part removed, upsert message metadata on ~message.updated.1~,
+  ignore stale/duplicate ~seq~ and unknown event types
+- [X] Implement the chat buffer (major mode from ~special-mode~, name
+  ~*opencode:<title>*~) and per-message region rendering: text parts as
+  prose, reasoning folded, tool parts as a compact ~tool: state~ line
+  (design D2)
+- [X] Keep point/scroll stable with follow-tail behavior when point is at
+  end
+- [X] Open the per-session SSE stream (~GET /api/session/{id}/event~) with
+  plz ~:as (stream ...)~ and a process filter (design D3)
+- [X] Implement SSE framing in the filter: accumulate bytes, split on
+  ~\n\n~, parse each ~data:~ payload as JSON, keep a partial-line buffer
+  across chunks
+- [X] Dispatch parsed events to ~apply-sync-event~ and re-render the
+  affected message
+- [X] Cancel/close the stream on session switch, buffer kill, and
+  disconnect; report disconnects rather than hanging
+- [X] Implement send-prompt (~POST /api/session/{id}/prompt~) with
+  ~delivery~ steer/queue; do not block on the response body (reply arrives
+  via SSE, design D4)
+- [X] Implement interrupt (~POST /api/session/{id}/interrupt~)
+- [X] Implement permission handling: detect pending permission, prompt the
+  user, POST the decision to the reply endpoint without blocking the SSE
+  filter (design D5)
+- [X] Implement question handling: detect a question, prompt the user,
+  POST the reply or rejection
+- [X] Provide the input affordance in the chat buffer (a command to
+  compose and send a prompt to the active session)
+- [X] Byte-compile ~elisp/opencode-client.el~ clean (no unconditional plz
+  require; soft-dep guard verified)
+- [X] SSE framing unit check: feed synthetic multi-chunk ~data:~ frames
+  (including a frame split across two chunks) to the filter and assert
+  correct event parsing and part upsert -- no live server needed
+- [ ] Live smoke test against a running ~opencode serve~ with a configured
+  provider: connect, create session, send a prompt, observe streamed
+  rendering, exercise a permission/question reply (requires a configured
+  LLM provider; may be done manually)
+- [X] Update ~README.md~ with an opencode-client section (start/attach,
+  key commands, plz requirement)
+
+* Delta
+** Client connects to a running opencode server                  :ADDED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+The system SHALL connect to an ~opencode serve~ HTTP endpoint at a
+configurable host and port, verify it with a health check, and support an
+optional server password for HTTP basic auth.
+*** Healthy server
+- WHEN the client connects to a reachable opencode server
+- THEN the health check succeeds and the client is ready to issue requests
+*** Server not reachable
+- WHEN the client cannot reach the configured host/port
+- THEN the client reports a clear connection error rather than failing
+  opaquely
+*** Password-protected server
+- WHEN the server requires a password and one is configured
+- THEN the client authenticates with HTTP basic auth on every request
+** Client manages opencode sessions                              :ADDED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+The system SHALL list, create, select, and delete opencode sessions
+through the server API, and track which session is currently active.
+*** Listing sessions
+- WHEN the user lists sessions
+- THEN the client returns the server's sessions with enough detail to
+  choose one
+*** Creating and selecting a session
+- WHEN the user creates a new session
+- THEN the client creates it on the server and makes it the active session
+*** Deleting a session
+- WHEN the user deletes a session
+- THEN the client removes it on the server and, if it was active, clears
+  the active session
+** Client sends prompts and can interrupt                        :ADDED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+The system SHALL send a user prompt to the active session with a
+selectable delivery mode (steer or queue) and SHALL be able to interrupt a
+running session.
+*** Sending a prompt
+- WHEN the user submits a prompt to the active session
+- THEN the client posts it to the server and the response begins streaming
+  into the chat buffer
+*** Steering a running turn
+- WHEN the user submits a prompt with steer delivery while a turn is in
+  progress
+- THEN the client delivers it as a steering message rather than queuing it
+*** Interrupting
+- WHEN the user interrupts the active session
+- THEN the client asks the server to stop the running turn
+** Client renders the conversation incrementally from the event stream :ADDED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+The system SHALL subscribe to the session's Server-Sent Events stream and
+render the conversation incrementally into an Emacs buffer, applying
+message and message-part events (message updated, part updated/removed,
+and text/reasoning/tool/step lifecycle events) as they arrive.
+*** Streaming assistant text
+- WHEN the server emits message-part update events for assistant text
+- THEN the chat buffer updates incrementally as the parts arrive, without
+  waiting for the full turn
+*** Tool and reasoning activity
+- WHEN the server emits tool-input or reasoning lifecycle events
+- THEN the client reflects that activity in the buffer so the user can see
+  what the agent is doing
+*** Stream interrupted or server gone
+- WHEN the event stream ends unexpectedly or the server disconnects
+- THEN the client stops rendering cleanly and reports the disconnection
+  rather than hanging
+** Client surfaces and answers permission and question requests  :ADDED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+The system SHALL detect opencode permission requests and questions for the
+active session and let the user answer them from Emacs, sending the reply
+back to the server.
+*** Permission request
+- WHEN the server requests permission (for example to run a tool) during a
+  turn
+- THEN the client presents the request to the user and sends the user's
+  decision back to the server
+*** Question request
+- WHEN the server asks the user a question during a turn
+- THEN the client presents the question and sends the user's reply (or
+  rejection) back to the server
+** The client adds no hard package dependency                    :ADDED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+The client SHALL use ~plz~ for HTTP and SSE only when it is available,
+loaded as a soft/optional dependency, so installing ~mcp-emacs~ does not
+require ~plz~.
+*** plz available
+- WHEN ~plz~ is loaded
+- THEN the client uses it for HTTP requests and the SSE stream
+*** plz not available
+- WHEN ~plz~ is not loaded
+- THEN loading ~mcp-emacs~ still succeeds and the client reports that it
+  needs ~plz~ only when a client command is invoked

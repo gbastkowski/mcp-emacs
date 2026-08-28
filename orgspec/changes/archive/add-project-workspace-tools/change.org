@@ -1,0 +1,264 @@
+#+TITLE: add-project-workspace-tools
+
+* Intent
+~mcp-emacs~ exposes editor tools to any MCP client, but its diagnostics and
+project surface has two gaps. First, ~get_diagnostics~ is misleadingly
+named: it reports *code* diagnostics (Flycheck/Flymake) for the current
+buffer only, while Emacs-error investigation lives in ~get_error_context~
+and Emacs health in ~diagnose_emacs~ -- the name suggests something broader
+than what it does, and there is no project-wide view. Second, the only
+project tool is the read-only ~project_info~; a client cannot enumerate
+workspace roots, list or find project files, or switch the active project.
+Closing these gaps moves ~mcp-emacs~ toward full feature parity with
+~claude-code-ide~'s pull-model editor tools.
+
+~mcp-emacs~ is a dependency-light MCP server (Package-Requires: emacs +
+web-server). Existing project code (~mcp-emacs-project-info~) uses built-in
+~project.el~ with a ~(require 'project nil t)~ guard and no hard projectile
+dependency; the new tools follow the same discipline.
+
+Two implementation facts drive the diagnostics design:
+
+- *eglot routes LSP diagnostics through Flymake.* In an eglot-managed
+buffer, ~flymake-diagnostics~ already returns the LSP diagnostics. So
+"include LSP workspace diagnostics when a session is active" does *not*
+require a separate eglot/lsp API -- iterating a project's live buffers and
+reading each buffer's Flycheck *or* Flymake diagnostics already captures
+LSP-backed diagnostics for every open, managed buffer. - *Diagnostics
+require a live buffer.* Both Flycheck and Flymake (and thus eglot) attach
+diagnostics to buffers. A project file that is not open in any buffer has no
+diagnostics to read, regardless of LSP. This is the documented limitation.
+
+* Scope
+In scope:
+- *BREAKING*: Rename the ~get_diagnostics~ tool to
+  ~get_buffer_diagnostics~. Behavior is unchanged (current-buffer
+  Flycheck/Flymake code diagnostics); only the tool name changes, to make
+  the buffer scope explicit. Update the skills and README that reference
+  it.
+- Add ~get_project_diagnostics~: aggregate code diagnostics across the
+  project -- from all live project buffers (Flycheck/Flymake) and, when an
+  eglot/lsp-mode session is active, the LSP workspace diagnostics.
+  Unopened files with no LSP session are not covered; this limitation is
+  documented in the tool.
+- Add ~get_workspace_folders~: list the project/workspace roots Emacs
+  knows.
+- Add ~list_project_files~: list the files tracked in the current project.
+- Add ~switch_project~: change Emacs's active project so subsequent tools
+  operate in that project's context.
+- Add ~find_file_in_project~: resolve (and open) a file by name within the
+  current project.
+- All four project tools use built-in ~project.el~ as the base and use
+  ~projectile~ opportunistically when it is loaded (~featurep~ check),
+  adding no new hard package dependency -- mirroring the existing
+  ~project_info~ tool.
+- Unchanged: ~get_error_context~ (Emacs errors) and ~diagnose_emacs~
+  (Emacs health) keep their names and behavior.
+
+Out of scope:
+- Diagnostics for unopened files (would require batch-linting or a
+  persistent LSP index the server does not own).
+- A bespoke eglot/lsp-mode diagnostics API path (unnecessary -- Flymake is
+  the common sink).
+- Multi-frame / remote (TRAMP) project nuances beyond what project.el
+  handles.
+
+* Approach
+- Rename is a pure identifier change: ~mcp-emacs-get-diagnostics~ becomes
+  ~mcp-emacs-get-buffer-diagnostics~ and the tool descriptor
+  ~get_diagnostics~ becomes ~get_buffer_diagnostics~. No behavior change.
+- ~get_project_diagnostics~ reuses the single-buffer logic across project
+  buffers: Factor the current per-buffer Flycheck/Flymake extraction into
+  a helper that takes a buffer and returns its diagnostics lines.
+  ~get_buffer_diagnostics~ calls it for the current buffer;
+  ~get_project_diagnostics~ resolves the current project (~project.el~),
+  enumerates the live buffers whose file is under the project root, and
+  calls the helper for each, prefixing each buffer's output with its file
+  path.
+- Project tools use project.el, prefer projectile when loaded: Each
+  project tool branches on ~(featurep 'projectile)~:
+  - ~get_workspace_folders~: projectile -> ~projectile-known-projects~;
+    else ~project-known-project-roots~.
+  - ~list_project_files~: projectile -> ~projectile-project-files~ /
+    ~projectile-current-project-files~; else ~project-files~ of
+    ~project-current~.
+  - ~switch_project~: projectile -> ~projectile-switch-project-by-name~;
+    else set the current project via ~project-switch-project~ / by
+    visiting the root.
+  - ~find_file_in_project~: match a name against the project file list (D3
+    list source) and ~find-file~ the resolved path. All projectile symbols
+    are referenced behind the ~featurep~ guard and declared with
+    ~declare-function~, so byte-compilation stays clean without
+    projectile.
+- Error handling mirrors existing tools: Every tool wraps its body in
+  ~condition-case~ and returns a readable status string ("Not inside a
+  project", "No match", etc.) instead of signalling, exactly as
+  ~project_info~, ~get_error_context~, and the org-task tools do.
+
+* Tasks
+- [X] Factor the per-buffer Flycheck/Flymake extraction out of
+  ~mcp-emacs-get-diagnostics~ into a helper that takes a buffer and
+  returns its diagnostics lines
+- [X] Rename ~mcp-emacs-get-diagnostics~ to
+  ~mcp-emacs-get-buffer-diagnostics~ (delegating to the helper for the
+  current buffer) and rename the ~get_diagnostics~ tool descriptor to
+  ~get_buffer_diagnostics~
+- [X] Implement ~mcp-emacs-get-project-diagnostics~: resolve the current
+  project via ~project.el~, iterate live buffers whose file is under the
+  project root, run the helper per buffer, and prefix each buffer's output
+  with its file path; return a readable status when not in a project or
+  when there are none
+- [X] Implement ~mcp-emacs-get-workspace-folders~ (projectile
+  ~projectile-known-projects~ when loaded, else
+  ~project-known-project-roots~), guarded by ~featurep~ and
+  ~declare-function~
+- [X] Implement ~mcp-emacs-list-project-files~ (projectile project files
+  when loaded, else ~project-files~ of ~project-current~)
+- [X] Implement ~mcp-emacs-switch-project~ accepting a project root path
+  (and a known project name when projectile is present), switching the
+  active project and confirming; leave state unchanged and return a status
+  on an invalid target
+- [X] Implement ~mcp-emacs-find-file-in-project~ that resolves a name
+  against the project file list and opens the match, returning the
+  resolved path or a status when there is no match
+- [X] Wrap each new tool body in ~condition-case~ returning readable
+  status strings, matching the existing tools
+- [X] Register ~get_project_diagnostics~, ~get_workspace_folders~,
+  ~list_project_files~, ~switch_project~ (schema: ~path~), and
+  ~find_file_in_project~ (schema: ~name~) descriptors in
+  ~elisp/mcp-emacs-server.el~
+- [X] Confirm the renamed ~get_buffer_diagnostics~ descriptor is the only
+  diagnostics-code descriptor and that ~get_error_context~ /
+  ~diagnose_emacs~ are untouched
+- [X] Byte-compile both elisp files clean (only known optional-feature
+  warnings); confirm no projectile symbols are required unconditionally
+- [X] Headless smoke test: ~get_buffer_diagnostics~ and
+  ~get_project_diagnostics~ over an open project buffer,
+  ~get_workspace_folders~, ~list_project_files~, ~find_file_in_project~,
+  and ~switch_project~ on a valid and an invalid target
+- [X] Update ~README.md~ tool table (rename + five new tools) and the
+  ~review-diagnostics~ skill (renamed tool, project-diagnostics option)
+
+* Delta
+** Buffer diagnostics tool reports current-buffer code diagnostics :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL expose an MCP tool named ~get_buffer_diagnostics~ that
+returns the code diagnostics for the current buffer, auto-detecting the
+active checker (Flycheck or Flymake).
+*** Buffer has diagnostics
+- WHEN a client calls the buffer diagnostics tool while the current buffer
+  has Flycheck or Flymake diagnostics
+- THEN the tool returns those diagnostics with location and severity
+  information
+*** No checker active
+- WHEN a client calls the buffer diagnostics tool and neither Flycheck nor
+  Flymake is active in the current buffer
+- THEN the tool returns a status message indicating no checker is active,
+  rather than raising an error
+*** Renamed from get_diagnostics
+- WHEN a client that previously used ~get_diagnostics~ calls
+  ~get_buffer_diagnostics~
+- THEN it receives the same current-buffer code-diagnostics behavior under
+  the new name
+** Project diagnostics tool aggregates code diagnostics across the project :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL expose an MCP tool named ~get_project_diagnostics~ that
+aggregates code diagnostics across the current project: from all live
+project buffers (Flycheck/Flymake) and, when an eglot or lsp-mode session
+is active, the LSP workspace diagnostics.
+*** Diagnostics across open project buffers
+- WHEN a client calls the project diagnostics tool and several project
+  buffers hold diagnostics
+- THEN the tool returns the aggregated diagnostics, each attributed to its
+  file
+*** LSP workspace diagnostics included when available
+- WHEN a client calls the project diagnostics tool while an eglot/lsp-mode
+  workspace session is active
+- THEN the tool includes the LSP workspace diagnostics in the aggregated
+  result
+*** Unopened non-LSP files are not covered
+- WHEN a project contains files that are neither open in a buffer nor
+  covered by an active LSP session
+- THEN the tool does not report diagnostics for those files, and this
+  limitation is documented in the tool description
+*** Not inside a project
+- WHEN a client calls the project diagnostics tool from a buffer that is
+  not inside a project
+- THEN the tool returns a status message rather than raising an error
+** Workspace folders can be listed                               :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL expose an MCP tool named ~get_workspace_folders~ that
+returns the project/workspace roots Emacs currently knows about.
+*** Roots are known
+- WHEN a client calls the workspace-folders tool and Emacs knows one or
+  more project roots
+- THEN the tool returns those root paths
+*** No known roots
+- WHEN a client calls the workspace-folders tool and Emacs knows no
+  project roots
+- THEN the tool returns an empty list rather than raising an error
+** Project files can be listed                                   :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL expose an MCP tool named ~list_project_files~ that
+returns the files tracked in the current project.
+*** Listing files of the active project
+- WHEN a client calls the list-project-files tool while inside a project
+- THEN the tool returns the paths of files tracked in that project
+*** Not inside a project
+- WHEN a client calls the list-project-files tool from a buffer not inside
+  a project
+- THEN the tool returns a status message rather than raising an error
+** Active project can be switched                                :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL expose an MCP tool named ~switch_project~ that changes
+Emacs's active project so that subsequent tools operate in the selected
+project's context.
+*** Switching to a valid project
+- WHEN a client calls the switch-project tool with a valid project root or
+  identifier
+- THEN Emacs's active project becomes that project and the tool confirms
+  the switch
+*** Invalid project target
+- WHEN a client calls the switch-project tool with a path that is not a
+  project
+- THEN the tool returns a status message rather than raising an error, and
+  the active project is unchanged
+** A file can be found within the project                        :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL expose an MCP tool named ~find_file_in_project~ that
+resolves a file by name within the current project and opens it.
+*** File exists in the project
+- WHEN a client calls the find-file-in-project tool with a name that
+  matches a project file
+- THEN the tool opens the matching file and returns its resolved path
+*** No match
+- WHEN a client calls the find-file-in-project tool with a name that
+  matches no project file
+- THEN the tool returns a status message rather than raising an error
+** Project tools work without a hard projectile dependency       :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The project/workspace tools SHALL use built-in ~project.el~ as their base
+and use ~projectile~ only when it is already loaded, so the tools function
+with no additional package dependency.
+*** projectile not loaded
+- WHEN the project tools run in an Emacs where ~projectile~ is not loaded
+- THEN they operate using ~project.el~ and do not error for lack of
+  projectile
+*** projectile available
+- WHEN the project tools run in an Emacs where ~projectile~ is loaded
+- THEN they may use projectile for richer results while returning the same
+  kind of information

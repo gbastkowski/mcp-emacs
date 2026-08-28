@@ -1,0 +1,210 @@
+#+TITLE: add-popup-output-window
+
+* Intent
+AI IDE features that produce formatted output (starting with
+explain-selection) currently push everything into the runner session
+terminal. When the session buffer is not visible in any window, the result
+lands off-screen and the user has to hunt for it. There is no reusable
+output window for rendering ephemeral, formatted AI output near the code the
+user is looking at.
+
+~mcp-emacs-run.el~ hosts the Claude Code CLI as a full-screen ANSI TUI
+inside an ~eat~ terminal buffer, one primary session per project. Today
+~mcp-emacs-explain-selection-in-current-session~ builds a reference for the
+selection and sends ~explain <ref>~ into that terminal via
+~eat-term-send-string~. The response is produced and rendered *by the CLI
+TUI*, not by Emacs -- the terminal owns the output.
+
+The proposal wants: when no window is showing the session buffer, render the
+explanation in a separate regular split window, formatted as markdown with
+syntax-highlighted code, no auto-hide, scroll/select/copy.
+
+This exposes a structural fact: the current runner is a *TUI sink*. Emacs
+feeds it text and never sees the model's reply as data. A popup window needs
+the reply *as text* to render it. So the popup cannot simply mirror the TUI
+session's answer -- the two output paths are fundamentally different.
+
+Constraints: - Emacs 28.1, ~eat~ is a soft dependency, package stays
+pure/optional-deps. - ~markdown-mode~ provides ~gfm-view-mode~ and
+~markdown-fontify-code-blocks-natively~ -- a new soft dependency for the
+render layer. - Related in-flight work on branch ~runner-window-not-side~
+already moved the runner off dedicated side windows to
+~display-buffer-in-direction~.
+
+* Scope
+In scope:
+- Add a reusable popup output window: a command that takes markdown
+  content and renders it in a dedicated buffer shown in a regular split
+  window.
+- Render content with ~gfm-view-mode~ (read-only, pretty) and native
+  code-block fontification, so Claude's markdown -- headings, tables,
+  fenced code -- displays formatted and syntax-highlighted.
+- No auto-hide. It is a normal window/buffer, so the user can scroll,
+  select, and copy, and dismiss it explicitly.
+- Reuse one buffer per output kind: a new render of the same kind replaces
+  the previous content in the same window.
+- Route explain-selection output through the popup when no window is
+  currently showing the project's session buffer; keep sending to the
+  session when its buffer is visible.
+
+Out of scope:
+- Not scraping or parsing the TUI terminal output to recover the model's
+  reply.
+- No auto-hide / glance-and-dismiss behavior (posframe-style) --
+  explicitly rejected.
+- Not changing the MCP tool surface.
+- Not building the non-explain callers now (only proving the primitive is
+  reusable).
+
+* Approach
+- regular split window with a dedicated buffer, not posframe: Use a normal
+  buffer shown via ~display-buffer~ in a regular split. Gives scroll,
+  region, ~M-w~ copy, and explicit dismissal for free -- all hard reqs.
+- render with ~gfm-view-mode~ + native code fontification: Claude emits
+  GitHub-flavored markdown (tables, fenced code, task lists).
+  ~gfm-view-mode~ is read-only and pretty; set
+  ~markdown-fontify-code-blocks-natively~ buffer-local and re-run
+  ~font-lock-flush~/~font-lock-ensure~ so fenced blocks fontify per
+  language.
+  - *Trade-off:* ~markdown-mode~ becomes a soft dependency; guard with
+    ~require ... nil t~ and a clear ~user-error~ if absent, matching the
+    ~eat~ pattern.
+- one buffer per kind, reused: Buffer name derived from a kind identifier
+  (e.g. ~*mcp-emacs:explain*~).
+- sink routing by session-buffer visibility:
+  ~mcp-emacs-explain-selection-*~ checks
+  ~(get-buffer-window session-buffer)~. Visible -> send to TUI (current
+  behavior).
+- how the popup gets the explanation text -- the real question: The TUI
+  does not hand Emacs the reply, so the popup path needs its own text
+  source. Options: 1.
+
+* Tasks
+- [X] Add a soft dependency on ~markdown-mode~
+  (~require 'markdown-mode nil t~); add an ~--ensure-markdown~ helper that
+  signals a clear ~user-error~ with an install hint when absent, mirroring
+  the ~eat~ pattern
+- [X] Add ~mcp-emacs-run--popup-buffer-name~ deriving a dedicated buffer
+  name from a kind identifier (e.g. ~*mcp-emacs:explain*~)
+- [X] Implement ~mcp-emacs-popup-show (content &optional kind)~:
+  get-or-create the per-kind buffer, erase and insert CONTENT read-only,
+  enable ~gfm-view-mode~, set ~markdown-fontify-code-blocks-natively~
+  buffer-local, then ~font-lock-flush~/~font-lock-ensure~ so fenced code
+  fontifies; move point to ~point-min~
+- [X] Display the buffer in a regular split window that does not
+  auto-hide, reusing the existing window when already shown. Implemented
+  via ~mcp-emacs-run--display-popup~, which prepends a buffer-name entry
+  to a local copy of ~display-buffer-alist~ so
+  ~display-buffer-in-direction~ wins over framework rules (Doom's ~+popup~
+  otherwise forces a transient auto-hiding side window)
+- [X] Add ~mcp-emacs-run-popup-direction~ and ~mcp-emacs-run-popup-size~
+  customization for popup placement, independent of the runner window
+  defaults
+- [X] Implement ~mcp-emacs-run--query-headless (prompt callback)~: run
+  ~claude -p PROMPT --output-format text~ asynchronously from the project
+  root via ~make-process~, accumulate stdout, and invoke CALLBACK with the
+  collected markdown on a successful sentinel
+- [X] On process failure or non-zero exit, report exit status and stderr
+  to the user rather than rendering an empty popup (CALLBACK is not
+  called)
+- [X] Keep the invocation behind this single function so it can later be
+  swapped for the deferred agent backend without touching the render
+  primitive
+- [X] Add ~mcp-emacs-run--session-visible-p~: tests whether the project's
+  live session buffer is shown in any window (~get-buffer-window ... t~)
+- [X] Modify ~mcp-emacs-explain-selection-in-current-session~: when the
+  session buffer is visible, keep the current behavior (send
+  ~explain <ref>~ to the TUI). When it is not visible, build the explain
+  prompt, show a "Working…" placeholder popup, run the headless query, and
+  render the result via ~mcp-emacs-popup-show~ with kind ~explain~
+- [X] Preserve the no-live-session behavior: report that there is no
+  session and do not launch the CLI
+- [X] Byte-compile ~elisp/mcp-emacs-run.el~ cleanly (no new warnings)
+- [X] Batch tests for the popup primitive in ~test/mcp-emacs-run-test.el~
+  (run via ~emacs -Q --batch -l test/mcp-emacs-run-test.el~): buffer name,
+  markdown guard, render content, read-only, buffer-local fontify flag,
+  point at top, reuse-per-kind, distinct kinds. (Live-UI checks
+  intentionally skipped; scroll/select/copy follow from it being an
+  ordinary read-only buffer.)
+- [X] Batch tests for the headless query (exact command line, project-root
+  cwd, success callback, non-zero-exit no-callback) and for explain
+  routing (visible -> TUI, hidden -> popup + headless, no session ->
+  user-error with no sink fired)
+- [X] Update README with the popup behavior and the ~markdown-mode~
+  dependency
+
+* Delta
+** Render markdown content in a popup output window              :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL provide a command that takes markdown content and a kind
+identifier and renders the content in a dedicated buffer shown in a
+regular split window. The buffer SHALL be rendered read-only with markdown
+formatting and native syntax highlighting for fenced code blocks. The
+window SHALL NOT auto-hide; it SHALL persist until the user dismisses it.
+*** Render markdown content
+- WHEN the command is invoked with markdown content and a kind identifier
+- THEN the content is rendered read-only in a dedicated buffer with
+  markdown formatting and fenced code blocks syntax-highlighted, and the
+  buffer is shown in a regular split window
+*** Fenced code blocks are highlighted
+- WHEN the content contains a fenced code block with a language tag
+- THEN the code inside the block is fontified for that language
+*** Window persists
+- WHEN the popup is shown and the user runs other commands that do not
+  dismiss it
+- THEN the popup window remains visible
+** Support scroll, select, and copy in the output window         :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The buffer shown by the popup output window SHALL behave as a normal Emacs
+buffer, allowing the user to scroll it, set a region, and copy text from
+it.
+*** Scroll and copy
+- WHEN the user moves point into the popup buffer, sets a region, and
+  copies
+- THEN the selected text is placed on the kill ring
+** Reuse one buffer per output kind                              :ADDED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL reuse a single buffer per kind identifier. A new render
+with the same kind SHALL replace the previous content in that buffer and
+reuse its window rather than creating a new one.
+*** Re-render replaces content
+- WHEN the command is invoked twice with the same kind identifier and
+  different content
+- THEN the second render replaces the first content in the same buffer and
+  window
+*** Different kinds use different buffers
+- WHEN the command is invoked with two different kind identifiers
+- THEN each kind is rendered in its own dedicated buffer
+** Explain the current selection in the session               :MODIFIED:
+:PROPERTIES:
+:AREA: claude-runner
+:END:
+The system SHALL provide a command that builds a reference for the current
+selection and produces an explanation for it. The command SHALL choose its
+output sink based on session-buffer visibility: when a window is showing
+the current project's session buffer, the explanation SHALL be sent to and
+submitted in that live session; when no window is showing the session
+buffer, the explanation SHALL be rendered in the popup output window
+instead.
+*** Explain with the session buffer visible
+- WHEN the user invokes explain-selection with a region active in a
+  project whose session buffer is visible in a window
+- THEN an explain request referencing the selection is sent to and
+  submitted in the session
+*** Explain with the session buffer not visible
+- WHEN the user invokes explain-selection with a region active in a
+  project that has a live session whose buffer is not visible in any
+  window
+- THEN the explanation is rendered in the popup output window rather than
+  sent to the session terminal
+*** Explain with no live session
+- WHEN the user invokes explain-selection for a project with no live
+  session
+- THEN the system reports that there is no session and does not launch the
+  CLI
