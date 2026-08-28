@@ -61,3 +61,135 @@ GIVEN a derived backend mode
 WHEN the shared keymap is inspected
 THEN send, interrupt, add-note, quit, and resume are bound
 
+* Session overview buffer
+
+Emacs SHALL provide a single overview buffer listing every live AI session
+across all backends, showing for each its backend, project, session identity,
+state, and time since last activity.
+
+** Sessions from several backends are listed together
+- *GIVEN* a =claude-client= conversation, an =opencode-client= session, and an eat
+  runner session are live at the same time
+- *WHEN* the overview is opened
+- *THEN* all three appear as rows, each labelled with the backend it belongs to
+
+** Several conversations in one project are distinguished
+- *GIVEN* two =claude-client= conversations are live in the same project
+- *WHEN* the overview is opened
+- *THEN* both appear as separate rows, distinguishable by their session identity
+
+** No live sessions
+- *GIVEN* no AI session is live in any backend
+- *WHEN* the overview is opened
+- *THEN* the buffer reports that there are no live sessions rather than showing an empty table with no explanation
+
+* Session state is classified
+
+The overview SHALL show each session's current state at the precision its
+backend allows: for =claude-client=, distinguishing a session whose model is
+mid-turn from one that is idle and from one whose process has exited; for the
+eat runner and =opencode-client=, liveness only. A state MUST NOT be reported
+more precisely than the backend can observe.
+
+=opencode-client= is liveness-only for the same reason the eat runner is: it
+keeps no per-buffer turn state and never publishes a =finished= event, so a row
+entering "working" could never leave it. Wiring opencode's discarded
+=step-finish= signal (=opencode-client.el:500=) through as a =finished= event
+would promote it to a working/idle backend, but that is a change to
+=opencode-client.el= and is tracked separately; the overview gains the finer
+state for free once it lands.
+
+** Mid-turn session
+- *GIVEN* a =claude-client= session whose model is working on a turn
+- *WHEN* the overview renders that session's row
+- *THEN* the row shows the working state
+
+** Idle session
+- *GIVEN* a =claude-client= session whose process is live and no turn is in progress
+- *WHEN* the overview renders that session's row
+- *THEN* the row shows the idle state
+
+** Exited session
+- *GIVEN* a =claude-client= session whose process has exited
+- *WHEN* the overview renders that session's row
+- *THEN* the row shows the finished state rather than reporting it as idle
+
+** opencode session shows liveness only
+- *GIVEN* a live =opencode-client= session buffer
+- *WHEN* the overview renders its row
+- *THEN* the row shows the live state and does not report a working or idle turn
+  state, because opencode publishes no turn-end event
+
+** Eat runner session shows process liveness
+- *GIVEN* an eat runner session whose terminal process is live
+- *WHEN* the overview renders its row
+- *THEN* the row shows the live state
+
+** Eat runner session with an exited process
+- *GIVEN* an eat runner buffer whose terminal process has exited
+- *WHEN* the overview renders its row
+- *THEN* the row shows the dead state
+
+** Eat runner state is not inferred beyond liveness
+- *GIVEN* an eat runner session is live
+- *WHEN* the overview renders its row
+- *THEN* the row does not report a working or idle turn state, because the eat runner publishes no turn events
+
+* Overview updates live
+
+The overview SHALL update itself in response to session lifecycle events for
+backends that publish on =agent-backend-event-functions=, without the human
+refreshing it, and a failure while rendering MUST NOT affect the session that
+triggered it.
+
+** Turn start moves the row
+- *GIVEN* the overview is displayed and a session is idle
+- *WHEN* that session begins a turn
+- *THEN* its row changes to the working state without a manual refresh
+
+** Turn end moves the row
+- *GIVEN* the overview is displayed and a session is mid-turn
+- WHEN that turn finishes or is interrupted
+- *THEN* its row leaves the working state without a manual refresh
+
+** A render failure does not break the session
+- *GIVEN* the overview is subscribed to the event hook
+- *WHEN* rendering a row signals an error
+- *THEN* the session that published the event continues unaffected
+
+** Manual refresh still works
+- *GIVEN* the overview is displayed
+- *WHEN* the human requests a refresh
+- *THEN* the buffer re-enumerates sessions and re-renders
+
+* Sessions are actionable from the overview
+
+The overview SHALL let the human act on the session under point — visiting it,
+quitting it, and interrupting its current turn — without leaving the buffer.
+Actions MUST take effect immediately: quitting a session SHALL NOT ask for
+confirmation, even when that session is mid-turn.
+
+** Visit a session
+- *GIVEN* the overview lists a live session
+- *WHEN* the human selects the row
+- *THEN* that session's buffer is displayed
+
+** Quit a session
+- *GIVEN* the overview lists a live session
+- *WHEN* the human quits the row
+- *THEN* that session is asked to shut down immediately, without a confirmation prompt, and the row reflects the result
+
+** Quitting a mid-turn session is not confirmed
+- *GIVEN* the overview lists a session whose model is mid-turn
+- *WHEN* the human quits the row
+- *THEN* the session is shut down without asking for confirmation first
+
+** Interrupt a turn
+- *GIVEN* the overview lists a session that is mid-turn
+- *WHEN* the human interrupts the row
+- *THEN* that session's turn is interrupted
+
+** Acting on a dead session
+- *GIVEN* a row's session has exited
+- *WHEN* the human tries to interrupt it
+- *THEN* the overview reports that there is nothing to interrupt rather than signalling an unhandled error
