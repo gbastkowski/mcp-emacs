@@ -205,6 +205,60 @@
                               'reported)))
            'reported)))
 
+;;;; Help
+
+;; The key hint names every binding, so the list stays the one source of
+;; truth for what the buffer can do.
+(let ((terse (agent-session-overview--key-hint))
+      (verbose (agent-session-overview--key-hint t)))
+  (dolist (binding agent-session-overview--help)
+    (check (format "hint names %s" (car binding))
+           (and (string-match-p (regexp-quote (car binding)) terse) t) t)
+    (check (format "verbose hint describes %s" (car binding))
+           (and (string-match-p (regexp-quote (cadr binding)) verbose) t) t)))
+
+;; Every documented key is actually bound -- documenting an action that
+;; does nothing is worse than not documenting it.  `g' and `q' come from
+;; the parent mode, so look them up through the real keymap.
+(with-temp-buffer
+  (agent-session-overview-mode)
+  (dolist (binding agent-session-overview--help)
+    (let ((key (car binding)))
+      (check (format "%s is bound" key)
+             (and (commandp (key-binding (kbd key))) t)
+             t))))
+
+;; `?' opens a help buffer rather than signalling.
+(check "help renders"
+       (progn (agent-session-overview-help)
+              (and (get-buffer "*ai-sessions help*") t))
+       t)
+
+;; The help text explains the per-backend state precision, which is the
+;; one thing about this buffer that surprises people.
+(with-current-buffer "*ai-sessions help*"
+  (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+    (check "help explains claude states"
+           (and (string-match-p "working / idle / finished" text) t) t)
+    (check "help explains liveness-only backends"
+           (and (string-match-p "live / dead" text) t) t)))
+(kill-buffer "*ai-sessions help*")
+
+;; The column headers keep the header-line, since only tabulated-list
+;; aligns them with the data; the hint lives in the mode line and must
+;; actually render there.
+(with-temp-buffer
+  (agent-session-overview-mode)
+  (check "columns keep the header-line" tabulated-list-use-header-line t)
+  ;; `format-mode-line' renders to "" in batch (there is no window), so
+  ;; assert the construct is installed and that it produces the keys.
+  (check "mode line carries the hint"
+         (and (member '(:eval (agent-session-overview--key-hint)) mode-line-format) t)
+         t)
+  (let ((hint (substring-no-properties (agent-session-overview--key-hint))))
+    (check "hint renders the keys"
+           (and (string-match-p "RET" hint) (string-match-p "\\?" hint) t) t)))
+
 (princ (format "\n%s\n" (if (zerop failures) "ALL PASS" (format "%d FAILURE(S)" failures))))
 (kill-emacs (if (zerop failures) 0 1))
 ;;; agent-session-overview-test.el ends here

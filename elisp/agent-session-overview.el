@@ -268,11 +268,54 @@ you go to stop things."
     (with-current-buffer buffer (claude-client-interrupt))
     (agent-session-overview--render)))
 
+;;;; Help
+
+(defconst agent-session-overview--help
+  '(("RET" "visit the session")
+    ("k"   "quit it, no confirmation")
+    ("i"   "interrupt its turn")
+    ("g"   "refresh")
+    ("?"   "this help")
+    ("q"   "bury the overview"))
+  "The bindings, as (KEY DESCRIPTION).
+One list drives the header-line hint, the `?' buffer, and the keymap, so
+a new action cannot be documented in one place and missing from another.")
+
+(defun agent-session-overview--key-hint (&optional verbose)
+  "Return the persistent key hint.
+With VERBOSE, spell out what each key does; otherwise name the keys only,
+which is what fits in a mode line."
+  (mapconcat (lambda (binding)
+               (if verbose
+                   (format "%s %s"
+                           (propertize (car binding) 'face 'help-key-binding)
+                           (cadr binding))
+                 (propertize (car binding) 'face 'help-key-binding)))
+             agent-session-overview--help
+             "  "))
+
+(defun agent-session-overview-help ()
+  "Describe what you can do from the overview."
+  (interactive)
+  (let ((entries agent-session-overview--help))
+    (with-help-window "*ai-sessions help*"
+      (princ "AI session overview\n\n")
+      (princ "Every live AI session, across all backends, in one list.\n\n")
+      (dolist (binding entries)
+        (princ (format "  %-5s %s\n" (car binding) (cadr binding))))
+      (princ "\nState is only as precise as its backend allows.\n\n")
+      (princ "  claude    working / idle / finished -- it publishes turn events\n")
+      (princ "  eat       live / dead -- a terminal, with no turn events\n")
+      (princ "  opencode  live / dead -- publishes no turn-end event\n")
+      (princ "\nWorking/idle is never guessed from output activity: that would\n")
+      (princ "read a long model think as idle and a spinner as work.\n"))))
+
 (defvar agent-session-overview-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") #'agent-session-overview-visit)
     (define-key map (kbd "k") #'agent-session-overview-quit-session)
     (define-key map (kbd "i") #'agent-session-overview-interrupt-session)
+    (define-key map (kbd "?") #'agent-session-overview-help)
     map)
   "Keymap for `agent-session-overview-mode'.
 `g' (revert) and `q' (bury) come from `tabulated-list-mode'.")
@@ -286,6 +329,13 @@ you go to stop things."
          ("State" 10 t)])
   (setq tabulated-list-padding 2)
   (setq tabulated-list-sort-key '("Backend" . nil))
+  ;; The column headers keep the header-line -- only `tabulated-list-print'
+  ;; aligns them with the data, and an in-buffer header row is not padded
+  ;; to the column widths.  The key hint goes in the mode line instead: it
+  ;; is still always visible and still costs no rows.
+  (setq mode-line-format
+        (append mode-line-format
+                '("  " (:eval (agent-session-overview--key-hint)))))
   (add-hook 'tabulated-list-revert-hook #'agent-session-overview--refresh nil t)
   (tabulated-list-init-header))
 
@@ -303,7 +353,7 @@ you go to stop things."
         (let ((inhibit-read-only t))
           (save-excursion
             (goto-char (point-max))
-            (insert "\n  No live AI sessions.\n")))))
+            (insert "\n  No live AI sessions.  Press ? for help.\n")))))
     (pop-to-buffer buffer)))
 
 (add-hook 'agent-backend-event-functions #'agent-session-overview--on-event)

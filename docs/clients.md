@@ -38,8 +38,13 @@ M-x agent-session-overview
 | State | see below |
 
 Keys: `RET` visit, `k` quit the session, `i` interrupt its turn, `g` refresh,
-`q` bury. Quitting is **not** confirmed, including mid-turn — the overview is
-where you go to stop things.
+`?` help, `q` bury. Quitting is **not** confirmed, including mid-turn — the
+overview is where you go to stop things.
+
+The mode line carries the key names so they are always in view, and `?` opens a
+fuller help buffer that also explains the state column. Both are generated from
+one list of bindings, so a new action cannot be documented in one place and
+missing from the other.
 
 **State is only as precise as the backend allows.** `claude-client` publishes
 turn events and tracks a turn flag, so its rows read `working` / `idle` /
