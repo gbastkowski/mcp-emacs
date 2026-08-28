@@ -57,8 +57,17 @@
 ;;; Code:
 
 (require 'json)
+(require 'seq)
 (require 'subr-x)
 (require 'agent-backend)
+
+;; Soft dependency: prose is fontified as markdown when `markdown-mode' is
+;; installed, and rendered plain when it is not (see
+;; `claude-client--fontify-markdown').  The popup output window takes the
+;; same optional dependency.
+(require 'markdown-mode nil t)
+(declare-function gfm-view-mode "markdown-mode" ())
+(defvar markdown-fontify-code-blocks-natively)
 
 ;;;; Customization
 
@@ -644,31 +653,171 @@ Returns the drained notes, oldest first, and clears the queue."
         (setq claude-client--process nil
               claude-client--turn-active nil)))))
 
+;;;; Faces
+;;
+;; The chrome (what the harness did) is faced separately from the model's
+;; own prose (what it said), so the two are distinguishable at a glance.
+;; Prose is fontified as markdown instead, because that is what the model
+;; emits -- see `claude-client--fontify-markdown'.
+
+(defface claude-client-banner-face
+  '((t :inherit shadow :weight bold))
+  "Face for the session banner and turn-end markers."
+  :group 'claude-client)
+
+(defface claude-client-prompt-face
+  '((t :inherit font-lock-keyword-face :weight bold))
+  "Face for a prompt the human sent."
+  :group 'claude-client)
+
+(defface claude-client-tool-face
+  '((t :inherit font-lock-function-name-face))
+  "Face for a tool call's name."
+  :group 'claude-client)
+
+(defface claude-client-tool-input-face
+  '((t :inherit shadow))
+  "Face for the arguments shown beside a tool call."
+  :group 'claude-client)
+
+(defface claude-client-tool-result-face
+  '((t :inherit font-lock-comment-face))
+  "Face for a tool's answer."
+  :group 'claude-client)
+
+(defface claude-client-note-face
+  '((t :inherit font-lock-doc-face))
+  "Face for a human note."
+  :group 'claude-client)
+
+(defface claude-client-pending-face
+  '((t :inherit warning))
+  "Face for the marker on a note that has not reached the model yet."
+  :group 'claude-client)
+
+(defface claude-client-error-face
+  '((t :inherit error))
+  "Face for a reported failure."
+  :group 'claude-client)
+
 ;;;; Rendering
 
+(defvar claude-client--fontify-buffer nil
+  "Scratch buffer used to fontify markdown, or nil before first use.")
+
+(defun claude-client--fontify-markdown (text)
+  "Return TEXT with markdown text properties applied.
+Fontification happens in a scratch buffer whose properties are copied
+out, so no markdown mode is ever active in the conversation buffer and
+its own keymap is untouched.  When `markdown-mode' is absent TEXT is
+returned unchanged: prose then reads plain, which is worse than
+fontified but better than refusing to render."
+  (if (or (string-empty-p text) (not (fboundp 'gfm-view-mode)))
+      text
+    (unless (buffer-live-p claude-client--fontify-buffer)
+      (setq claude-client--fontify-buffer
+            (get-buffer-create " *claude-client-fontify*")))
+    (with-current-buffer claude-client--fontify-buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert text)
+        ;; Re-entering the mode per call is wasteful but keeps this a pure
+        ;; function of TEXT; the buffer is small and off-screen.
+        (setq-local markdown-fontify-code-blocks-natively t)
+        (delay-mode-hooks (gfm-view-mode))
+        (setq-local markdown-fontify-code-blocks-natively t)
+        (font-lock-flush)
+        (font-lock-ensure)
+        (buffer-string)))))
+
+(defun claude-client--faced (text face)
+  "Return TEXT propertized with FACE.
+Uses the `face' property, not `font-lock-face': the conversation buffer
+derives from `special-mode' and runs with `font-lock-mode' off, where
+`font-lock-face' has no effect.  This is also the property
+`markdown-mode' leaves on the fontified prose, so chrome and prose carry
+their faces the same way."
+  (propertize text 'face face))
+
+(defconst claude-client--tool-input-keys
+  '(path file_path pattern command query url description)
+  "Input keys worth showing beside a tool call, in order of preference.
+A tool's whole input is often long (a diff, a file's new contents); the
+point of the summary is to say *what* was touched, not to reproduce it.")
+
+(defun claude-client--tool-input-summary (event)
+  "Return a one-line summary of EVENT's tool input, or nil.
+Prefers the first of `claude-client--tool-input-keys' present in the
+input, so a call reads as \"[tool: apply_diff] /tmp/x\"."
+  (let ((input (plist-get event :input)))
+    (when (consp input)
+      (when-let* ((key (seq-find (lambda (k) (assq k input))
+                                 claude-client--tool-input-keys))
+                  (val (alist-get key input)))
+        (when (stringp val)
+          (let ((line (car (split-string (string-trim val) "\n"))))
+            (unless (string-empty-p line)
+              (truncate-string-to-width line 60 nil nil "…"))))))))
+
 (defun claude-client--render-event (event)
-  "Return a display string for EVENT, or nil to skip it."
+  "Return a display string for EVENT, or nil to skip it.
+Structural chrome carries its own face; the model's prose is fontified
+as markdown.  The plain text is kept stable -- callers and tests match
+on it -- so this only adds properties."
   (pcase (plist-get event :kind)
-    ('started (format "── claude %s ──" (or (plist-get event :model) "")))
-    ('text (plist-get event :text))
-    ('tool-use (format "  [tool: %s]" (plist-get event :name)))
+    ('started
+     (claude-client--faced
+      (format "── claude %s ──" (or (plist-get event :model) ""))
+      'claude-client-banner-face))
+    ('text (claude-client--fontify-markdown (or (plist-get event :text) "")))
+    ('tool-use
+     (concat "  "
+             (claude-client--faced (format "[tool: %s]" (plist-get event :name))
+                                   'claude-client-tool-face)
+             (when-let* ((input (claude-client--tool-input-summary event)))
+               (claude-client--faced (concat " " input)
+                                     'claude-client-tool-input-face))))
     ('tool-result
      (let ((text (string-trim (or (plist-get event :text) ""))))
        (unless (string-empty-p text)
-         (format "  → %s"
-                 (car (split-string text "\n"))))))
-    ('finished (format "── %s ──" (or (plist-get event :subtype) "done")))
-    ('resumed (format "── resumed %s ──" (plist-get event :session)))
-    ('interrupted "── interrupted ──")
-    ('note-dropped (format "  (dropped unsent note: %s)" (plist-get event :text)))
-    ('prompt (format "\n>>> %s" (plist-get event :text)))
-    ('note (format "> %s%s"
-                   (plist-get event :text)
-                   (if (plist-get event :pending) "  (pending)" "")))
+         (claude-client--faced
+          (mapconcat (lambda (l) (concat "  → " l))
+                     (split-string text "\n")
+                     "\n")
+          'claude-client-tool-result-face))))
+    ('finished
+     (claude-client--faced
+      (format "── %s ──" (or (plist-get event :subtype) "done"))
+      'claude-client-banner-face))
+    ('resumed
+     (claude-client--faced
+      (format "── resumed %s ──" (plist-get event :session))
+      'claude-client-banner-face))
+    ('interrupted
+     (claude-client--faced "── interrupted ──" 'claude-client-banner-face))
+    ('error
+     (claude-client--faced (format "  !! %s" (plist-get event :text))
+                           'claude-client-error-face))
+    ('note-dropped
+     (claude-client--faced
+      (format "  (dropped unsent note: %s)" (plist-get event :text))
+      'claude-client-pending-face))
+    ('prompt
+     (concat "\n"
+             (claude-client--faced (format ">>> %s" (plist-get event :text))
+                                   'claude-client-prompt-face)))
+    ('note
+     (concat (claude-client--faced (format "> %s" (plist-get event :text))
+                                   'claude-client-note-face)
+             (when (plist-get event :pending)
+               (claude-client--faced "  (pending)"
+                                     'claude-client-pending-face))))
     ('notes-delivered
-     (format "── %d note%s to carry forward ──"
-             (length (plist-get event :notes))
-             (if (= 1 (length (plist-get event :notes))) "" "s")))
+     (claude-client--faced
+      (format "── %d note%s to carry forward ──"
+              (length (plist-get event :notes))
+              (if (= 1 (length (plist-get event :notes))) "" "s"))
+      'claude-client-banner-face))
     (_ nil)))
 
 (defun claude-client--render ()

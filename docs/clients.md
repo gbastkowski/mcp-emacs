@@ -93,6 +93,19 @@ and its context carry across turns.
 In the conversation buffer: `s` send, `i` interrupt, `n` add note, `r` resume,
 `g` start, `k` quit.
 
+**Appearance.** The buffer separates what the harness did from what the model
+said. Structural chrome — the session banner, prompts, tool calls and their
+answers, notes, the turn-end marker — carries its own faces
+(`claude-client-banner-face` and friends, all customizable). The model's own
+prose is fontified as markdown, which is what it emits: headings, emphasis,
+inline code and fenced code blocks all render, the last with native
+per-language highlighting.
+
+Fontification happens in an off-screen scratch buffer whose text properties are
+copied in, so no markdown mode is ever active in the conversation buffer and
+its single-letter keys keep working. `markdown-mode` is a soft dependency:
+without it prose renders as plain text and the chrome faces still apply.
+
 **Notes.** A note written mid-turn abandons that turn immediately and is
 delivered as the next one (`claude-client-note-interrupts`, on by default); with
 it off, notes queue instead. `claude-client-max-pending-notes` (default 20)

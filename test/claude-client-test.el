@@ -278,6 +278,90 @@
         (check "buffer-read-only" buffer-read-only t))
     (kill-buffer buf)))
 
+;;;; Prettified rendering
+;;
+;; Chrome (what the harness did) is faced; prose (what the model said) is
+;; fontified as markdown.  Faces go on the `face' property, not
+;; `font-lock-face': this buffer runs with `font-lock-mode' off, where
+;; `font-lock-face' would be silently ignored.
+
+(defun claude-test--face-at (string index)
+  "Return the `face' property of STRING at INDEX."
+  (get-text-property index 'face string))
+
+(let ((cases '((started . claude-client-banner-face)
+               (finished . claude-client-banner-face)
+               (interrupted . claude-client-banner-face)
+               (prompt . claude-client-prompt-face)
+               (note . claude-client-note-face)
+               (error . claude-client-error-face))))
+  (dolist (c cases)
+    (let* ((kind (car c))
+           (s (claude-client--render-event
+               (list :kind kind :text "x" :model "m" :subtype "success"
+                     :session "s")))
+           ;; `prompt' opens with a newline that carries no face.
+           (i (if (eq kind 'prompt) 1 0)))
+      (check (format "face-%s" kind) (claude-test--face-at s i) (cdr c)))))
+
+(let ((s (claude-client--render-event
+          '(:kind tool-use :name "apply_diff" :input ((path . "/tmp/x"))))))
+  (check "tool-name-faced" (claude-test--face-at s 2)
+         'claude-client-tool-face)
+  (check "tool-input-shown"
+         (and (string-match-p "/tmp/x" (substring-no-properties s)) t) t)
+  (check "tool-input-faced"
+         (claude-test--face-at s (1- (length s)))
+         'claude-client-tool-input-face))
+
+;; A tool's input can be a whole file's contents; only a short summary of
+;; what was touched belongs beside the call.
+(let ((s (claude-client--render-event
+          `(:kind tool-use :name "write"
+            :input ((path . ,(concat (make-string 200 ?a) "\nsecond line")))))))
+  (check "tool-input-single-line"
+         (length (split-string (substring-no-properties s) "\n")) 1)
+  (check "tool-input-truncated"
+         (and (<= (length (substring-no-properties s)) 100) t) t))
+
+(let ((s (claude-client--render-event '(:kind tool-use :name "bare"))))
+  (check "tool-without-input" (substring-no-properties s) "  [tool: bare]"))
+
+;; A note not yet delivered is marked, and the marker is faced apart from
+;; the note itself.
+(let ((s (claude-client--render-event '(:kind note :text "n" :pending t))))
+  (check "pending-marker-faced"
+         (claude-test--face-at s (1- (length s)))
+         'claude-client-pending-face))
+
+;; Earlier this truncated to the first line, hiding the rest of a tool's
+;; answer.
+(let ((s (claude-client--render-event
+          '(:kind tool-result :text "Status: applied\n412 lines\n"))))
+  (check "tool-result-keeps-lines"
+         (substring-no-properties s) "  → Status: applied\n  → 412 lines")
+  (check "tool-result-faced" (claude-test--face-at s 2)
+         'claude-client-tool-result-face))
+
+(let ((s (claude-client--render-event '(:kind tool-result :text "   "))))
+  (check "empty-tool-result-skipped" s nil))
+
+;; Prose keeps its exact text either way; only the properties differ.
+(let* ((prose "Use **bold** and `code`.\n")
+       (s (claude-client--render-event (list :kind 'text :text prose))))
+  (check "prose-text-unchanged" (substring-no-properties s) prose)
+  (if (fboundp 'gfm-view-mode)
+      (check "prose-fontified"
+             (and (text-properties-at 6 s) t) t)
+    ;; Without `markdown-mode' the client must still render, plain.
+    (check "prose-plain-without-markdown" (text-properties-at 6 s) nil)))
+
+(let ((s (claude-client--render-event '(:kind text :text ""))))
+  (check "empty-prose-renders" s ""))
+
+(check "unknown-kind-skipped"
+       (claude-client--render-event '(:kind :no-such-kind)) nil)
+
 ;;;; Human notes (issue #39, `NoteAdded')
 ;;
 ;; A note is the second writer to the log.  It must be recorded immediately

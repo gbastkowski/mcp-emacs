@@ -1,0 +1,85 @@
+#+TITLE: prettify-claude-client-output
+
+* Intent
+Currently, the terminal-free AI output (special claude-client buffer) has a very rudimentary output format.
+This is hard to read.
+We should aim for a really easy overview of the conversation that helps human users to quickly get the current status.
+
+* Scope
+In scope: the display layer of the claude-client conversation buffer --
+faces for the structural chrome (session banner, prompts, tool calls, tool
+results, notes, turn end) and markdown fontification of the assistant's own
+prose.
+
+Out of scope: the event vocabulary and the streaming/rendering strategy.
+~claude-client--render~ keeps its erase-and-rebuild; making it append-only
+is a separate change (see Approach).
+Also out of scope: opencode-client's rendering, which has its own renderer.
+
+* Approach
+- Fontify prose, not the whole buffer: the model already emits markdown, so
+  ~text~ events are fontified as markdown while the chrome keeps dedicated
+  faces.  The buffer stays in ~claude-client-mode~, so its single-letter
+  commands and the evil registration keep working; putting the whole buffer
+  in ~gfm-view-mode~ would mean re-layering those bindings and would make
+  chrome indistinguishable from prose that happens to use the same syntax.
+- Reuse the popup window's proven machinery: ~mcp-emacs-run--render-output~
+  already fontifies markdown with ~gfm-view-mode~ and
+  ~markdown-fontify-code-blocks-natively~, and ~markdown-mode~ is already a
+  soft dependency.  Fontify in a scratch buffer and copy the resulting text
+  properties in, so no markdown mode is ever active in the conversation
+  buffer.
+- Degrade rather than fail: without ~markdown-mode~, prose renders plain and
+  the chrome faces still apply, because the client must keep working where
+  the package is absent.
+- Keep the renderer a pure function of the event log: ~--render-event~ still
+  maps one event to one display string, now propertized, so the rebuild in
+  ~--render~ is unchanged.
+  - Note: that rebuild re-fontifies the whole log on every streamed event.
+    Acceptable here (conversations are short, correctness is unaffected) but
+    worth revisiting as append-only rendering if long sessions drag.
+
+* Tasks
+- [X] Add the chrome faces (session banner, prompt, tool call, tool result,
+  note, pending note, turn end, error)
+- [X] Add a markdown fontification helper that returns propertized text and
+  falls back to plain text when ~markdown-mode~ is missing
+- [X] Rewrite ~claude-client--render-event~ to return propertized strings
+  for every kind, and render ~tool-use~ with its input and ~tool-result~
+  without truncating to the first line
+- [X] Tests: each kind renders with its face; markdown prose gains
+  properties; prose is unchanged when ~markdown-mode~ is absent
+- [X] Update ~docs/clients.md~ with the new appearance
+
+* Delta
+** The conversation buffer distinguishes chrome from model prose        :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The Claude client SHALL render its structural chrome -- the session banner,
+prompts, tool calls, tool results, notes, and the turn-end marker -- with
+dedicated faces, and SHALL fontify the assistant's own prose as markdown, so
+a human can tell at a glance what the model said from what the harness did.
+The conversation buffer MUST remain in ~claude-client-mode~ so its
+single-letter commands keep working, and markdown support MUST stay a soft
+dependency: without it prose renders as plain text rather than signalling.
+*** Chrome carries its own faces
+- GIVEN a conversation with a session banner, a tool call, and a turn end
+- WHEN the buffer is rendered
+- THEN each of those carries its own face rather than the default face
+*** Assistant prose is fontified as markdown
+- GIVEN an assistant text event containing markdown emphasis, a heading, and
+  a fenced code block
+- WHEN the buffer is rendered
+- THEN that prose carries markdown text properties and the code block is
+  fontified for its language
+*** The mode and its keys survive
+- GIVEN a rendered conversation buffer
+- WHEN its major mode and single-letter keys are inspected
+- THEN the mode is still ~claude-client-mode~ and the keys still reach their
+  commands
+*** Missing markdown degrades to plain prose
+- GIVEN an Emacs without ~markdown-mode~
+- WHEN an assistant text event is rendered
+- THEN the prose appears as plain text, the chrome faces still apply, and no
+  error is signalled
