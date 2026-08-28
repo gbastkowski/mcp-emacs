@@ -1,0 +1,257 @@
+#+TITLE: ai-session-overview-buffer
+
+* Intent
+
+There is no single place to see what the AI is doing. Each backend answers only
+for itself, and only when asked: =claude-client-list= dumps its conversations
+into the echo area, =mcp-emacs-run-list= dumps the eat runner's sessions into
+the echo area, and opencode's sessions are visible only inside an opencode
+buffer. Nothing shows all of them together, and nothing shows them /now/ — a
+=message= is stale the moment it is printed, so "is that turn still running?"
+means switching to the buffer to look.
+
+That is the chatbot loop reasserting itself at the session level: the human
+polls for state instead of the workspace showing it. With several conversations
+per project and several projects open at once — which the clients explicitly
+support — the human loses track of which sessions exist, which are mid-turn,
+and which have quietly finished or died.
+
+This change adds one live, actionable overview buffer covering every backend, so
+the state of all AI work is visible without asking and can be acted on from
+where it is displayed.
+
+* Scope
+
+In scope:
+
+- A single =*ai-sessions*= buffer listing sessions from all three surfaces:
+  =claude-client= conversations, =opencode-client= sessions, and =mcp-emacs-run=
+  (eat) runner sessions.
+- Per row: backend, project, session identity, state, and time since last
+  activity.
+- Live updates driven by =agent-backend-event-functions= for the backends that
+  publish events.
+- Actions from the buffer: visit, quit, interrupt, refresh, bury.
+- Enumeration by scanning =buffer-list= against each backend's buffer-name
+  regexp.
+
+Out of scope:
+
+- A session registry on =agent-backend.el=. The regexp scan is the chosen
+  approach; a registry is the fallback only if the scan proves insufficient (see
+  Approach).
+
+- Rendering conversation /content/ in the overview — it lists sessions, it is
+  not a transcript. The Org transcript in =mcp-emacs-remote.el= already covers
+  tool activity.
+- Starting new sessions from the overview. Existing =-start= / =-connect=
+  commands keep that job.
+- Removing =claude-client-list= or =mcp-emacs-run-list=. They may become thin
+  wrappers later, but deleting user-facing commands is a separate decision.
+- Cross-Emacs-instance or remote session discovery.
+
+* Approach
+
+Add =elisp/agent-session-overview.el= as a consumer of the shared layer rather
+than a fourth backend surface. It subscribes to
+=agent-backend-event-functions= and re-renders on relevant event kinds, so a
+turn starting or finishing moves a row without the human doing anything.
+
+Two facts about the current code shape this:
+
+1. *Enumeration stays a buffer-name-regexp scan.* There is no session registry
+   today: =mcp-emacs-run--sessions-list= filters =buffer-list= against
+   =mcp-emacs-run--buffer-name-regexp= (=*claude:<project>:<n>*=) and
+   =claude-client--buffers= does the same against
+   =claude-client--buffer-name-regexp= (=*claude-client:<project>:<n>*=). Those
+   two are parallel — project in group 1, session number in group 2 — but
+   opencode is not: it names buffers =*opencode:<title>*= (title, no project, no
+   number), so its project column comes from the buffer's =default-directory=,
+   the way =mcp-emacs-run--buffer-project= already derives it. Scanning each
+   backend's own pattern is still a small step. The overview does that rather
+   than introducing a registry. A registry on
+   =agent-backend.el= remains the fallback if the scan proves insufficient
+   (sessions that are not buffer-backed, or state that cannot be recovered from
+   a buffer), and is deliberately not built up front.
+
+2. *The eat runner publishes no turn events.* It is a TUI in a terminal buffer,
+   not an =agent-backend= subclass, so there is nothing to subscribe to and no
+   turn-active flag to read. What it does expose is a terminal process, which
+   the runner already reads via =get-buffer-process=. Eat rows therefore report
+   process liveness (live / dead) and nothing finer: the state column is
+   per-backend precise rather than uniformly guessed, and no working/idle state
+   is inferred from terminal output activity, which would misreport a long
+   model think as idle and a spinner as work.
+
+State per row comes from what each backend already tracks:
+=claude-client--turn-active= and =process-live-p= on
+=claude-client--process= give working / idle / finished — the same distinction
+=claude-client--label= already renders for =completing-read=. The overview
+reuses that classification rather than inventing a second vocabulary.
+
+Rendering is a =tabulated-list-mode= buffer, which gives sortable columns, a
+stable =revert-buffer= contract for =g=, and per-row entry lookup for the
+actions for free.
+
+Event-hook subscribers must not be able to break a session: the renderer
+guards its own errors, consistent with the remote transcript's rule that a
+rendering error cannot stall an edit.
+
+* Tasks
+
+- [x] Create =elisp/agent-session-overview.el= with a =tabulated-list-mode= derived mode
+- [x] Implement enumeration by scanning =buffer-list= against each backend's buffer-name regexp
+- [x] Implement state classification: working / idle / finished for claude-client, live / dead for eat and opencode
+- [x] Subscribe to =agent-backend-event-functions= and re-render on relevant kinds
+- [x] Guard the renderer so a subscriber error cannot affect a session
+- [x] Implement actions: visit, quit, interrupt, refresh, bury
+- [x] Add the =agent-session-overview= autoloaded entry-point command
+- [x] Add tests for enumeration and state classification
+- [x] Document the overview in =docs/clients.md=
+
+* Delta
+
+** DONE Session overview buffer                                                                    :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+
+Emacs SHALL provide a single overview buffer listing every live AI session
+across all backends, showing for each its backend, project, session identity,
+state, and time since last activity.
+
+*** Sessions from several backends are listed together
+- *GIVEN* a =claude-client= conversation, an =opencode-client= session, and an eat
+  runner session are live at the same time
+- *WHEN* the overview is opened
+- *THEN* all three appear as rows, each labelled with the backend it belongs to
+
+*** Several conversations in one project are distinguished
+- *GIVEN* two =claude-client= conversations are live in the same project
+- *WHEN* the overview is opened
+- *THEN* both appear as separate rows, distinguishable by their session identity
+
+*** No live sessions
+- *GIVEN* no AI session is live in any backend
+- *WHEN* the overview is opened
+- *THEN* the buffer reports that there are no live sessions rather than showing an empty table with no explanation
+
+** DONE Session state is classified                                                                :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+
+The overview SHALL show each session's current state at the precision its
+backend allows: for =claude-client=, distinguishing a session whose model is
+mid-turn from one that is idle and from one whose process has exited; for the
+eat runner and =opencode-client=, liveness only. A state MUST NOT be reported
+more precisely than the backend can observe.
+
+=opencode-client= is liveness-only for the same reason the eat runner is: it
+keeps no per-buffer turn state and never publishes a =finished= event, so a row
+entering "working" could never leave it. Wiring opencode's discarded
+=step-finish= signal (=opencode-client.el:500=) through as a =finished= event
+would promote it to a working/idle backend, but that is a change to
+=opencode-client.el= and is tracked separately; the overview gains the finer
+state for free once it lands.
+
+*** Mid-turn session
+- *GIVEN* a =claude-client= session whose model is working on a turn
+- *WHEN* the overview renders that session's row
+- *THEN* the row shows the working state
+
+*** Idle session
+- *GIVEN* a =claude-client= session whose process is live and no turn is in progress
+- *WHEN* the overview renders that session's row
+- *THEN* the row shows the idle state
+
+*** Exited session
+- *GIVEN* a =claude-client= session whose process has exited
+- *WHEN* the overview renders that session's row
+- *THEN* the row shows the finished state rather than reporting it as idle
+
+*** opencode session shows liveness only
+- *GIVEN* a live =opencode-client= session buffer
+- *WHEN* the overview renders its row
+- *THEN* the row shows the live state and does not report a working or idle turn
+  state, because opencode publishes no turn-end event
+
+*** Eat runner session shows process liveness
+- *GIVEN* an eat runner session whose terminal process is live
+- *WHEN* the overview renders its row
+- *THEN* the row shows the live state
+
+*** Eat runner session with an exited process
+- *GIVEN* an eat runner buffer whose terminal process has exited
+- *WHEN* the overview renders its row
+- *THEN* the row shows the dead state
+
+*** Eat runner state is not inferred beyond liveness
+- *GIVEN* an eat runner session is live
+- *WHEN* the overview renders its row
+- *THEN* the row does not report a working or idle turn state, because the eat runner publishes no turn events
+
+** DONE Overview updates live                                                                      :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+
+The overview SHALL update itself in response to session lifecycle events for
+backends that publish on =agent-backend-event-functions=, without the human
+refreshing it, and a failure while rendering MUST NOT affect the session that
+triggered it.
+
+*** Turn start moves the row
+- *GIVEN* the overview is displayed and a session is idle
+- *WHEN* that session begins a turn
+- *THEN* its row changes to the working state without a manual refresh
+
+*** Turn end moves the row
+- *GIVEN* the overview is displayed and a session is mid-turn
+- WHEN that turn finishes or is interrupted
+- *THEN* its row leaves the working state without a manual refresh
+
+*** A render failure does not break the session
+- *GIVEN* the overview is subscribed to the event hook
+- *WHEN* rendering a row signals an error
+- *THEN* the session that published the event continues unaffected
+
+*** Manual refresh still works
+- *GIVEN* the overview is displayed
+- *WHEN* the human requests a refresh
+- *THEN* the buffer re-enumerates sessions and re-renders
+
+** DONE Sessions are actionable from the overview                                                  :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+
+The overview SHALL let the human act on the session under point — visiting it,
+quitting it, and interrupting its current turn — without leaving the buffer.
+Actions MUST take effect immediately: quitting a session SHALL NOT ask for
+confirmation, even when that session is mid-turn.
+
+*** Visit a session
+- *GIVEN* the overview lists a live session
+- *WHEN* the human selects the row
+- *THEN* that session's buffer is displayed
+
+*** Quit a session
+- *GIVEN* the overview lists a live session
+- *WHEN* the human quits the row
+- *THEN* that session is asked to shut down immediately, without a confirmation prompt, and the row reflects the result
+
+*** Quitting a mid-turn session is not confirmed
+- *GIVEN* the overview lists a session whose model is mid-turn
+- *WHEN* the human quits the row
+- *THEN* the session is shut down without asking for confirmation first
+
+*** Interrupt a turn
+- *GIVEN* the overview lists a session that is mid-turn
+- *WHEN* the human interrupts the row
+- *THEN* that session's turn is interrupted
+
+*** Acting on a dead session
+- *GIVEN* a row's session has exited
+- *WHEN* the human tries to interrupt it
+- *THEN* the overview reports that there is nothing to interrupt rather than signalling an unhandled error

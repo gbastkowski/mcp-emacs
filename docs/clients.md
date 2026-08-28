@@ -12,7 +12,49 @@ detail from the user's side.
 | IDE + remote | `elisp/mcp-emacs-ide.el`, `-remote.el` | Diff review for Claude's native edits, plus an Org transcript |
 
 The shared layer under the two conversation clients is
-[`elisp/agent-backend.el`](#shared-agent-backend).
+[`elisp/agent-backend.el`](#shared-agent-backend), and
+[`agent-session-overview.el`](#session-overview) lists what every backend is
+doing in one buffer.
+
+## Session overview
+
+`elisp/agent-session-overview.el` lists every live AI session — across all
+backends — in one `*ai-sessions*` buffer, and keeps it current.
+
+Without it, each backend answers only for itself and only when asked:
+`claude-client-list` and `mcp-emacs-run-list` print their own sessions into the
+echo area, which is stale the moment it appears. With several conversations per
+project and several projects open, that stops scaling.
+
+```
+M-x agent-session-overview
+```
+
+| Column | |
+|---|---|
+| Backend | `claude`, `eat`, or `opencode` |
+| Project | from the buffer name, or its `default-directory` for opencode |
+| Session | project:number, or the title for opencode |
+| State | see below |
+
+Keys: `RET` visit, `k` quit the session, `i` interrupt its turn, `g` refresh,
+`q` bury. Quitting is **not** confirmed, including mid-turn — the overview is
+where you go to stop things.
+
+**State is only as precise as the backend allows.** `claude-client` publishes
+turn events and tracks a turn flag, so its rows read `working` / `idle` /
+`finished`. The eat runner is a TUI with no turn events, and opencode keeps no
+per-buffer turn state and never publishes a turn-end event, so both report
+`live` / `dead` only. Working/idle is deliberately *not* inferred from terminal
+output activity: that would misreport a long model think as idle and a spinner
+as work.
+
+Rows update themselves off `agent-backend-event-functions`. The subscriber
+swallows its own errors, so a rendering failure cannot propagate back into the
+session that published the event.
+
+Enumeration is a `buffer-list` scan against each backend's buffer-name pattern —
+there is no session registry, by choice.
 
 ## Claude client (terminal-free)
 
