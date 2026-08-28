@@ -118,15 +118,14 @@ document leans on those comments heavily.
 
 ```
 mcp-emacs/
-├── elisp/                  the entire implementation (19 .el files)
-├── test/                   ERT test suites (17 files)
+├── elisp/                  the entire implementation (21 .el files)
+├── test/                   ERT test suites (19 files)
 ├── skills/                 Claude Code "skill" definitions (Markdown)
 ├── commands/               a slash-command definition
 ├── .claude/commands/       project-local slash commands (orgspec, opsx)
 ├── .claude-plugin/         Claude Code plugin + marketplace manifests
 ├── docs/                   vision, diagrams, comparison write-ups
 ├── orgspec/                this project's own orgspec specs and changes
-├── openspec/               OpenSpec configuration (the tool orgspec ports)
 ├── .github/workflows/ci.yml   byte-compile + test on Emacs 29.4
 ├── .mcp.json               MCP client config pointing at localhost:8765
 ├── opencode.json           the same, for the opencode agent
