@@ -31,8 +31,7 @@
 ;; IDE side.
 ;;
 ;; The protocol was verified live against Claude Code 2.1.212 (see
-;; openspec/changes/native-edit-diff-review/spike-findings.md).  Notable
-;; points that shape this code:
+;; docs/ide-protocol-spike.md).  Notable points that shape this code:
 ;;
 ;; - protocolVersion is "2025-11-25"; `initialize' echoes it back.
 ;; - Before every native edit the CLI calls `closeAllDiffTabs' then
