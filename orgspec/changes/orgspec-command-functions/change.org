@@ -1,0 +1,15 @@
+#+TITLE: orgspec-command-functions
+
+* Intent
+Integrate Orgspec more with Emacs.
+Create emacs lisp functions that do orgspec commands.
+Something like mcp-emacs-send-orgspec-new "send /orgspec:new to agent session" or similar.
+* Scope
+Just the emacs lisp functions.
+A possible follow-up would be to query the LLM harness for any existing commands and
+dynamically create corresponding emacs lisp functions for each of them.
+* Approach
+* Tasks
+- [ ] first task
+
+* Delta
