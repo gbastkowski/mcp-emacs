@@ -1,7 +1,7 @@
 ;;; agent-backend.el --- Shared core behind the agent chat clients -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 0.1.0
+;; Version: 1.8.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs

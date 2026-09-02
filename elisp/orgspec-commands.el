@@ -1,7 +1,7 @@
 ;;; orgspec-commands.el --- Interactive orgspec verbs  -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 0.1.0
+;; Version: 1.8.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs

@@ -1,7 +1,7 @@
 ;;; mcp-emacs-report.el --- Report tooling issues about mcp-emacs -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.7.0
+;; Version: 1.8.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
