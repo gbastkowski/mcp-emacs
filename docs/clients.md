@@ -91,7 +91,7 @@ and its context carry across turns.
 - `M-x claude-client-list` / `-switch` / `-toggle` / `-quit` — manage conversations.
 
 In the conversation buffer: `s` send, `i` interrupt, `n` add note, `r` resume,
-`g` start, `k` quit.
+`g` start, `k` quit, `TAB` expand the tool result under point.
 
 **Appearance.** The buffer separates what the harness did from what the model
 said. Structural chrome — the session banner, prompts, tool calls and their
@@ -106,6 +106,16 @@ copied in, so no markdown mode is ever active in the conversation buffer and
 its single-letter keys keep working. `markdown-mode` is a soft dependency:
 without it prose renders as plain text and the chrome faces still apply.
 
+Tool results are bounded to `claude-client-tool-result-lines` (default 6),
+because a `git diff` or a whole-file `Read` otherwise dumps its entire payload
+and buries the prose — which defeats facing the two separately. Tool *input*
+has always been bounded the same way, to one 60-column line. The elision says
+how many lines it hid, and `TAB` on the result shows it in full (`TAB` again
+re-collapses); nothing is discarded, since the full text stays in the event log.
+Lines that are a bare field label with no value — the dozen `labels:` /
+`assignees:` rows `gh issue view` answers with — are dropped outright. Set the
+option to `nil` to show every line.
+
 **Notes.** A note written mid-turn abandons that turn immediately and is
 delivered as the next one (`claude-client-note-interrupts`, on by default); with
 it off, notes queue instead. `claude-client-max-pending-notes` (default 20)
@@ -114,7 +124,8 @@ bounds the queue, dropping oldest first.
 Key options: `claude-client-executable`, `-model`, `-mcp-config`,
 `-disallowed-tools`, `-allowed-mcp-tools`, `-system-prompt`,
 `-window-direction` (default `right`), `-window-width` / `-height`,
-`-focus-on-show`, `-restore-window-after-review`.
+`-focus-on-show`, `-restore-window-after-review`,
+`-tool-result-lines` (default 6).
 
 ## opencode client
 
