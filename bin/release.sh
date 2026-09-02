@@ -153,5 +153,12 @@ else
   echo "-- gh not found; tag pushed, create the release manually"
 fi
 
+# The hash, not the tag: Doom's `:pin' abbreviates its value with
+# `substring', so a tag name dies with args-out-of-range before straight ever
+# resolves it.  Printing the tag here once sent a consumer straight into that
+# error, so the copy-pasteable form is the hash with the version beside it.
 echo
-echo "$tag released. Pin it with:  :pin \"$tag\""
+echo "$tag released.  Pin it with:"
+echo
+echo "  ;; $tag"
+echo "  :pin \"$(git rev-list -n 1 "$tag")\""
