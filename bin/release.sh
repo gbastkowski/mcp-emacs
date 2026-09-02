@@ -61,12 +61,26 @@ echo "== releasing $tag ${previous:+(previous: $previous)}${dry_run:+ [dry run]}
 # Tests gate the release.  A tagged version is what other people install by
 # name, so it is the one point where a red suite must stop the line.  Mirrors
 # the CI loop: a suite that dies before printing anything must not pass.
+#
+# CI installs the soft dependencies (web-server, websocket) from MELPA; a
+# local run has to find them or orgspec-mcp-test.el dies on `require' and the
+# gate reports a dependency gap as a test failure.  Doom's straight build dir
+# already holds them, so it is added when present.  Deliberately not a
+# fallback that skips the suite: a gate that cannot tell broken code from a
+# missing package is a gate that gets bypassed.
 echo "-- running tests"
+straight_build="$HOME/.emacs.doom/.local/straight/build-$(emacs -Q --batch --eval '(princ emacs-version)' 2>/dev/null)"
+dep_args=()
+if [ -d "$straight_build" ]; then
+  dep_args=(--eval "(let ((default-directory \"$straight_build\")) (normal-top-level-add-subdirs-to-load-path))")
+fi
+
 failed=""
 for t in test/*.el; do
   out="$(emacs --batch \
            --eval "(require 'package)" \
            --eval "(package-initialize)" \
+           "${dep_args[@]}" \
            -L elisp -l "$t" 2>&1)" || { failed="$failed $t(errored)"; continue; }
   if printf '%s' "$out" | grep -q '^FAIL'; then
     failed="$failed $t(failed)"
