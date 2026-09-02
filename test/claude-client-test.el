@@ -435,6 +435,168 @@ records."
 (let ((s (claude-client--render-event '(:kind tool-result :text "   "))))
   (check "empty-tool-result-skipped" s nil))
 
+;;;; Bounded tool results (issue #61)
+
+;; A `git diff' or whole-file `Read' used to dump its entire payload and
+;; bury the prose.  Bounded now -- but *not* back to one line, which was
+;; tried before and reverted (see `tool-result-keeps-lines' above): the
+;; floor is a few lines plus a way to reach the rest.
+(let* ((long (mapconcat (lambda (i) (format "line %d" i))
+                        (number-sequence 1 20) "\n"))
+       (event (list :kind 'tool-result :text long))
+       (s (substring-no-properties (claude-client--render-event event 0)))
+       (lines (split-string s "\n")))
+  ;; Six shown plus the elision row.
+  (check "bounded-result-line-count" (length lines) 7)
+  (check "bounded-result-keeps-head" (car lines) "  → line 1")
+  (check "bounded-result-stops-at-limit" (nth 5 lines) "  → line 6")
+  (check "bounded-result-counts-remainder"
+         (nth 6 lines) "  → … 14 more lines (TAB to expand)")
+  ;; The elision is faced as pending, not as result text: it is chrome
+  ;; about the result rather than part of the answer.
+  (check "elision-faced"
+         (claude-test--face-at (claude-client--render-event event 0)
+                               (- (length s) 3))
+         'claude-client-pending-face))
+
+;; Singular, because "1 more lines" reads as a bug.
+(let* ((seven (mapconcat #'number-to-string (number-sequence 1 7) "\n"))
+       (s (substring-no-properties
+           (claude-client--render-event (list :kind 'tool-result :text seven) 0))))
+  (check "bounded-result-singular"
+         (and (string-match-p "… 1 more line (TAB" s) t) t))
+
+;; Under the limit nothing is elided, and no affordance is advertised.
+(let ((s (substring-no-properties
+          (claude-client--render-event
+           '(:kind tool-result :text "one\ntwo\nthree") 0))))
+  (check "short-result-not-elided" (and (string-match-p "more line" s) t) nil)
+  (check "short-result-intact" s "  → one\n  → two\n  → three"))
+
+;; Expansion is keyed by event index, so the *other* result stays bounded.
+(let* ((long (mapconcat (lambda (i) (format "l%d" i)) (number-sequence 1 20) "\n"))
+       (event (list :kind 'tool-result :text long))
+       (claude-client--expanded-results '(3)))
+  (check "expanded-index-shows-all"
+         (length (split-string
+                  (substring-no-properties (claude-client--render-event event 3))
+                  "\n"))
+         20)
+  (check "unexpanded-index-still-bounded"
+         (length (split-string
+                  (substring-no-properties (claude-client--render-event event 4))
+                  "\n"))
+         7))
+
+;; nil is the documented escape hatch: show everything.
+(let* ((long (mapconcat (lambda (i) (format "l%d" i)) (number-sequence 1 20) "\n"))
+       (claude-client-tool-result-lines nil)
+       (s (substring-no-properties
+           (claude-client--render-event (list :kind 'tool-result :text long) 0))))
+  (check "unbounded-custom-shows-all" (length (split-string s "\n")) 20))
+
+;; `gh issue view' answers with a dozen empty field labels; they are noise.
+(let ((s (substring-no-properties
+          (claude-client--render-event
+           '(:kind tool-result
+             :text "title: Fix it\nlabels:\nassignees:\nmilestone:\nbody: real")
+           0))))
+  (check "empty-fields-dropped" s "  → title: Fix it\n  → body: real"))
+
+;; The pattern must not eat real content that happens to contain a colon.
+(let ((s (substring-no-properties
+          (claude-client--render-event
+           '(:kind tool-result :text "Status: applied\nlabels: bug\n  (let ((x 1))") 0))))
+  (check "populated-fields-kept"
+         s "  → Status: applied\n  → labels: bug\n  →   (let ((x 1))"))
+
+;; A result that is nothing but empty labels earns no row at all.
+(let ((s (claude-client--render-event
+          '(:kind tool-result :text "labels:\nassignees:") 0)))
+  (check "all-empty-fields-skipped" s nil))
+
+;;;; Toggling a result (issue #61)
+
+;; Round-trip through the real command in a real buffer: the rows carry
+;; their event index, TAB expands, TAB again collapses, and the prose
+;; after the result survives both.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (setq claude-client--events
+              (list '(:kind tool-use :name "Bash")
+                    (list :kind 'tool-result
+                          :text (mapconcat (lambda (i) (format "l%d" i))
+                                           (number-sequence 1 30) "\n"))
+                    '(:kind text :text "prose after")))
+        (claude-client--render)
+        (let ((collapsed (count-lines (point-min) (point-max))))
+          ;; Line 3 is the first result row (banner-less: tool-use, then
+          ;; six result rows).
+          (goto-char (point-min))
+          (forward-line 2)
+          (check "result-rows-carry-index" (claude-client--result-at-point) 1)
+          (claude-client-toggle-tool-result)
+          (check "toggle-expands"
+                 (> (count-lines (point-min) (point-max)) collapsed) t)
+          (check "expanded-shows-last-line"
+                 (and (string-match-p "→ l30" (buffer-string)) t) t)
+          (goto-char (point-min))
+          (forward-line 2)
+          (claude-client-toggle-tool-result)
+          (check "toggle-collapses-again"
+                 (count-lines (point-min) (point-max)) collapsed)
+          (check "prose-survives-toggling"
+                 (and (string-match-p "prose after" (buffer-string)) t) t)))
+    (kill-buffer buf)))
+
+;; Point sits at end of line often enough that looking only at
+;; `char-after' would make TAB fail there.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (setq claude-client--events
+              (list (list :kind 'tool-result :text "a\nb")))
+        (claude-client--render)
+        (goto-char (point-min))
+        (end-of-line)
+        (check "index-found-at-eol" (claude-client--result-at-point) 0))
+    (kill-buffer buf)))
+
+;; Off a result it refuses rather than toggling something arbitrary.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (setq claude-client--events '((:kind text :text "just prose")))
+        (claude-client--render)
+        (goto-char (point-min))
+        (check "toggle-off-result-errors"
+               (condition-case nil
+                   (progn (claude-client-toggle-tool-result) 'no-error)
+                 (user-error 'user-error))
+               'user-error))
+    (kill-buffer buf)))
+
+;; Starting a conversation discards the log, so stale indices must not
+;; survive to expand unrelated results in the new one.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (setq claude-client--expanded-results '(0 1 2))
+        (let ((claude-client-executable "definitely-not-a-real-binary"))
+          (ignore-errors (claude-client-start "hi")))
+        (check "start-clears-expansion" claude-client--expanded-results nil))
+    (kill-buffer buf)))
+
+;; TAB is bound in the mode map, and re-registered for evil -- motion
+;; state claims it as `evil-jump-forward', so without that it is dead.
+(check "tab-bound"
+       (lookup-key claude-client-mode-map (kbd "TAB"))
+       #'claude-client-toggle-tool-result)
+(check "tab-in-evil-keys"
+       (cdr (assoc "TAB" claude-client--evil-keys))
+       'claude-client-toggle-tool-result)
+
 ;; Prose keeps its exact text either way; only the properties differ.
 (let* ((prose "Use **bold** and `code`.\n")
        (s (claude-client--render-event (list :kind 'text :text prose))))

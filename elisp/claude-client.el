@@ -156,6 +156,26 @@ it.  nil means keep everything."
   :type '(choice (const :tag "Unbounded" nil) integer)
   :group 'claude-client)
 
+(defcustom claude-client-tool-result-lines 6
+  "How many lines of a tool result to show before eliding the rest.
+A `git diff' or a whole-file `Read' otherwise dumps its entire payload
+into the conversation and buries the model's prose, which defeats facing
+chrome separately from prose (issue #61).  Tool *input* has always been
+bounded to one 60-column line by `claude-client--tool-input-summary';
+this is the same bound for the answer.
+
+Six is enough for a status line plus context, or the head of a diff.
+The elided lines are not lost: the full text stays in
+`claude-client--events', the elision says how many were dropped, and
+TAB (`claude-client-toggle-tool-result') on the result shows it in full.
+nil means show everything.
+
+This bounds *display* only.  Truncating to a single line was tried
+before and reverted -- it hid the answer -- so the floor here is a few
+lines with a way to see the rest, not one line."
+  :type '(choice (const :tag "Unbounded" nil) integer)
+  :group 'claude-client)
+
 (defcustom claude-client-window-direction 'right
   "Direction in which the conversation window is placed.
 An ordinary window in this direction, so it can be split, navigated and
@@ -220,6 +240,17 @@ tools first and then report that it cannot edit."
   "Parsed conversation events, oldest first.
 Each is a plist: :kind, plus kind-specific keys.  This is the render
 model, and the append-only log issue #39 wants to subscribe to.")
+
+(defvar-local claude-client--expanded-results nil
+  "Indices into `claude-client--events' whose tool result is shown in full.
+Expansion is display state, not part of the log, so it is kept beside the
+events rather than written into them -- issue #39 wants that log to stay
+an append-only record of what happened.
+
+Keyed by index because events carry no identity of their own, and the
+list is append-only: an index stays valid as long as the log it indexes
+does.  Starting a fresh conversation discards the log, so this is
+cleared alongside it in `claude-client-start'.")
 
 (defvar-local claude-client--session-id nil
   "Claude session id, from the `system'/`init' event.")
@@ -781,11 +812,61 @@ input, so a call reads as \"[tool: apply_diff] /tmp/x\"."
             (unless (string-empty-p line)
               (truncate-string-to-width line 60 nil nil "…"))))))))
 
-(defun claude-client--render-event (event)
+(defconst claude-client--empty-field-regexp
+  "\\`[ \t]*[a-z_][a-z0-9_ -]*:[ \t]*\\'"
+  "A line that is a field label with no value, e.g. \"labels:\".
+`gh issue view' answers with a dozen of these; they are pure noise in
+the conversation.  Deliberately narrow -- lowercase label, nothing after
+the colon -- so it cannot eat a real line of prose or code.")
+
+(defun claude-client--tool-result-lines (text)
+  "Return TEXT's lines, dropping ones that are an empty field label.
+See `claude-client--empty-field-regexp' (issue #61)."
+  (seq-remove (lambda (l)
+                (string-match-p claude-client--empty-field-regexp l))
+              (split-string text "\n")))
+
+(defun claude-client--render-tool-result (event index)
+  "Return the display string for tool-result EVENT at INDEX, or nil.
+Bounded to `claude-client-tool-result-lines' unless INDEX is in
+`claude-client--expanded-results' -- see that custom for why.  The
+elision line carries INDEX as a `claude-client-result' text property, so
+`claude-client-toggle-tool-result' can tell which result point is on
+without re-deriving positions."
+  (let ((text (string-trim (or (plist-get event :text) ""))))
+    (unless (string-empty-p text)
+      (let* ((lines (claude-client--tool-result-lines text))
+             (limit claude-client-tool-result-lines)
+             (expanded (memq index claude-client--expanded-results))
+             (elided (and limit (not expanded)
+                          (> (length lines) limit)))
+             (shown (if elided (seq-take lines limit) lines))
+             (body (claude-client--faced
+                    (mapconcat (lambda (l) (concat "  → " l)) shown "\n")
+                    'claude-client-tool-result-face)))
+        (if (not shown)
+            ;; Every line was an empty field label: nothing worth a row.
+            nil
+          (concat
+           body
+           (when elided
+             (concat
+              "\n"
+              (claude-client--faced
+               (format "  → … %d more line%s (TAB to expand)"
+                       (- (length lines) limit)
+                       (if (= 1 (- (length lines) limit)) "" "s"))
+               'claude-client-pending-face)))))))))
+
+(defun claude-client--render-event (event &optional index)
   "Return a display string for EVENT, or nil to skip it.
 Structural chrome carries its own face; the model's prose is fontified
 as markdown.  The plain text is kept stable -- callers and tests match
-on it -- so this only adds properties."
+on it -- so this only adds properties.
+
+INDEX is EVENT's position in `claude-client--events', needed only by
+tool results to track expansion; it is optional so that callers and
+tests can render a lone event."
   (pcase (plist-get event :kind)
     ('started
      (claude-client--faced
@@ -799,14 +880,7 @@ on it -- so this only adds properties."
              (when-let* ((input (claude-client--tool-input-summary event)))
                (claude-client--faced (concat " " input)
                                      'claude-client-tool-input-face))))
-    ('tool-result
-     (let ((text (string-trim (or (plist-get event :text) ""))))
-       (unless (string-empty-p text)
-         (claude-client--faced
-          (mapconcat (lambda (l) (concat "  → " l))
-                     (split-string text "\n")
-                     "\n")
-          'claude-client-tool-result-face))))
+    ('tool-result (claude-client--render-tool-result event index))
     ('finished
      (claude-client--faced
       (format "── %s ──" (or (plist-get event :subtype) "done"))
@@ -854,15 +928,56 @@ on it -- so this only adds properties."
     (_ nil)))
 
 (defun claude-client--render ()
-  "Re-render this buffer's event log."
+  "Re-render this buffer's event log.
+Each tool result's rows carry a `claude-client-result' property holding
+its event index, so `claude-client-toggle-tool-result' can act on the
+result under point."
   (let ((at-end (eobp))
-        (inhibit-read-only t))
+        (inhibit-read-only t)
+        (index -1))
     (erase-buffer)
     (dolist (event claude-client--events)
-      (when-let ((s (claude-client--render-event event)))
-        (insert s)
-        (unless (string-suffix-p "\n" s) (insert "\n"))))
+      (setq index (1+ index))
+      (when-let* ((s (claude-client--render-event event index)))
+        (let ((start (point)))
+          (insert s)
+          (unless (string-suffix-p "\n" s) (insert "\n"))
+          (when (eq (plist-get event :kind) 'tool-result)
+            (put-text-property start (point) 'claude-client-result index)))))
     (when at-end (goto-char (point-max)))))
+
+(defun claude-client--result-at-point ()
+  "Return the event index of the tool result at point, or nil.
+Also looks at the position before point, so the command still works with
+point at end of line -- where `char-after' is the newline past the
+property."
+  (or (get-text-property (point) 'claude-client-result)
+      (and (> (point) (point-min))
+           (get-text-property (1- (point)) 'claude-client-result))))
+
+;;;###autoload
+(defun claude-client-toggle-tool-result ()
+  "Show the tool result at point in full, or re-collapse it.
+Results are bounded to `claude-client-tool-result-lines' so a large
+payload cannot bury the model's prose; this reaches the rest.  The full
+text was never discarded -- it is in `claude-client--events' -- so this
+only flips display state and re-renders.
+
+Point is restored by line rather than by character offset: expanding
+rewrites the whole buffer, so the old position would otherwise land
+somewhere unrelated."
+  (interactive)
+  (let ((index (claude-client--result-at-point)))
+    (unless index
+      (user-error "No tool result at point"))
+    (let ((line (line-number-at-pos)))
+      (setq claude-client--expanded-results
+            (if (memq index claude-client--expanded-results)
+                (delq index claude-client--expanded-results)
+              (cons index claude-client--expanded-results)))
+      (claude-client--render)
+      (goto-char (point-min))
+      (forward-line (1- line)))))
 
 ;;;; Turns
 
@@ -985,7 +1100,10 @@ file change opens an ediff for the human to accept or reject."
       (setq claude-client--events nil
             claude-client--stdout ""
             claude-client--session-id nil
-            claude-client--interrupted nil)
+            claude-client--interrupted nil
+            ;; Indices into the log that was just discarded would
+            ;; otherwise expand unrelated results in the new one.
+            claude-client--expanded-results nil)
       (let ((text (claude-client--prompt-with-notes prompt))
             (proc (make-process
                    :name "claude-client"
@@ -1212,6 +1330,7 @@ turn to end)."
     (define-key map (kbd "s") #'claude-client-send)
     (define-key map (kbd "r") #'claude-client-resume)
     (define-key map (kbd "i") #'claude-client-interrupt)
+    (define-key map (kbd "TAB") #'claude-client-toggle-tool-result)
     map)
   "Keymap for `claude-client-mode'.
 The single-letter keys are only reachable in plain Emacs; under evil they
@@ -1225,7 +1344,10 @@ re-registers them.  The evil-safe `C-c'-prefixed vocabulary lives in
     ("n" . claude-client-add-note)
     ("s" . claude-client-send)
     ("r" . claude-client-resume)
-    ("i" . claude-client-interrupt))
+    ("i" . claude-client-interrupt)
+    ;; Not single-letter, but evil's motion state does claim TAB
+    ;; (`evil-jump-forward'), so it needs re-registering the same way.
+    ("TAB" . claude-client-toggle-tool-result))
   "The single-letter bindings to re-register with evil.
 Mirrors `claude-client-mode-map'; kept as data so both paths bind the
 same set.")
