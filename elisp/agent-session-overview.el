@@ -64,6 +64,9 @@
   :type 'string
   :group 'agent-session-overview)
 
+(defconst agent-session-overview--help-buffer-name "*ai-sessions help*"
+  "Name of the buffer `agent-session-overview-help' writes to.")
+
 (defconst agent-session-overview--backends
   '((claude-client
      :label "claude"
@@ -294,11 +297,42 @@ which is what fits in a mode line."
              agent-session-overview--help
              "  "))
 
+(defun agent-session-overview--display-help (buffer _alist)
+  "Display help BUFFER in a plain window split from the overview.
+Returns the new window, as a `display-buffer' action function must.
+
+This exists so that `q' in the help window returns to the session list
+instead of taking the list with it.  Under a popup-managing framework --
+Doom's `+popup' -- both this buffer and the overview match popup rules,
+`with-help-window' selects the help window, and `q' there is
+`+popup/quit-window', which tears down the popup stack rather than just
+the selected window: reading the help would dismiss the overview it
+describes.  A window split off the overview's own window is an ordinary
+window, so `q' is the plain `quit-window' and only the help closes.
+
+The split comes from the overview's window when it is on screen, so the
+help is shown beside the list rather than replacing it; with no such
+window, the selected one is split instead."
+  (let* ((base (or (get-buffer-window agent-session-overview-buffer-name)
+                   (selected-window)))
+         (window (split-window base nil 'below)))
+    (set-window-buffer window buffer)
+    window))
+
 (defun agent-session-overview-help ()
-  "Describe what you can do from the overview."
+  "Describe what you can do from the overview.
+`q' in the help window returns to the session list; see
+`agent-session-overview--display-help' for why that needs arranging."
   (interactive)
-  (let ((entries agent-session-overview--help))
-    (with-help-window "*ai-sessions help*"
+  (let* ((entries agent-session-overview--help)
+         ;; Prepended to a local copy so this placement outranks any user
+         ;; or framework rule, the same tactic as
+         ;; `mcp-emacs-run--display-popup'.
+         (display-buffer-alist
+          (cons `(,(regexp-quote agent-session-overview--help-buffer-name)
+                  (agent-session-overview--display-help))
+                display-buffer-alist)))
+    (with-help-window agent-session-overview--help-buffer-name
       (princ "AI session overview\n\n")
       (princ "Every live AI session, across all backends, in one list.\n\n")
       (dolist (binding entries)
@@ -308,7 +342,10 @@ which is what fits in a mode line."
       (princ "  eat       live / dead -- a terminal, with no turn events\n")
       (princ "  opencode  live / dead -- publishes no turn-end event\n")
       (princ "\nWorking/idle is never guessed from output activity: that would\n")
-      (princ "read a long model think as idle and a spinner as work.\n"))))
+      (princ "read a long model think as idle and a spinner as work.\n"))
+    (when-let* ((window (get-buffer-window
+                         agent-session-overview--help-buffer-name)))
+      (fit-window-to-buffer window))))
 
 (defvar agent-session-overview-mode-map
   (let ((map (make-sparse-keymap)))

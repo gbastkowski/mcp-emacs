@@ -262,6 +262,54 @@ which is what the compiled and uncompiled paths both read."
            (and (string-match-p "live / dead" text) t) t)))
 (kill-buffer "*ai-sessions help*")
 
+;; Issue #59: reading the help used to dismiss the overview behind it,
+;; because both buffers matched a popup rule and `q' in the help was
+;; Doom's `+popup/quit-window', which tears down the whole popup stack
+;; rather than the selected window.  The fix forces the help into an
+;; ordinary window split off the overview's own, so `q' is the plain
+;; `quit-window' and only the help closes.
+;;
+;; The bug needs a popup-managing framework to reproduce, and neither
+;; `+popup' nor its `q' binding exists in batch -- with stock window
+;; handling `with-help-window' already splits plainly, so asserting on
+;; the resulting window would pass against the unfixed code and prove
+;; nothing.  What the fix actually adds is *precedence*: its placement
+;; must beat a matching `display-buffer-alist' entry, since that is how
+;; the framework imposes a side window.  So stand in for the framework
+;; with a rule that would force one, and require it to lose.
+(let ((overview (get-buffer-create agent-session-overview-buffer-name)))
+  (unwind-protect
+      (let ((display-buffer-alist
+             `((,(regexp-quote agent-session-overview--help-buffer-name)
+                (display-buffer-in-side-window)
+                (side . bottom)))))
+        (delete-other-windows)
+        (switch-to-buffer overview)
+        (let ((overview-window (selected-window)))
+          (agent-session-overview-help)
+          (let ((help-window (get-buffer-window
+                              agent-session-overview--help-buffer-name)))
+            (check "help gets its own window"
+                   (and (window-live-p help-window) t) t)
+            ;; The assertion that fails without the fix: a side window is
+            ;; the popup failure mode, and a plain split is what keeps `q'
+            ;; from taking the overview with it.
+            (check "help placement beats a side-window rule"
+                   (window-parameter help-window 'window-side) nil)
+            (check "help is split from the overview, not replacing it"
+                   (and (window-live-p overview-window)
+                        (eq (window-buffer overview-window) overview))
+                   t)
+            ;; The point of the issue: closing the help returns you to the
+            ;; list instead of taking it down too.
+            (quit-window nil help-window)
+            (check "quitting the help keeps the overview"
+                   (and (window-live-p (get-buffer-window overview)) t) t))))
+    (when (get-buffer agent-session-overview--help-buffer-name)
+      (kill-buffer agent-session-overview--help-buffer-name))
+    (kill-buffer overview)
+    (delete-other-windows)))
+
 ;; The column headers keep the header-line, since only tabulated-list
 ;; aligns them with the data; the hint lives in the mode line and must
 ;; actually render there.
