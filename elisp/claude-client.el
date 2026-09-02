@@ -647,11 +647,20 @@ Returns the drained notes, oldest first, and clears the queue."
   "Report PROC exiting into BUFFER."
   (unless (process-live-p proc)
     (when (buffer-live-p buffer)
-      (with-current-buffer buffer
-        ;; The process dying ends any turn with it; leaving the flag set
-        ;; would wedge the buffer against ever starting another.
-        (setq claude-client--process nil
-              claude-client--turn-active nil)))))
+      (let ((mid-turn (with-current-buffer buffer claude-client--turn-active)))
+        (with-current-buffer buffer
+          ;; The process dying ends any turn with it; leaving the flag set
+          ;; would wedge the buffer against ever starting another.
+          (setq claude-client--process nil
+                claude-client--turn-active nil))
+        ;; A turn cut short by the process dying has to say so in the log.
+        ;; The render model is the event list, so clearing the flag alone
+        ;; leaves the transcript ending on whatever the model was doing --
+        ;; typically a `tool-use' with no result, which reads exactly like a
+        ;; turn still in flight.  Pushing after the flag is cleared so
+        ;; subscribers and the mode line see the settled state.
+        (when mid-turn
+          (claude-client--push-event buffer (list :kind 'died)))))))
 
 ;;;; Faces
 ;;
@@ -795,6 +804,10 @@ on it -- so this only adds properties."
       'claude-client-banner-face))
     ('interrupted
      (claude-client--faced "── interrupted ──" 'claude-client-banner-face))
+    ;; Faced as an error, not a banner: unlike `interrupted' and `finished'
+    ;; this end was not anyone's intent.
+    ('died
+     (claude-client--faced "── died mid-turn ──" 'claude-client-error-face))
     ('error
      (claude-client--faced (format "  !! %s" (plist-get event :text))
                            'claude-client-error-face))

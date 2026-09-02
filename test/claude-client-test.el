@@ -32,6 +32,15 @@
   (with-current-buffer buffer
     (buffer-substring-no-properties (point-min) (point-max))))
 
+(defun claude-test--dead-process ()
+  "Return a real process that has already exited.
+A real one rather than a stub, so `process-live-p' answers for itself --
+which is the branch `claude-client--sentinel' turns on."
+  (let ((proc (start-process "claude-test-dead" nil "true")))
+    (while (process-live-p proc)
+      (accept-process-output proc 0.05))
+    proc))
+
 ;; Captured stream-json lines (one complete JSON object per line).
 (defconst claude-test--init
   "{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"abc-123\",\"model\":\"claude-opus-5\"}")
@@ -251,6 +260,54 @@
         (check "hook-order" (mapcar #'cdr (reverse seen)) '(started finished)))
     (kill-buffer buf)))
 
+;;;; The process dying
+
+;; A turn cut short by the process dying must say so in the log.  The
+;; render model is the event list, so clearing `--turn-active' alone left
+;; the transcript ending on whatever the model was mid-way through --
+;; typically a `tool-use' with no result, indistinguishable from a turn
+;; still running.  Observed in a real session (issue #62).
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (progn
+        (claude-test--feed buf
+                           (concat claude-test--init "\n")
+                           (concat claude-test--tool-use "\n"))
+        (with-current-buffer buf (setq claude-client--turn-active t))
+        (claude-client--sentinel buf (claude-test--dead-process) nil)
+        (check "death-mid-turn-logged"
+               (claude-test--kinds buf) '(started tool-use died))
+        (check "death-mid-turn-rendered"
+               (and (string-match-p "died mid-turn" (claude-test--text buf)) t) t)
+        (with-current-buffer buf
+          (check "death-clears-process" claude-client--process nil)
+          ;; Left set, the buffer could never start another turn.
+          (check "death-clears-turn-flag" claude-client--turn-active nil)))
+    (kill-buffer buf)))
+
+;; A process exiting between turns is the normal way a conversation ends
+;; (`claude --print' lingers on stdin, so this is the human quitting).
+;; Nothing was cut short, so nothing is reported.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (progn
+        (claude-test--feed buf
+                           (concat claude-test--init "\n")
+                           (concat claude-test--result "\n"))
+        (claude-client--sentinel buf (claude-test--dead-process) nil)
+        (check "clean-exit-silent"
+               (claude-test--kinds buf) '(started finished)))
+    (kill-buffer buf)))
+
+;; The sentinel outliving its buffer must not signal -- it fires from a
+;; process filter, where an error is swallowed and leaves the log wedged.
+(let ((buf (claude-test--buffer)))
+  (kill-buffer buf)
+  (check "death-after-buffer-killed"
+         (progn (claude-client--sentinel buf (claude-test--dead-process) nil)
+                'survived)
+         'survived))
+
 ;;;; Rendering
 
 (let ((buf (claude-test--buffer)))
@@ -294,7 +351,10 @@
                (interrupted . claude-client-banner-face)
                (prompt . claude-client-prompt-face)
                (note . claude-client-note-face)
-               (error . claude-client-error-face))))
+               (error . claude-client-error-face)
+               ;; `died' is faced as an error rather than a banner: the two
+               ;; deliberate endings are chrome, this one is a failure.
+               (died . claude-client-error-face))))
   (dolist (c cases)
     (let* ((kind (car c))
            (s (claude-client--render-event
