@@ -65,15 +65,24 @@ echo "== releasing $tag ${previous:+(previous: $previous)}${dry_run:+ [dry run]}
 # CI installs the soft dependencies (web-server, websocket) from MELPA; a
 # local run has to find them or orgspec-mcp-test.el dies on `require' and the
 # gate reports a dependency gap as a test failure.  Doom's straight build dir
-# already holds them, so it is added when present.  Deliberately not a
-# fallback that skips the suite: a gate that cannot tell broken code from a
-# missing package is a gate that gets bypassed.
+# already holds them, so those two directories are added when present.
+#
+# Only those two, never the whole straight tree: adding all of Doom's packages
+# also puts `eat' on the load-path, and mcp-emacs-run-test.el asserts that
+# `--ensure-eat' signals when eat is absent -- so a broad path turns a passing
+# suite red by removing its precondition.  The gate must mirror CI's
+# environment, not the editor's.
+#
+# Deliberately not a fallback that skips a suite it cannot load: a gate that
+# cannot tell broken code from a missing package is a gate that gets bypassed.
 echo "-- running tests"
 straight_build="$HOME/.emacs.doom/.local/straight/build-$(emacs -Q --batch --eval '(princ emacs-version)' 2>/dev/null)"
 dep_args=()
-if [ -d "$straight_build" ]; then
-  dep_args=(--eval "(let ((default-directory \"$straight_build\")) (normal-top-level-add-subdirs-to-load-path))")
-fi
+for dep in web-server websocket; do
+  if [ -d "$straight_build/$dep" ]; then
+    dep_args+=(-L "$straight_build/$dep")
+  fi
+done
 
 failed=""
 for t in test/*.el; do
