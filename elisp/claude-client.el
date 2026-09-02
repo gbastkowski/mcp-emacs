@@ -643,11 +643,23 @@ Returns the drained notes, oldest first, and clears the queue."
                 (when msg
                   (claude-client--handle-message buffer msg))))))))))
 
-(defun claude-client--sentinel (buffer proc _change)
-  "Report PROC exiting into BUFFER."
+(defun claude-client--sentinel (buffer proc change)
+  "Report PROC exiting into BUFFER, with CHANGE saying how."
   (unless (process-live-p proc)
     (when (buffer-live-p buffer)
-      (let ((mid-turn (with-current-buffer buffer claude-client--turn-active)))
+      (let ((mid-turn (with-current-buffer buffer claude-client--turn-active))
+            ;; Read from PROC before anything else touches it, and keep both:
+            ;; CHANGE is the human-readable cause ("exited abnormally with
+            ;; code 1", "killed by signal 15") while the status is what code
+            ;; can branch on.  Recording them is what makes the event
+            ;; evidence of how the process ended rather than an assertion
+            ;; that it did -- see issue #62.
+            (reason (string-trim (or change "")))
+            ;; Guarded because this runs from Emacs' process machinery,
+            ;; which swallows errors: signalling here would skip the state
+            ;; clearing below and wedge the buffer against another turn --
+            ;; the very thing that clearing exists to prevent.
+            (status (and (processp proc) (process-exit-status proc))))
         (with-current-buffer buffer
           ;; The process dying ends any turn with it; leaving the flag set
           ;; would wedge the buffer against ever starting another.
@@ -660,7 +672,8 @@ Returns the drained notes, oldest first, and clears the queue."
         ;; turn still in flight.  Pushing after the flag is cleared so
         ;; subscribers and the mode line see the settled state.
         (when mid-turn
-          (claude-client--push-event buffer (list :kind 'died)))))))
+          (claude-client--push-event
+           buffer (list :kind 'died :reason reason :status status)))))))
 
 ;;;; Faces
 ;;
@@ -805,9 +818,16 @@ on it -- so this only adds properties."
     ('interrupted
      (claude-client--faced "── interrupted ──" 'claude-client-banner-face))
     ;; Faced as an error, not a banner: unlike `interrupted' and `finished'
-    ;; this end was not anyone's intent.
+    ;; this end was not anyone's intent.  The reason is the sentinel's own
+    ;; account of how the process ended, so the banner reports what was
+    ;; observed; with no reason recorded it states only what it knows.
     ('died
-     (claude-client--faced "── died mid-turn ──" 'claude-client-error-face))
+     (claude-client--faced
+      (let ((reason (plist-get event :reason)))
+        (if (and reason (not (string-empty-p reason)))
+            (format "── died mid-turn: %s ──" reason)
+          "── died mid-turn ──"))
+      'claude-client-error-face))
     ('error
      (claude-client--faced (format "  !! %s" (plist-get event :text))
                            'claude-client-error-face))

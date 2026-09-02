@@ -32,11 +32,14 @@
   (with-current-buffer buffer
     (buffer-substring-no-properties (point-min) (point-max))))
 
-(defun claude-test--dead-process ()
+(defun claude-test--dead-process (&optional command)
   "Return a real process that has already exited.
-A real one rather than a stub, so `process-live-p' answers for itself --
-which is the branch `claude-client--sentinel' turns on."
-  (let ((proc (start-process "claude-test-dead" nil "true")))
+COMMAND defaults to `true', so the exit status is 0; pass `false' for a
+non-zero one.  A real process rather than a stub, so `process-live-p'
+and `process-exit-status' answer for themselves -- the former is the
+branch `claude-client--sentinel' turns on, and the latter is what it
+records."
+  (let ((proc (start-process "claude-test-dead" nil (or command "true"))))
     (while (process-live-p proc)
       (accept-process-output proc 0.05))
     proc))
@@ -274,11 +277,24 @@ which is the branch `claude-client--sentinel' turns on."
                            (concat claude-test--init "\n")
                            (concat claude-test--tool-use "\n"))
         (with-current-buffer buf (setq claude-client--turn-active t))
-        (claude-client--sentinel buf (claude-test--dead-process) nil)
+        (claude-client--sentinel buf (claude-test--dead-process "false")
+                                 "exited abnormally with code 1\n")
         (check "death-mid-turn-logged"
                (claude-test--kinds buf) '(started tool-use died))
         (check "death-mid-turn-rendered"
                (and (string-match-p "died mid-turn" (claude-test--text buf)) t) t)
+        ;; The cause is recorded, not guessed: the sentinel's own account of
+        ;; how the process ended, plus a status code to branch on.  Without
+        ;; these the banner asserts a death it cannot evidence (issue #62).
+        (let ((e (car (last (with-current-buffer buf claude-client--events)))))
+          (check "death-records-reason"
+                 (plist-get e :reason) "exited abnormally with code 1")
+          (check "death-records-status" (plist-get e :status) 1))
+        (check "death-reason-rendered"
+               (and (string-match-p "died mid-turn: exited abnormally with code 1"
+                                    (claude-test--text buf))
+                    t)
+               t)
         (with-current-buffer buf
           (check "death-clears-process" claude-client--process nil)
           ;; Left set, the buffer could never start another turn.
@@ -363,6 +379,19 @@ which is the branch `claude-client--sentinel' turns on."
            ;; `prompt' opens with a newline that carries no face.
            (i (if (eq kind 'prompt) 1 0)))
       (check (format "face-%s" kind) (claude-test--face-at s i) (cdr c)))))
+
+;; The banner reports what the sentinel observed, and no more: with a
+;; reason it names the cause, without one it claims only that the turn
+;; died.  An empty reason must not render as a dangling colon.
+(let ((s (claude-client--render-event
+          '(:kind died :reason "killed by signal 15" :status 15))))
+  (check "died-names-cause"
+         (substring-no-properties s) "── died mid-turn: killed by signal 15 ──"))
+
+(dolist (event '((:kind died) (:kind died :reason "")))
+  (check "died-without-reason"
+         (substring-no-properties (claude-client--render-event event))
+         "── died mid-turn ──"))
 
 (let ((s (claude-client--render-event
           '(:kind tool-use :name "apply_diff" :input ((path . "/tmp/x"))))))
