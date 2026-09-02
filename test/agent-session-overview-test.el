@@ -310,6 +310,105 @@ which is what the compiled and uncompiled paths both read."
     (kill-buffer overview)
     (delete-other-windows)))
 
+;;;; Placement (issue #60)
+
+;; The overview ended in a bare `pop-to-buffer', so Doom's popup rules
+;; captured it into the transient bottom window -- wrong for a dashboard
+;; you keep visible and act from, and fragile besides (dismissed by an
+;; unrelated `q', unsplittable).  It now goes in a directional ordinary
+;; window like the two runners.
+;;
+;; Again the popup framework is absent in batch, so the rule it would
+;; install is supplied here directly.  This is not merely standing in for
+;; the framework: `display-buffer-alist' takes priority *over* the ACTION
+;; argument, so the action-arg form that `claude-client--display' and
+;; `mcp-emacs-run--display' use would still lose to it.  Only prepending
+;; to a local alist outranks it, which is the thing under test.
+(let ((overview-buffer (get-buffer-create agent-session-overview-buffer-name)))
+  (unwind-protect
+      (let ((display-buffer-alist
+             `((,(regexp-quote agent-session-overview-buffer-name)
+                (display-buffer-in-side-window)
+                (side . bottom)))))
+        (delete-other-windows)
+        (let ((window (agent-session-overview--display overview-buffer)))
+          (check "overview gets a live window"
+                 (and (window-live-p window) t) t)
+          ;; The assertion that fails without the fix.
+          (check "overview placement beats a side-window rule"
+                 (window-parameter window 'window-side) nil)
+          (check "overview window is splittable"
+                 (let ((split (ignore-errors (split-window window))))
+                   (prog1 (and (window-live-p split) t)
+                     (when (window-live-p split) (delete-window split))))
+                 t)))
+    (delete-other-windows)
+    (kill-buffer overview-buffer)))
+
+;; Through the actual entry point, not just the helper -- the bug was in
+;; the call site (a bare `pop-to-buffer'), so a test that only exercises
+;; `agent-session-overview--display' passes even with the command left
+;; unfixed.
+(unwind-protect
+    (let ((display-buffer-alist
+           `((,(regexp-quote agent-session-overview-buffer-name)
+              (display-buffer-in-side-window)
+              (side . bottom)))))
+      (delete-other-windows)
+      (agent-session-overview)
+      (let ((window (get-buffer-window agent-session-overview-buffer-name)))
+        (check "the command itself avoids the popup"
+               (window-parameter window 'window-side) nil)))
+  (let ((window (get-buffer-window agent-session-overview-buffer-name)))
+    (when (window-parameter window 'window-side) (delete-window window)))
+  (delete-other-windows)
+  (when (get-buffer agent-session-overview-buffer-name)
+    (kill-buffer agent-session-overview-buffer-name)))
+
+;; nil direction is the documented escape hatch: defer to the user's
+;; `display-buffer-alist' rather than override it.
+(let ((overview-buffer (get-buffer-create agent-session-overview-buffer-name)))
+  (unwind-protect
+      (let ((agent-session-overview-window-direction nil)
+            (display-buffer-alist
+             `((,(regexp-quote agent-session-overview-buffer-name)
+                (display-buffer-in-side-window)
+                (side . bottom)))))
+        (delete-other-windows)
+        (let ((window (agent-session-overview--display overview-buffer)))
+          (check "nil direction defers to display-buffer-alist"
+                 (window-parameter window 'window-side) 'bottom)
+          ;; A side window has to go before `delete-other-windows' will
+          ;; run -- "Cannot make side window the only window".
+          (delete-window window)))
+    (delete-other-windows)
+    (kill-buffer overview-buffer)))
+
+;; The help fix (#59) splits off the overview's own window, so it has to
+;; keep working now that window is directional rather than whatever
+;; `pop-to-buffer' produced.
+(let ((overview-buffer (get-buffer-create agent-session-overview-buffer-name)))
+  (unwind-protect
+      (progn
+        (delete-other-windows)
+        (let ((overview-window (agent-session-overview--display overview-buffer)))
+          (agent-session-overview-help)
+          (let ((help-window (get-buffer-window
+                              agent-session-overview--help-buffer-name)))
+            (check "help still splits off a directional overview"
+                   (and (window-live-p help-window)
+                        (window-live-p overview-window)
+                        (eq (window-buffer overview-window) overview-buffer))
+                   t)
+            (quit-window nil help-window)
+            (check "overview survives the help either way"
+                   (and (window-live-p (get-buffer-window overview-buffer)) t)
+                   t))))
+    (when (get-buffer agent-session-overview--help-buffer-name)
+      (kill-buffer agent-session-overview--help-buffer-name))
+    (delete-other-windows)
+    (kill-buffer overview-buffer)))
+
 ;; The column headers keep the header-line, since only tabulated-list
 ;; aligns them with the data; the hint lives in the mode line and must
 ;; actually render there.

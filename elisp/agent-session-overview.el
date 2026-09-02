@@ -67,6 +67,30 @@
 (defconst agent-session-overview--help-buffer-name "*ai-sessions help*"
   "Name of the buffer `agent-session-overview-help' writes to.")
 
+(defcustom agent-session-overview-window-direction 'right
+  "Direction in which the overview window is placed.
+An ordinary window in this direction, so it can be split, navigated and
+closed like any other -- mirroring `claude-client-window-direction' and
+`mcp-emacs-run-window-direction' so every AI surface feels the same.
+This is a dashboard you keep visible and act from, not a transient
+message, so it deliberately does not use a side or popup window.  `nil'
+uses plain `pop-to-buffer' and lets `display-buffer-alist' decide."
+  :type '(choice (const right) (const left) (const above) (const below)
+                 (const :tag "Let display-buffer decide" nil))
+  :group 'agent-session-overview)
+
+(defcustom agent-session-overview-window-width 0.4
+  "Width of the overview window, as a fraction of the frame.
+Used when `agent-session-overview-window-direction' is `left' or `right'."
+  :type 'number
+  :group 'agent-session-overview)
+
+(defcustom agent-session-overview-window-height 0.4
+  "Height of the overview window, as a fraction of the frame.
+Used when `agent-session-overview-window-direction' is `above' or `below'."
+  :type 'number
+  :group 'agent-session-overview)
+
 (defconst agent-session-overview--backends
   '((claude-client
      :label "claude"
@@ -399,6 +423,42 @@ so it is called from an `evil-mode' load hook and no-ops when absent.
   (add-hook 'tabulated-list-revert-hook #'agent-session-overview--refresh nil t)
   (tabulated-list-init-header))
 
+(defun agent-session-overview--display (buffer)
+  "Display BUFFER as an ordinary window and return that window.
+Placed in `agent-session-overview-window-direction' so the overview stays
+splittable and closable like any other window: it is a dashboard you keep
+alongside code and act from, not a transient message that should be
+dismissed by an unrelated `q' (issue #60).
+
+The rule is prepended to a local copy of `display-buffer-alist' rather
+than passed as the ACTION argument, because `display-buffer-alist' takes
+priority *over* ACTION -- so the action-arg form used by
+`claude-client--display' and `mcp-emacs-run--display' still loses to a
+framework rule matching this buffer (Doom's `+popup' forces it into the
+transient bottom window).  Prepending is what actually outranks such a
+rule, the same tactic as `mcp-emacs-run--display-popup' and
+`agent-session-overview--display-help'.
+
+Point is selected, as for any dashboard you act from -- `pop-to-buffer'
+rather than a bare `display-buffer' -- but the window is returned, since
+`pop-to-buffer' answers with the buffer instead."
+  (if (null agent-session-overview-window-direction)
+      (progn (pop-to-buffer buffer)
+             (get-buffer-window buffer))
+    (let* ((horizontal
+            (memq agent-session-overview-window-direction '(left right)))
+           (size (if horizontal
+                     `(window-width . ,agent-session-overview-window-width)
+                   `(window-height . ,agent-session-overview-window-height)))
+           (display-buffer-alist
+            (cons `(,(regexp-quote (buffer-name buffer))
+                    (display-buffer-reuse-window display-buffer-in-direction)
+                    (direction . ,agent-session-overview-window-direction)
+                    ,size)
+                  display-buffer-alist)))
+      (pop-to-buffer buffer)
+      (get-buffer-window buffer))))
+
 ;;;###autoload
 (defun agent-session-overview ()
   "Show the live AI session overview."
@@ -414,7 +474,7 @@ so it is called from an `evil-mode' load hook and no-ops when absent.
           (save-excursion
             (goto-char (point-max))
             (insert "\n  No live AI sessions.  Press ? for help.\n")))))
-    (pop-to-buffer buffer)))
+    (agent-session-overview--display buffer)))
 
 (add-hook 'agent-backend-event-functions #'agent-session-overview--on-event)
 

@@ -50,6 +50,18 @@ Under evil, the single-letter keys are re-registered in normal and motion states
 (they would otherwise be shadowed — `?` searches backward, `k` moves up). `g`
 and `q` are left alone: `g r` reverts, as elsewhere in evil.
 
+The overview opens as an ordinary window in
+`agent-session-overview-window-direction` (default `right`, sized by
+`agent-session-overview-window-width` / `-height`), mirroring
+`claude-client-window-direction` and `mcp-emacs-run-window-direction`. It is a
+dashboard you keep alongside code and act from, so it is deliberately not a
+side or popup window: it can be split, navigated and closed like anything else,
+and an unrelated `q` cannot dismiss it. The placement is prepended to a local
+`display-buffer-alist` so it outranks a framework rule that would capture the
+buffer into a transient popup — passing an action to `display-buffer` is not
+enough, since `display-buffer-alist` takes priority over it. Set the direction
+to `nil` to hand placement back to your own `display-buffer-alist`.
+
 **State is only as precise as the backend allows.** `claude-client` publishes
 turn events and tracks a turn flag, so its rows read `working` / `idle` /
 `finished`. The eat runner is a TUI with no turn events, and opencode keeps no
