@@ -1,8 +1,10 @@
+;;; orgspec-validate-test.el --- Tests for the orgspec delta validator -*- lexical-binding: t; -*-
+
 (add-to-list 'load-path (expand-file-name "elisp"))
+(add-to-list 'load-path (expand-file-name "test"))
+(require 'test-helper)
 (require 'orgspec-parse)
 (require 'orgspec-validate)
-
-(defun check (l g w) (princ (format "%s %s\n" (if (equal g w) "PASS" "FAIL") l)))
 
 (defun val-test--change (s)
   (with-temp-buffer
@@ -16,9 +18,9 @@
                  (val-test--errors s))
        t))
 
-;; A canonical valid change: ADDED with SHALL + a scenario.
-(check "valid-clean"
-       (val-test--errors "* Delta
+(describe "orgspec-validate-change"
+  (it "reports no problems for an ADDED requirement with SHALL and a scenario"
+    (check (val-test--errors "* Delta
 ** Notify on lockout :ADDED:
 :PROPERTIES:
 :AREA: auth
@@ -27,15 +29,13 @@ The system SHALL notify.
 *** ok
 - GIVEN a
 ")
-       nil)
+           nil))
 
-;; No delta requirements at all.
-(check "no-delta"
-       (val-test--has "* Delta\n" "at least one delta") t)
+  (it "rejects a delta with no requirements at all"
+    (check (val-test--has "* Delta\n" "at least one delta") t))
 
-;; ADDED without SHALL/MUST.
-(check "added-no-shall"
-       (val-test--has "* Delta
+  (it "rejects an ADDED requirement whose text lacks SHALL or MUST"
+    (check (val-test--has "* Delta
 ** Weak req :ADDED:
 :PROPERTIES:
 :AREA: a
@@ -43,21 +43,19 @@ The system SHALL notify.
 This just describes something.
 *** ok
 - GIVEN a
-" "must contain SHALL or MUST") t)
+" "must contain SHALL or MUST") t))
 
-;; MODIFIED without a scenario.
-(check "modified-no-scenario"
-       (val-test--has "* Delta
+  (it "rejects a MODIFIED requirement with no scenario"
+    (check (val-test--has "* Delta
 ** Change it :MODIFIED:
 :PROPERTIES:
 :AREA: a
 :END:
 The system SHALL change.
-" "must include at least one scenario") t)
+" "must include at least one scenario") t))
 
-;; Duplicate name within ADDED.
-(check "dup-added"
-       (val-test--has "* Delta
+  (it "rejects the same requirement name twice within ADDED"
+    (check (val-test--has "* Delta
 ** Dup :ADDED:
 :PROPERTIES:
 :AREA: a
@@ -72,11 +70,10 @@ SHALL a.
 SHALL b.
 *** s
 - GIVEN b
-" "Duplicate requirement in ADDED: \"Dup\"") t)
+" "Duplicate requirement in ADDED: \"Dup\"") t))
 
-;; Cross-op: same name in MODIFIED and REMOVED.
-(check "modified-and-removed"
-       (val-test--has "* Delta
+  (it "rejects a name that is both MODIFIED and REMOVED"
+    (check (val-test--has "* Delta
 ** X :MODIFIED:
 :PROPERTIES:
 :AREA: a
@@ -89,11 +86,10 @@ SHALL x.
 :AREA: a
 :END:
 gone.
-" "both MODIFIED and REMOVED: \"X\"") t)
+" "both MODIFIED and REMOVED: \"X\"") t))
 
-;; Cross-op: ADDED and REMOVED.
-(check "added-and-removed"
-       (val-test--has "* Delta
+  (it "rejects a name that is both ADDED and REMOVED"
+    (check (val-test--has "* Delta
 ** Y :ADDED:
 :PROPERTIES:
 :AREA: a
@@ -106,11 +102,10 @@ SHALL y.
 :AREA: a
 :END:
 gone.
-" "both ADDED and REMOVED: \"Y\"") t)
+" "both ADDED and REMOVED: \"Y\"") t))
 
-;; RENAMED TO collides with ADDED.
-(check "renamed-collides-added"
-       (val-test--has "* Delta
+  (it "rejects a RENAMED target name that collides with an ADDED one"
+    (check (val-test--has "* Delta
 ** NewName :ADDED:
 :PROPERTIES:
 :AREA: a
@@ -126,17 +121,18 @@ SHALL n.
 SHALL n.
 *** s
 - GIVEN a
-" "RENAMED TO collides with ADDED for \"NewName\"") t)
+" "RENAMED TO collides with ADDED for \"NewName\"") t)))
 
-;; or-signal raises on invalid, returns t on valid.
-(check "signal-raises"
-       (condition-case _ (progn (orgspec-validate-change-or-signal
-                                 (val-test--change "* Delta\n")) 'no-error)
-         (user-error 'raised))
-       'raised)
-(check "signal-ok"
-       (orgspec-validate-change-or-signal
-        (val-test--change "* Delta
+(describe "orgspec-validate-change-or-signal"
+  (it "raises a user-error on an invalid change"
+    (check (condition-case _ (progn (orgspec-validate-change-or-signal
+                                     (val-test--change "* Delta\n")) 'no-error)
+             (user-error 'raised))
+           'raised))
+
+  (it "returns t on a valid change"
+    (check (orgspec-validate-change-or-signal
+            (val-test--change "* Delta
 ** Good :ADDED:
 :PROPERTIES:
 :AREA: a
@@ -145,4 +141,8 @@ The system SHALL work.
 *** s
 - GIVEN a
 "))
-       t)
+           t)))
+
+(test-helper-summary)
+
+;;; orgspec-validate-test.el ends here
