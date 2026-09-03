@@ -1,0 +1,197 @@
+#!/usr/bin/env bash
+# Run the suites -- and interactive experiments -- in an Emacs of their own.
+#
+# Nothing here needs the working Emacs, and everything here is better off
+# without it: fixtures that pop windows, ediffs and *claude-client* buffers
+# stop landing in the middle of a real editing session, and a suite that
+# wedges or kills its instance costs nothing but that instance.
+#
+# Isolation is by state, not just by process.  A second Emacs sharing the
+# working one's MCP port or emacsclient socket is not isolated at all, so the
+# test instance gets:
+#
+#   - its own init directory (test/init/ -- no Doom, no user config)
+#   - its own emacsclient socket name (mcp-emacs-test)
+#   - the MCP HTTP server on 8775 rather than 8765
+#   - a package dir under .test-emacs/ shared across runs, so deps are
+#     installed once and ~/.emacs.d is never touched
+#
+# Modes:
+#   bin/test-emacs.sh                     run every suite in batch (like CI)
+#   bin/test-emacs.sh test/foo-test.el    run just these suites
+#   bin/test-emacs.sh --compile           byte-compile elisp/ (warnings shown)
+#   bin/test-emacs.sh --compile --strict  ... and treat warnings as errors
+#   bin/test-emacs.sh --daemon            start the test daemon and leave it up
+#   bin/test-emacs.sh --gui               start a windowed test Emacs
+#   bin/test-emacs.sh --eval FORM         eval FORM in the test daemon
+#   bin/test-emacs.sh --stop              kill the test daemon
+#   bin/test-emacs.sh --deps              install/refresh deps only
+
+set -uo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+EMACS="${EMACS:-emacs}"
+EMACSCLIENT="${EMACSCLIENT:-emacsclient}"
+
+server_name="mcp-emacs-test"
+state_dir="$root/.test-emacs"
+package_dir="$state_dir/package"
+home_dir="$state_dir/home"
+init_file="$root/test/init/init.el"
+
+export MCP_EMACS_TEST_REPO="$root"
+export MCP_EMACS_TEST_PACKAGE_DIR="$package_dir"
+export MCP_EMACS_TEST_PORT="${MCP_EMACS_TEST_PORT:-8775}"
+
+# plz is an optional runtime dependency of opencode-client, but installing it
+# here is what lets that file compile and be tested with plz present rather
+# than only through its soft-require fallback.
+deps=(web-server websocket plz)
+
+# `--init-directory' (Emacs 29+) is what keeps the personal config out; there
+# is no supported way to do this on 28 short of clobbering HOME.
+#
+# It points at the git-ignored state dir, not at test/init/ where init.el
+# actually lives, because `native-comp-eln-load-path' is derived from
+# `user-emacs-directory' at startup -- before any init file runs.  Pointing it
+# at the tracked directory made every daemon dump an eln-cache/ into the repo
+# no matter what init.el set afterwards.  So: state dir for the location,
+# explicit `-l' for the config.  `--batch' implies `-q' anyway, so the
+# explicit load is required there regardless.
+emacs_batch() {
+  mkdir -p "$home_dir"
+  "$EMACS" --batch --init-directory "$home_dir" -l "$init_file" "$@"
+}
+
+ensure_deps() {
+  local missing=()
+  for d in "${deps[@]}"; do
+    # Presence check only -- a versioned dir named after the package is enough
+    # to skip the (slow) MELPA refresh; package.el makes the real decision.
+    compgen -G "$package_dir/$d-*" >/dev/null || missing+=("$d")
+  done
+  if [ ${#missing[@]} -eq 0 ]; then
+    return 0
+  fi
+  mkdir -p "$package_dir"
+  echo "== installing deps: ${missing[*]}"
+  local forms=()
+  for d in "${missing[@]}"; do
+    forms+=(--eval "(unless (package-installed-p '$d) (package-install '$d))")
+  done
+  emacs_batch --eval '(package-refresh-contents)' "${forms[@]}" || {
+    echo "error: dependency install failed" >&2
+    exit 1
+  }
+}
+
+run_suites() {
+  local suites=("$@")
+  if [ ${#suites[@]} -eq 0 ]; then
+    # Globbed rather than listed for the same reason CI globs: an explicit
+    # list silently falls behind as suites are added.
+    suites=(test/*-test.el)
+  fi
+  local status=0 out
+  out="$(mktemp)"
+  trap 'rm -f "$out"' RETURN
+  for t in "${suites[@]}"; do
+    echo "== $t =="
+    if emacs_batch -l "$t" 2>&1 | tee "$out"; then
+      :
+    else
+      echo "ERRORED: $t"
+      status=1
+      continue
+    fi
+    # A suite that dies before printing anything must not pass, so require a
+    # clean exit AND at least one PASS -- same contract as CI.
+    if grep -q '^FAIL' "$out"; then
+      echo "TESTS FAILED in $t"
+      status=1
+    elif ! grep -q '^PASS' "$out"; then
+      echo "NO ASSERTIONS RAN in $t"
+      status=1
+    fi
+  done
+  return $status
+}
+
+daemon_running() {
+  "$EMACSCLIENT" -s "$server_name" --eval t >/dev/null 2>&1
+}
+
+start_daemon() {
+  if daemon_running; then
+    echo "test daemon already running (socket: $server_name)"
+    return 0
+  fi
+  ensure_deps
+  mkdir -p "$home_dir"
+  # `-l' rather than relying on the init directory to hold init.el: see
+  # `emacs_batch' for why the two are deliberately different places.
+  "$EMACS" --daemon="$server_name" \
+           --init-directory "$home_dir" -l "$init_file" || {
+    echo "error: test daemon failed to start" >&2
+    exit 1
+  }
+  echo "test daemon up: emacsclient -s $server_name"
+  echo "  MCP port would be $MCP_EMACS_TEST_PORT (start with --eval '(mcp-emacs-server-ensure)')"
+}
+
+case "${1:-}" in
+  --deps)
+    ensure_deps
+    ;;
+  --compile)
+    shift
+    ensure_deps
+    # Warnings stay non-fatal by default, matching CI: the tree carries
+    # pre-existing Emacs-31 obsoletions and over-80-column docstrings, so
+    # `-Werror' here would fail every run for reasons unrelated to the change
+    # under test.  `--compile --strict' opts in when cleaning those up.
+    strict=()
+    [ "${1:-}" = "--strict" ] && strict=(--eval '(setq byte-compile-error-on-warn t)')
+    emacs_batch "${strict[@]}" -f batch-byte-compile elisp/*.el
+    ;;
+  --daemon)
+    start_daemon
+    ;;
+  --gui)
+    ensure_deps
+    # Not exec'd through the daemon: a windowed instance is for watching a
+    # fixture misbehave, and killing the frame should end the instance.
+    mkdir -p "$home_dir"
+    "$EMACS" --init-directory "$home_dir" -l "$init_file" "${@:2}" &
+    echo "test GUI Emacs started (pid $!)"
+    ;;
+  --eval)
+    shift
+    [ $# -gt 0 ] || { echo "usage: bin/test-emacs.sh --eval FORM" >&2; exit 2; }
+    start_daemon >/dev/null
+    "$EMACSCLIENT" -s "$server_name" --eval "$*"
+    ;;
+  --stop)
+    if daemon_running; then
+      "$EMACSCLIENT" -s "$server_name" --eval '(kill-emacs)' >/dev/null 2>&1
+      echo "test daemon stopped"
+    else
+      echo "no test daemon running"
+    fi
+    ;;
+  -h|--help)
+    # Print the header comment: everything from line 2 up to the blank line
+    # that ends it, so adding a mode to the list keeps --help in sync.
+    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  --*)
+    echo "error: unknown option '$1'" >&2
+    exit 2
+    ;;
+  *)
+    ensure_deps
+    run_suites "$@"
+    ;;
+esac

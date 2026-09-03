@@ -55,12 +55,40 @@ deliberately in a separate pass, so don't hand-edit it alongside code changes.
 
 ## Testing
 
-1. Start the MCP server in the running Emacs: `M-x mcp-emacs-server-start`, or
-   `emacsclient --eval '(mcp-emacs-server-ensure)'` (returns the endpoint URL).
-2. Exercise it with `curl`, e.g.
-   `curl -s -X POST http://localhost:8765/mcp -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'`.
-3. Reload after edits via `emacsclient --eval` `load-file` +
-   `mcp-emacs-server-stop`/`-start`.
+**Never test in the working Emacs.** Fixtures pop windows, ediffs and
+`*claude-client*` buffers into whatever is being edited, and anything that
+wedges the instance takes the working session with it. Everything goes through
+`bin/test-emacs.sh`, which runs in an Emacs of its own — its own init directory
+(`test/init/`, no Doom, no user config), its own `emacsclient` socket
+(`mcp-emacs-test`), the MCP server on **8775** instead of 8765, and packages
+plus runtime state under the git-ignored `.test-emacs/`.
+
+```sh
+bin/test-emacs.sh                     # every suite, batch (what CI runs)
+bin/test-emacs.sh test/foo-test.el    # one or more suites
+bin/test-emacs.sh --compile           # byte-compile elisp/
+bin/test-emacs.sh --compile --strict  # ... warnings fatal
+bin/test-emacs.sh --daemon            # leave a test daemon up
+bin/test-emacs.sh --eval FORM         # eval in the test daemon
+bin/test-emacs.sh --gui               # windowed test instance
+bin/test-emacs.sh --stop
+```
+
+A suite passes only if it exits clean *and* prints at least one `PASS`; a suite
+that dies before asserting anything fails. CI calls the same script, so the
+local loop and CI cannot drift.
+
+For end-to-end pokes at the HTTP surface, start the server inside the test
+instance and curl its port:
+
+```sh
+bin/test-emacs.sh --eval '(progn (require (quote mcp-emacs-server)) (mcp-emacs-server-ensure))'
+curl -s -X POST http://localhost:8775/mcp -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Reload after edits with `bin/test-emacs.sh --eval '(load-file "elisp/....el")'`,
+or just `--stop` and start fresh.
 
 ## Future Enhancements
 
