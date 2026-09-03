@@ -588,6 +588,74 @@ records."
         (check "start-clears-expansion" claude-client--expanded-results nil))
     (kill-buffer buf)))
 
+;;;; Mentions (issue #56)
+
+;; A mention must *queue*, not deliver.  Both of add-note's paths are
+;; wrong for it: mid-turn a note abandons the turn, and with nothing
+;; running add-note drains immediately -- which would send the mention as
+;; a turn of its own, the opposite of "without submitting".  Found by
+;; running the command, not by reading the code.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (agent-backend-mention (claude-client-backend :buffer buf)
+                               "@elisp/foo.el:12-40")
+        (check "mention-is-queued"
+               claude-client--pending-notes '("@elisp/foo.el:12-40"))
+        (check "mention-delivers-nothing"
+               (memq 'notes-delivered (claude-test--kinds buf)) nil)
+        (check "mention-is-logged" (claude-test--kinds buf) '(note))
+        ;; `pending' is the truth: the model has not been handed it.
+        (check "mention-logged-as-pending"
+               (plist-get (car claude-client--events) :pending) t))
+    (kill-buffer buf)))
+
+;; Queued, so the next prompt carries it -- that is what makes a mention
+;; reach the model at all.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (agent-backend-mention (claude-client-backend :buffer buf) "@a.el:1")
+        (check "mention-rides-next-prompt"
+               (claude-client--prompt-with-notes "what is this?")
+               "what is this?\n\nNotes from the human:\n- @a.el:1"))
+    (kill-buffer buf)))
+
+;; Mentioning the same lines twice before the model has seen either says
+;; nothing new, and costs context.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (let ((backend (claude-client-backend :buffer buf)))
+          (agent-backend-mention backend "@a.el:1")
+          (agent-backend-mention backend "@a.el:1")
+          (agent-backend-mention backend "@b.el:2"))
+        (check "mention-coalesces-repeat"
+               claude-client--pending-notes '("@a.el:1" "@b.el:2")))
+    (kill-buffer buf)))
+
+;; A mention mid-turn must not interrupt: pointing at code is not the
+;; human changing direction, which is what a note is for.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (setq claude-client--turn-active t)
+        (agent-backend-mention (claude-client-backend :buffer buf) "@a.el:1")
+        (check "mention-mid-turn-does-not-interrupt"
+               (memq 'interrupted (claude-test--kinds buf)) nil)
+        (check "mention-mid-turn-still-queued"
+               claude-client--pending-notes '("@a.el:1")))
+    (kill-buffer buf)))
+
+;; Empty or whitespace-only text is not a mention.
+(let ((buf (claude-test--buffer)))
+  (unwind-protect
+      (with-current-buffer buf
+        (agent-backend-mention (claude-client-backend :buffer buf) "   ")
+        (check "empty-mention-ignored" claude-client--pending-notes nil)
+        (check "empty-mention-not-logged" (claude-test--kinds buf) nil))
+    (kill-buffer buf)))
+
 ;; TAB is bound in the mode map, and re-registered for evil -- motion
 ;; state claims it as `evil-jump-forward', so without that it is dead.
 (check "tab-bound"

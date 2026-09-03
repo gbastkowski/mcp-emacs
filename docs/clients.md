@@ -328,11 +328,34 @@ transcript work regardless of which backend is driving the session.
 **The interface.** The base class declares a `cl-defgeneric` lifecycle
 interface — `agent-backend-connect`, `-quit`, `-send`, `-interrupt`,
 `-add-note`, `-note-policy`, `-reply-permission`, `-reply-question`,
-`-list-sessions`, `-resume`, `-seed-history`, `-project-root`, and `-render`.
-The optional capabilities (permission/question replies, sessions, resume,
-history seeding, project root, render) have no-op or `user-error` defaults on
-the base class, so a minimal backend implements only connect, quit, send,
-interrupt, add-note, and note-policy and compiles without stubs.
+`-list-sessions`, `-resume`, `-seed-history`, `-project-root`, `-render`, and
+`-mention`. The optional capabilities (permission/question replies, sessions,
+resume, history seeding, project root, render, mention) have no-op,
+`user-error` or delegating defaults on the base class, so a minimal backend
+implements only connect, quit, send, interrupt, add-note, and note-policy and
+compiles without stubs.
+
+**Sharing what you are looking at.** `M-x agent-backend-mention-selection`, run
+from a *code* buffer, hands the active region (or the line at point) to
+whichever conversation is live — previously an eat-runner-only verb
+([#56](https://github.com/gbastkowski/mcp-emacs/issues/56)). What gets sent is
+a project-relative pointer, `@elisp/foo.el:12-40`, not the text: the agent can
+read the file itself, and a pointer stays right as the code moves on. Buffers
+with no file send their text instead, since there is nothing to point at.
+
+The target is resolved in tiers — same project and visible, same project
+hidden, any project visible, any project hidden — and you are asked only when
+the winning tier is ambiguous. Conversations are found by scanning for a
+buffer-local backend instance, so there is no registry and a new client is
+found for free.
+
+A mention is deliberately **not** a turn. `agent-backend-mention` defaults to
+routing through `agent-backend-add-note`, which already means "the human said
+this, deliver it with the next turn". Claude overrides it, because both of its
+note paths are wrong here: mid-turn a note abandons the turn in flight, and
+with nothing running a note drains *immediately* — which would submit the
+mention as a turn of its own. So Claude queues the mention and logs it as
+pending, and the next prompt you send carries it along.
 
 **The event vocabulary.** Every conversation event is published as a plist with
 a `:kind` symbol on the abnormal hook `agent-backend-event-functions`, run with
