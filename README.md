@@ -152,17 +152,20 @@ bin/test-emacs.sh --gui               # windowed test instance
 bin/test-emacs.sh --stop
 ```
 
-Every run ends with a report listing each suite and every test in it, so you
-can see what exists as well as what passed:
+Every run ends with a report listing each suite and every expectation in it, so
+you can see what exists as well as what passed:
 
 ```
 == report ==
 
 orgspec-agenda-test.el                     9 pass     0 fail  ok
-  PASS files-count
-  PASS files-active-only
-  PASS install-one
-  ...
+  orgspec-agenda-files
+    PASS collects one file per active change
+    PASS excludes changes under archive/
+  orgspec-agenda-install
+    PASS registers exactly one agenda command
+    PASS keeps a single entry when installed twice
+    ...
 
 claude-client-test.el                    224 pass     0 fail  ok
   ...
@@ -170,6 +173,18 @@ claude-client-test.el                    224 pass     0 fail  ok
 -- 19 suites, 700 assertions, 0 failed, 0 suites not ok
 -- JUnit XML: .test-emacs/report.xml
 ```
+
+The suites are batch scripts rather than `ert` suites — loading a file runs it —
+and they share one `describe`/`it` vocabulary from `test/test-helper.el`:
+
+```elisp
+(describe "orgspec-agenda-install"
+  (it "keeps a single entry when installed twice"
+    (check (length org-agenda-custom-commands) 1)))
+```
+
+so each report line states the behaviour being pinned down rather than naming a
+call site. [`AGENTS.md`](AGENTS.md) has the details for writing one.
 
 `--quiet` prints only the report, and replays the full output of any suite that
 is not `ok`. A suite counts as passing only if it exits clean *and* prints at

@@ -76,14 +76,40 @@ bin/test-emacs.sh --stop
 ```
 
 Every run ends with a report: one line per suite (`N pass`, `N fail`, verdict)
-with every test name under it, a totals line, and the same results as JUnit XML
-in `.test-emacs/report.xml`. A suite passes only if it exits clean *and* prints
-at least one `PASS`; one that dies before asserting anything is
-`ERRORED`/`NO ASSERTIONS`, not a pass. The suites don't use
-`ert-run-tests-batch` — each has its own `check` that princ's `PASS name`/`FAIL
-name`, and the script tallies those, so a new suite must keep that convention
-to be listed and counted. CI calls the same script, so the local loop and CI
-cannot drift.
+with every expectation under it grouped by `describe`, a totals line, and the
+same results as JUnit XML in `.test-emacs/report.xml`. A suite passes only if
+it exits clean *and* prints at least one `PASS`; one that dies before asserting
+anything is `ERRORED`/`NO ASSERTIONS`, not a pass. CI calls the same script, so
+the local loop and CI cannot drift.
+
+### Writing a suite
+
+These are batch scripts, not `ert` suites: loading the file runs it. The shared
+vocabulary is `test/test-helper.el` — require it, don't write another local
+`check` (there were three drifted copies before it existed).
+
+```elisp
+(add-to-list 'load-path (expand-file-name "elisp"))
+(add-to-list 'load-path (expand-file-name "test"))
+(require 'test-helper)
+
+(describe "orgspec-agenda-install"
+  (it "keeps a single entry when installed twice"
+    (check (length org-agenda-custom-commands) 1)))
+```
+
+- `check` takes `(GOT WANT &optional LABEL)` and reports under the enclosing
+  `it`. Pass `LABEL` only when a loop emits several assertions, since one `it`
+  cannot name several results.
+- `check-that` for the `(check (and x t) t)` shape.
+- The `it` string completes "it …": state the behaviour being pinned down, not
+  the mechanics. It replaces the comment that used to sit above the assertion.
+- `describe`/`it` splice their body in place, so they go *inside* `let`,
+  `cl-letf` and `with-temp-buffer` fixtures — they group, they don't scope.
+- An error inside `it` fails that expectation instead of killing the suite.
+- End with `(test-helper-summary)`.
+- Report lines come from those `PASS`/`FAIL`/`DESCRIBE` prints, so a suite that
+  bypasses `check` isn't listed or counted.
 
 For end-to-end pokes at the HTTP surface, start the server inside the test
 instance and curl its port:
