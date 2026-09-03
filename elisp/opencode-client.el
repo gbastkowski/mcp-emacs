@@ -675,6 +675,88 @@ Use `opencode-client-switch-session' to pick a past session instead."
       (with-current-buffer buffer
         (opencode-client--render)))))
 
+(defcustom opencode-client-query-timeout 120
+  "Seconds to wait for a one-shot `agent-backend-query' answer.
+Polling stops after this and the user is told, so a wedged or very slow
+model cannot leave the caller waiting forever."
+  :type 'integer
+  :group 'opencode-client)
+
+(defcustom opencode-client-query-poll-interval 1.0
+  "Seconds between polls while waiting for a one-shot query's answer.
+opencode's prompt endpoint only acknowledges the request -- the answer
+arrives later -- so the reply has to be collected by asking again."
+  :type 'number
+  :group 'opencode-client)
+
+(defun opencode-client--completed-answer (session backend)
+  "Return the assistant answer for SESSION on BACKEND, or nil if not ready.
+nil means \"not finished yet\", so a caller can keep polling; a finished
+turn that failed signals instead, since waiting longer will not help.
+
+Shape verified against a live server: `GET /api/session/ID/message'
+returns messages newest-first, each with a `type' (\"assistant\" or
+\"user\"), a `content' list of parts, and -- once the turn is over -- a
+`finish' field, which is \"error\" plus an `error' object on failure."
+  (let* ((messages (opencode-client--request
+                    'get (format "/api/session/%s/message" session) nil backend))
+         (reply (seq-find (lambda (m) (equal (alist-get 'type m) "assistant"))
+                          (if (listp messages) messages nil))))
+    (when-let* ((finish (and reply (alist-get 'finish reply))))
+      (when (equal finish "error")
+        (user-error "opencode query failed: %s"
+                    (or (alist-get 'message (alist-get 'error reply))
+                        "unknown error")))
+      ;; Finished cleanly: join the text parts, skipping tool calls and
+      ;; other non-prose content.
+      (mapconcat (lambda (part) (or (alist-get 'text part) ""))
+                 (seq-filter (lambda (part) (equal (alist-get 'type part) "text"))
+                             (alist-get 'content reply))
+                 ""))))
+
+(cl-defmethod agent-backend-query ((backend opencode-client-backend) prompt callback)
+  "Answer PROMPT in a throwaway opencode session, passing text to CALLBACK.
+opencode has no one-shot mode -- it is session-only over HTTP -- so the
+one-shot *effect* is built: open a session, ask, collect the answer,
+delete the session.  Nothing is left behind and no conversation buffer
+is involved.
+
+The answer cannot be read from the prompt response, which only
+acknowledges the request (verified against a live server: it returns
+`admittedSeq' and a message id, no content).  So the reply is polled
+from the message list until the assistant's turn reports `finish', then
+the session is deleted -- including on failure or timeout, so a
+throwaway session is never orphaned."
+  (let* ((backend (or (and (oref backend port) backend)
+                      ;; Called with a bare instance -- e.g. from
+                      ;; `agent-backend--query-backend', which builds one
+                      ;; from the preference with no server attached yet.
+                      (opencode-client--ensure-server)))
+         (session (alist-get 'id (opencode-client--request
+                                  'post "/api/session" nil backend)))
+         (deadline (+ (float-time) opencode-client-query-timeout))
+         (done nil))
+    (unless session
+      (user-error "opencode: could not create a session for the query"))
+    (unwind-protect
+        (progn
+          (opencode-client--request
+           'post (format "/api/session/%s/prompt" session)
+           `((prompt . ((text . ,prompt))))
+           backend)
+          (while (and (not done) (< (float-time) deadline))
+            ;; `sit-for' rather than `sleep-for': this runs from a
+            ;; command, and input should still get through while waiting.
+            (sit-for opencode-client-query-poll-interval)
+            (setq done (opencode-client--completed-answer session backend)))
+          (if done
+              (funcall callback done)
+            (message "opencode query timed out after %ss"
+                     opencode-client-query-timeout)))
+      (ignore-errors
+        (opencode-client--request
+         'delete (format "/api/session/%s" session) nil backend)))))
+
 ;;;; Prompting and interaction
 
 (defun opencode-client--transient-backend ()

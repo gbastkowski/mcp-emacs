@@ -417,7 +417,15 @@ auto-hiding side window).  The window is reused if already shown."
 Invokes the configured executable with `-p PROMPT --output-format text'
 from the current project root, collecting stdout asynchronously.  On a
 zero exit, CALLBACK is called with the collected string.  On failure the
-user is informed and CALLBACK is not called."
+user is informed and CALLBACK is not called.
+
+`agent-backend-query' on a Claude backend now does the same thing for
+the backend clients (issue #56).  This is deliberately *not* delegated
+to it: this one honours `mcp-emacs-run-executable' and
+`mcp-emacs-run--project-root', and folding it into the backend method
+would silently switch a user who configured only the runner's paths onto
+`claude-client-executable'.  Two short call sites beat changing
+behaviour under a deprecated surface; both go when the runner does."
   (let* ((default-directory (file-name-as-directory (mcp-emacs-run--project-root)))
          (out (generate-new-buffer " *mcp-emacs-query-out*"))
          (err (generate-new-buffer " *mcp-emacs-query-err*")))
@@ -649,7 +657,14 @@ project's runner session buffer is visible in a window, the explain
 request is sent to and submitted in that live session.  Otherwise —
 whether the project has a hidden session or no session at all — the
 explanation is fetched with a one-shot headless query and rendered in
-the popup output window.  Does not require or launch a TUI session."
+the popup output window.  Does not require or launch a TUI session.
+
+Superseded by `agent-backend-explain-selection', which routes the same
+way over whichever backend is live and takes
+`agent-backend-explain-route' for whether to prefer a session at all
+\(issue #56).  This stays while the runner does: its target is an eat
+terminal, which is not an `agent-backend' and cannot be resolved as
+one."
   (interactive)
   (let* ((root (mcp-emacs-run--project-root))
          (prompt (concat "explain " (mcp-emacs-run--selection-reference))))

@@ -328,12 +328,12 @@ transcript work regardless of which backend is driving the session.
 **The interface.** The base class declares a `cl-defgeneric` lifecycle
 interface — `agent-backend-connect`, `-quit`, `-send`, `-interrupt`,
 `-add-note`, `-note-policy`, `-reply-permission`, `-reply-question`,
-`-list-sessions`, `-resume`, `-seed-history`, `-project-root`, `-render`, and
-`-mention`. The optional capabilities (permission/question replies, sessions,
-resume, history seeding, project root, render, mention) have no-op,
-`user-error` or delegating defaults on the base class, so a minimal backend
-implements only connect, quit, send, interrupt, add-note, and note-policy and
-compiles without stubs.
+`-list-sessions`, `-resume`, `-seed-history`, `-project-root`, `-render`,
+`-mention`, and `-query`. The optional capabilities (permission/question
+replies, sessions, resume, history seeding, project root, render, mention,
+query) have no-op, `user-error` or delegating defaults on the base class, so a
+minimal backend implements only connect, quit, send, interrupt, add-note, and
+note-policy and compiles without stubs.
 
 **Sharing what you are looking at.** `M-x agent-backend-mention-selection`, run
 from a *code* buffer, hands the active region (or the line at point) to
@@ -356,6 +356,34 @@ note paths are wrong here: mid-turn a note abandons the turn in flight, and
 with nothing running a note drains *immediately* — which would submit the
 mention as a turn of its own. So Claude queues the mention and logs it as
 pending, and the next prompt you send carries it along.
+
+**Explaining a selection.** `M-x agent-backend-explain-selection` asks about
+the region (or line at point), with `agent-backend-explain-route` deciding
+where:
+
+| Route | Behaviour |
+|---|---|
+| `session-first` (default) | Ask in a conversation that is on screen; fall back to a one-shot query when none is |
+| `one-shot` | Always ask outside any session, even with a conversation open |
+| `session-only` | Ask in a visible conversation, refuse otherwise |
+
+The default prefers a session because "explain this" is usually part of the
+work already in that context — the model has it loaded, and the answer belongs
+in the log with everything else, where you can follow up on it. Switch to
+`one-shot` if explaining asides turns out to pollute the conversation: a dozen
+questions about unrelated code push the actual work out of the model's context.
+One-shot answers render in the popup output window near your code, and touch no
+session state. `agent-backend-explain-prompt` (default `"explain %s"`) is the
+template.
+
+Answering without a session is `agent-backend-query`, and how a backend manages
+it differs: Claude shells out to its one-shot CLI mode (`claude -p`), while
+opencode — session-only over HTTP — opens a session, asks, and deletes it, so
+the effect is one-shot even though the transport is not. Its prompt endpoint
+only acknowledges the request, so the answer is polled from the message list
+until the turn reports finished (`opencode-client-query-timeout`, default 120s);
+the throwaway session is deleted even on failure or timeout. Backends that can
+do neither inherit a default that refuses by name rather than pretending.
 
 **The event vocabulary.** Every conversation event is published as a plist with
 a `:kind` symbol on the abnormal hook `agent-backend-event-functions`, run with

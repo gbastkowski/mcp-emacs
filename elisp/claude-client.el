@@ -1306,6 +1306,43 @@ carried text to the next prompt -- see
             (claude-client--push-event
              buffer (list :kind 'note :text mention :pending t))))))))
 
+(cl-defmethod agent-backend-query ((_backend claude-client-backend) prompt callback)
+  "Answer PROMPT with a one-shot `claude -p', passing stdout to CALLBACK.
+No session, no conversation buffer, no event log: the CLI is invoked
+once from the project root and its stdout handed over.  Asynchronous, so
+Emacs stays responsive while the model thinks.
+
+On a non-zero exit the user is told and CALLBACK is *not* called, so a
+caller cannot mistake an error message for an answer.  Moved here from
+`mcp-emacs-run--query-headless' (issue #56): the capability is Claude's,
+not the eat terminal's, and the runner is on its way out."
+  (let* ((default-directory
+          (file-name-as-directory (agent-backend--current-project-root)))
+         (out (generate-new-buffer " *claude-query-out*"))
+         (err (generate-new-buffer " *claude-query-err*")))
+    (make-process
+     :name "claude-query"
+     :buffer out
+     :stderr err
+     :noquery t
+     :command (list claude-client-executable
+                    "-p" prompt "--output-format" "text")
+     :sentinel
+     (lambda (proc _event)
+       (when (memq (process-status proc) '(exit signal))
+         (let ((code (process-exit-status proc))
+               (output (with-current-buffer out (buffer-string)))
+               (errtext (with-current-buffer err (buffer-string))))
+           (unwind-protect
+               (if (and (eq (process-status proc) 'exit) (zerop code))
+                   (funcall callback output)
+                 (message "claude query failed (exit %s): %s"
+                          code (string-trim (if (string-empty-p errtext)
+                                                output
+                                              errtext))))
+             (when (buffer-live-p out) (kill-buffer out))
+             (when (buffer-live-p err) (kill-buffer err)))))))))
+
 (cl-defmethod agent-backend-note-policy ((_backend claude-client-backend))
   "Return Claude's note delivery policy.
 `:interrupt' when `claude-client-note-interrupts' is on (a note

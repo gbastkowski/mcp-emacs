@@ -141,3 +141,113 @@
              (lambda (_backend text) (setq noted text))))
     (agent-backend-mention (make-instance 'agent-backend) "@foo.el:1")
     (check "default-mention-uses-add-note" noted "@foo.el:1")))
+
+;;;; Explaining a selection (issue #56)
+
+;; Not every backend can answer without a session, so the base class
+;; refuses rather than pretending.
+(check "default-query-refuses"
+       (condition-case nil
+           (progn (agent-backend-query (make-instance 'agent-backend) "hi" #'ignore)
+                  'no-error)
+         (user-error 'user-error))
+       'user-error)
+
+;; The default route prefers a visible conversation: "explain this" is
+;; usually part of the work already in that context.
+(check "default-explain-route" agent-backend-explain-route 'session-first)
+
+;; `--visible-conversation' answers the question the fallback needs --
+;; "is one on screen?" -- without signalling the way
+;; `--resolve-conversation' does, since a nil answer is actionable here.
+(check "no-visible-conversation-is-nil" (agent-backend--visible-conversation) nil)
+
+(let ((conv (get-buffer-create "*conv-visible*")))
+  (unwind-protect
+      (progn
+        (with-current-buffer conv
+          (setq-local agent-backend--instance (make-instance 'agent-backend)))
+        ;; Live but not displayed: still nil, which is what routes an
+        ;; explain to the one-shot path.
+        (check "hidden-conversation-is-not-visible"
+               (agent-backend--visible-conversation) nil)
+        (set-window-buffer (selected-window) conv)
+        (check "shown-conversation-is-visible"
+               (agent-backend--visible-conversation) conv))
+    (set-window-buffer (selected-window) (get-buffer-create "*scratch*"))
+    (kill-buffer conv)))
+
+;; Routing.  Each mode is checked for what it does *and* what it must not
+;; do: the point of `one-shot' is that it skips a session even when one
+;; is right there, so asserting only "it queried" would pass a
+;; still-broken implementation.
+(let ((conv (get-buffer-create "*conv-route*"))
+      queried sent)
+  (unwind-protect
+      (cl-letf (((symbol-function 'agent-backend-send)
+                 (lambda (_b prompt) (setq sent prompt)))
+                ((symbol-function 'agent-backend-query)
+                 (lambda (_b prompt _cb) (setq queried prompt)))
+                ((symbol-function 'agent-backend--query-backend)
+                 (lambda () (make-instance 'agent-backend)))
+                ;; The popup needs markdown-mode, absent in batch.  The
+                ;; command requires mcp-emacs-run, which would reinstate
+                ;; the real definitions over a stub set before it loads --
+                ;; so load it here first, then stub both the renderer and
+                ;; the guard that refuses without markdown-mode.
+                ((symbol-function 'mcp-emacs-popup-show)
+                 (progn (require 'mcp-emacs-run)
+                        (lambda (content &optional _kind) content)))
+                ((symbol-function 'mcp-emacs-run--ensure-markdown) #'ignore))
+        (with-current-buffer conv
+          (setq-local agent-backend--instance (make-instance 'agent-backend)))
+
+        ;; Nothing visible: session-first falls back to a one-shot query.
+        (setq queried nil sent nil)
+        (let ((agent-backend-explain-route 'session-first))
+          (with-temp-buffer
+            (insert "some code\n")
+            (goto-char (point-min))
+            (agent-backend-explain-selection)))
+        (check "session-first-without-session-queries" (and queried t) t)
+        (check "session-first-without-session-sends-no-turn" sent nil)
+
+        ;; Visible: session-first sends a real turn instead.
+        (set-window-buffer (selected-window) conv)
+        (setq queried nil sent nil)
+        (let ((agent-backend-explain-route 'session-first))
+          (with-temp-buffer
+            (insert "some code\n")
+            (goto-char (point-min))
+            (agent-backend-explain-selection)))
+        (check "session-first-with-session-sends-turn" (and sent t) t)
+        (check "session-first-with-session-does-not-query" queried nil)
+
+        ;; one-shot ignores the visible conversation entirely.
+        (setq queried nil sent nil)
+        (let ((agent-backend-explain-route 'one-shot))
+          (with-temp-buffer
+            (insert "some code\n")
+            (goto-char (point-min))
+            (agent-backend-explain-selection)))
+        (check "one-shot-queries-despite-session" (and queried t) t)
+        (check "one-shot-sends-no-turn" sent nil)
+
+        ;; The prompt is the template applied to the reference.
+        (check "explain-prompt-uses-template" queried "explain some code")
+
+        ;; session-only refuses instead of spending a separate call.
+        (set-window-buffer (selected-window) (get-buffer-create "*scratch*"))
+        (setq queried nil sent nil)
+        (check "session-only-without-session-refuses"
+               (let ((agent-backend-explain-route 'session-only))
+                 (with-temp-buffer
+                   (insert "some code\n")
+                   (goto-char (point-min))
+                   (condition-case nil
+                       (progn (agent-backend-explain-selection) 'no-error)
+                     (user-error 'user-error))))
+               'user-error)
+        (check "session-only-refusal-queries-nothing" queried nil))
+    (set-window-buffer (selected-window) (get-buffer-create "*scratch*"))
+    (kill-buffer conv)))
