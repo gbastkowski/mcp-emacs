@@ -130,6 +130,19 @@ routes it through `agent-backend-add-note', which is exactly the
 existing \"human said something, deliver it with the next turn\"
 channel.")
 
+(cl-defgeneric agent-backend-query (backend prompt callback)
+  "Answer PROMPT once, outside any session, and call CALLBACK with the text.
+For asking a question when no conversation is live -- the answer goes
+wherever the caller puts it, not into a conversation log, and no session
+state is created.
+
+How a backend manages that is its own business: `claude' shells out to
+its one-shot CLI mode (`claude -p'), while opencode -- session-only over
+HTTP -- opens a session, asks, and deletes it, so the effect is one-shot
+even though the transport is not.  The default refuses, naming the
+backend, so a backend that can do neither says so rather than pretending
+\(issue #56).  CALLBACK is called with the answer text, on success only.")
+
 ;;;; Default implementations
 
 (cl-defmethod agent-backend-note-policy ((backend agent-backend))
@@ -172,6 +185,12 @@ channel.")
   "No-op default: BACKEND renders by other means, or not at all."
   (ignore backend)
   nil)
+
+(cl-defmethod agent-backend-query ((backend agent-backend) prompt callback)
+  "Default query: refuse, since BACKEND has no session-less mode."
+  (ignore prompt callback)
+  (user-error "%s cannot answer without a live session"
+              (or (eieio-object-class-name backend) "This agent backend")))
 
 (cl-defmethod agent-backend-mention ((backend agent-backend) text)
   "Default mention: hand TEXT to BACKEND as a human note.
@@ -328,6 +347,94 @@ runner (issue #56)."
       (agent-backend-mention agent-backend--instance reference))
     (message "Shared %s with %s" reference (buffer-name buffer))))
 
+(defun agent-backend--visible-conversation ()
+  "Return a conversation buffer shown in some window, or nil.
+Unlike `agent-backend--resolve-conversation' this never signals and never
+prompts: callers that have a fallback need to *ask* whether a
+conversation is on screen, not to be stopped when none is.  Same-project
+first, since that is what the code in front of you is about."
+  (let* ((root (agent-backend--current-project-root))
+         (shown (seq-filter (lambda (buffer) (get-buffer-window buffer t))
+                            (agent-backend--conversation-buffers)))
+         (same (seq-filter
+                (lambda (buffer)
+                  (equal (expand-file-name
+                          (buffer-local-value 'default-directory buffer))
+                         root))
+                shown)))
+    (or (car same) (car shown))))
+
+(defcustom agent-backend-explain-prompt "explain %s"
+  "Prompt template for `agent-backend-explain-selection'.
+The `%s' is replaced with the selection reference.  A template because
+what you want explained about a span of code is a matter of taste, and
+the reference is the only part that has to be there."
+  :type 'string
+  :group 'agent-backend)
+
+(defcustom agent-backend-explain-route 'session-first
+  "Where `agent-backend-explain-selection' sends its request.
+
+`session-first' asks in a conversation that is on screen, and falls back
+to a one-shot query when none is.  The default because \"explain this\"
+usually *is* part of the current work -- the model already has the
+context, and the answer belongs in the log with everything else.
+
+`one-shot' always asks outside any session, even with a conversation
+open.  Choose this when explaining things turns out to pollute the
+conversation: a dozen asides about unrelated code push the actual work
+out of the model's context and clutter the transcript.
+
+`session-only' asks in a visible conversation and refuses otherwise,
+for never spending a separate call."
+  :type '(choice (const :tag "Ask in a visible session, else one-shot" session-first)
+                 (const :tag "Always ask outside a session" one-shot)
+                 (const :tag "Only ask in a visible session" session-only))
+  :group 'agent-backend)
+
+;;;###autoload
+(defun agent-backend-explain-selection ()
+  "Explain the active region (or the line at point).
+Where the request goes is `agent-backend-explain-route': by default a
+conversation that is on screen, since \"explain this\" is usually part of
+the work already in that context, falling back to a one-shot query when
+none is visible.  Asked in a session the answer lands in the log and can
+be followed up on; asked one-shot it is rendered in the popup output
+window near the code, and no session state is touched.
+
+Generalised from `mcp-emacs-explain-selection-in-current-session' (issue
+#56), which routed this way but only ever over the eat runner."
+  (interactive)
+  (let* ((reference (agent-backend-selection-reference))
+         (prompt (format agent-backend-explain-prompt reference))
+         (visible (and (memq agent-backend-explain-route
+                             '(session-first session-only))
+                       (agent-backend--visible-conversation))))
+    (cond
+     (visible
+      (with-current-buffer visible
+        (agent-backend-send agent-backend--instance prompt)
+        (message "Explaining %s in %s" reference (buffer-name visible))))
+     ((eq agent-backend-explain-route 'session-only)
+      (user-error "No visible conversation to explain in (see `agent-backend-explain-route')"))
+     (t
+      (require 'mcp-emacs-run)
+      (mcp-emacs-popup-show "Working…" "explain")
+      (agent-backend-query
+       (agent-backend--query-backend) prompt
+       (lambda (output) (mcp-emacs-popup-show output "explain")))))))
+
+(defun agent-backend--query-backend ()
+  "Return a backend instance to answer a session-less query.
+Built from `agent-backend-preference' rather than taken from a
+conversation, because the no-conversation case is exactly when there is
+none to take it from."
+  (if (agent-backend-prefer-opencode-p)
+      (progn (require 'opencode-client nil t)
+             (make-instance 'opencode-client-backend))
+    (require 'claude-client nil t)
+    (make-instance 'claude-client-backend)))
+
 ;;;; Major mode
 
 (defun agent-backend-send-command (prompt)
@@ -386,6 +493,7 @@ The backend instance lives in the buffer-local `agent-backend--instance'."
 ;; shared core still byte-compiles standalone (the clients require
 ;; this file, so agent-backend cannot require them back at load).
 (declare-function opencode-client--health "opencode-client" ())
+(declare-function mcp-emacs-popup-show "mcp-emacs-run" (content &optional kind))
 (declare-function opencode-client-create-session "opencode-client" (&optional title))
 (declare-function claude-client-start "claude-client" (prompt &optional resume-id))
 
