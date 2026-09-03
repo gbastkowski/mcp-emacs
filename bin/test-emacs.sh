@@ -17,8 +17,9 @@
 #     installed once and ~/.emacs.d is never touched
 #
 # Modes:
-#   bin/test-emacs.sh                     run every suite in batch (like CI)
+#   bin/test-emacs.sh                     run every suite in batch
 #   bin/test-emacs.sh test/foo-test.el    run just these suites
+#   bin/test-emacs.sh --quiet [SUITE...]  report only, logs on failure (CI)
 #   bin/test-emacs.sh --compile           byte-compile elisp/ (warnings shown)
 #   bin/test-emacs.sh --compile --strict  ... and treat warnings as errors
 #   bin/test-emacs.sh --daemon            start the test daemon and leave it up
@@ -87,35 +88,72 @@ ensure_deps() {
   }
 }
 
+# The suites do not use `ert-run-tests-batch'; each has its own `check' that
+# princ's "PASS name" / "FAIL name".  So the report is assembled here, from
+# those lines plus each run's exit status -- there is no ert summary to read.
 run_suites() {
+  local quiet="$1"; shift
   local suites=("$@")
   if [ ${#suites[@]} -eq 0 ]; then
     # Globbed rather than listed for the same reason CI globs: an explicit
     # list silently falls behind as suites are added.
     suites=(test/*-test.el)
   fi
-  local status=0 out
+
+  local status=0 out report
   out="$(mktemp)"
-  trap 'rm -f "$out"' RETURN
+  report="$(mktemp)"
+  trap 'rm -f "$out" "$report"' RETURN
+
+  local total_pass=0 total_fail=0 bad_suites=0
   for t in "${suites[@]}"; do
-    echo "== $t =="
-    if emacs_batch -l "$t" 2>&1 | tee "$out"; then
-      :
+    [ "$quiet" = 1 ] || echo "== $t =="
+    local exit_ok=1
+    if [ "$quiet" = 1 ]; then
+      emacs_batch -l "$t" >"$out" 2>&1 || exit_ok=0
     else
-      echo "ERRORED: $t"
-      status=1
-      continue
+      emacs_batch -l "$t" 2>&1 | tee "$out"
+      # Careful: with the pipe, $? is tee's.  The suite's own status is the
+      # first element of PIPESTATUS.
+      [ "${PIPESTATUS[0]}" = 0 ] || exit_ok=0
     fi
+
+    local pass fail verdict
+    pass="$(grep -c '^PASS' "$out")"
+    fail="$(grep -c '^FAIL' "$out")"
+    total_pass=$((total_pass + pass))
+    total_fail=$((total_fail + fail))
+
     # A suite that dies before printing anything must not pass, so require a
-    # clean exit AND at least one PASS -- same contract as CI.
-    if grep -q '^FAIL' "$out"; then
-      echo "TESTS FAILED in $t"
-      status=1
-    elif ! grep -q '^PASS' "$out"; then
-      echo "NO ASSERTIONS RAN in $t"
-      status=1
+    # clean exit AND at least one PASS -- same contract CI has always had.
+    if [ "$exit_ok" = 0 ]; then
+      verdict="ERRORED"
+    elif [ "$fail" -gt 0 ]; then
+      verdict="FAILED"
+    elif [ "$pass" = 0 ]; then
+      verdict="NO ASSERTIONS"
+    else
+      verdict="ok"
     fi
+
+    if [ "$verdict" != ok ]; then
+      status=1
+      bad_suites=$((bad_suites + 1))
+      [ "$quiet" = 1 ] || echo "$verdict: $t"
+      # In quiet mode the per-assertion output was swallowed, so replay the
+      # failing suite's log -- a bare count is not something you can debug.
+      [ "$quiet" = 1 ] && { echo "== $t ($verdict) =="; cat "$out"; }
+    fi
+
+    printf '%-40s %5s pass %5s fail  %s\n' \
+           "$(basename "$t")" "$pass" "$fail" "$verdict" >>"$report"
   done
+
+  echo
+  echo "== report =="
+  cat "$report"
+  printf -- '-- %d suites, %d assertions, %d failed, %d suites not ok\n' \
+         "${#suites[@]}" "$((total_pass + total_fail))" "$total_fail" "$bad_suites"
   return $status
 }
 
@@ -186,12 +224,17 @@ case "${1:-}" in
     # that ends it, so adding a mode to the list keeps --help in sync.
     sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
     ;;
+  --quiet|-q)
+    shift
+    ensure_deps
+    run_suites 1 "$@"
+    ;;
   --*)
     echo "error: unknown option '$1'" >&2
     exit 2
     ;;
   *)
     ensure_deps
-    run_suites "$@"
+    run_suites 0 "$@"
     ;;
 esac

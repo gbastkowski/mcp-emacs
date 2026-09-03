@@ -30,5 +30,8 @@ jobs:
       - name: Byte-compile
         run: bin/test-emacs.sh --compile
 
+      # `--quiet': the per-suite report is the useful artefact in a log you
+      # only read when it is red, and a failing suite still gets its full
+      # output replayed.
       - name: Run tests
-        run: bin/test-emacs.sh
+        run: bin/test-emacs.sh --quiet
