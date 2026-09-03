@@ -152,20 +152,32 @@ bin/test-emacs.sh --gui               # windowed test instance
 bin/test-emacs.sh --stop
 ```
 
-Every run ends with a per-suite report:
+Every run ends with a report listing each suite and every test in it, so you
+can see what exists as well as what passed:
 
 ```
 == report ==
-agent-backend-test.el                       31 pass     0 fail  ok
-claude-client-test.el                      224 pass     0 fail  ok
-...
+
+orgspec-agenda-test.el                     9 pass     0 fail  ok
+  PASS files-count
+  PASS files-active-only
+  PASS install-one
+  ...
+
+claude-client-test.el                    224 pass     0 fail  ok
+  ...
+
 -- 19 suites, 700 assertions, 0 failed, 0 suites not ok
+-- JUnit XML: .test-emacs/report.xml
 ```
 
-`--quiet` prints only that, and replays the full output of any suite that is
-not `ok`. A suite counts as passing only if it exits clean *and* prints at
+`--quiet` prints only the report, and replays the full output of any suite that
+is not `ok`. A suite counts as passing only if it exits clean *and* prints at
 least one `PASS`, so one that dies before asserting anything is reported as
 `ERRORED` or `NO ASSERTIONS` rather than passing quietly.
+
+The same results are written as JUnit XML to `.test-emacs/report.xml`, which CI
+uploads as an artifact and any JUnit viewer can render per test.
 
 The first run installs `web-server`, `websocket` and `plz` into
 `.test-emacs/`; later runs skip the archive refresh.

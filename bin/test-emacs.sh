@@ -88,6 +88,23 @@ ensure_deps() {
   }
 }
 
+# Test names are free text, and a `check' label containing & or < would
+# otherwise produce a JUnit file no parser accepts.
+#
+# The backslashes are load-bearing: since bash 5.2 an unescaped `&' in the
+# replacement half of ${var//pat/repl} means "the text that matched", so a
+# plain `&lt;' silently expanded to `<lt;' and produced invalid XML.
+# Ampersand is substituted first, or the `&' of each later entity would be
+# escaped again.
+xml_escape() {
+  local s="$1"
+  s="${s//&/\&amp;}"
+  s="${s//</\&lt;}"
+  s="${s//>/\&gt;}"
+  s="${s//\"/\&quot;}"
+  printf '%s' "$s"
+}
+
 # The suites do not use `ert-run-tests-batch'; each has its own `check' that
 # princ's "PASS name" / "FAIL name".  So the report is assembled here, from
 # those lines plus each run's exit status -- there is no ert summary to read.
@@ -105,7 +122,13 @@ run_suites() {
   report="$(mktemp)"
   trap 'rm -f "$out" "$report"' RETURN
 
-  local total_pass=0 total_fail=0 bad_suites=0
+  mkdir -p "$state_dir"
+  local junit="$state_dir/report.xml"
+  : >"$junit"
+
+  # xml_* totals count the synthetic errored/empty cases; the human totals
+  # deliberately do not, so "700 assertions" stays the number of real checks.
+  local total_pass=0 total_fail=0 bad_suites=0 xml_total=0 xml_total_fail=0
   for t in "${suites[@]}"; do
     [ "$quiet" = 1 ] || echo "== $t =="
     local exit_ok=1
@@ -145,15 +168,78 @@ run_suites() {
       [ "$quiet" = 1 ] && { echo "== $t ($verdict) =="; cat "$out"; }
     fi
 
-    printf '%-40s %5s pass %5s fail  %s\n' \
+    # Text report: the suite line, then every test name under it.  Listing
+    # the names is the point -- counts alone do not tell you which tests
+    # exist, so a test that silently stops being run looks like a pass.
+    local name
+    printf '\n%-38s %5s pass %5s fail  %s\n' \
            "$(basename "$t")" "$pass" "$fail" "$verdict" >>"$report"
+    while IFS= read -r line; do
+      printf '  %s\n' "$line" >>"$report"
+    done < <(grep -E '^(PASS|FAIL) ' "$out")
+    [ "$verdict" = ERRORED ] && printf '  (suite errored before finishing)\n' >>"$report"
+    [ "$verdict" = "NO ASSERTIONS" ] && printf '  (no tests ran)\n' >>"$report"
+
+    # JUnit: one testsuite per file, one testcase per check.  This is what
+    # lets CI and Emacs-side viewers render the per-test result natively
+    # instead of re-parsing the log.
+    # An errored or empty suite gets one synthetic testcase below, so it has
+    # to be counted here too -- a testsuite claiming tests="0" while holding
+    # a case renders as empty in viewers that trust the attribute.
+    local xml_tests=$((pass + fail)) xml_failures="$fail"
+    case "$verdict" in
+      ERRORED|"NO ASSERTIONS")
+        xml_tests=$((xml_tests + 1))
+        xml_failures=$((xml_failures + 1))
+        ;;
+    esac
+    xml_total=$((xml_total + xml_tests))
+    xml_total_fail=$((xml_total_fail + xml_failures))
+    {
+      printf '  <testsuite name="%s" tests="%d" failures="%d">\n' \
+             "$(xml_escape "$(basename "$t" .el)")" "$xml_tests" "$xml_failures"
+      while IFS= read -r line; do
+        name="$(xml_escape "${line#* }")"
+        if [ "${line%% *}" = PASS ]; then
+          printf '    <testcase name="%s"/>\n' "$name"
+        else
+          printf '    <testcase name="%s"><failure message="check failed"/></testcase>\n' "$name"
+        fi
+      done < <(grep -E '^(PASS|FAIL) ' "$out")
+      # An errored or empty suite has no testcases to report, so carry the
+      # verdict on the suite element instead -- otherwise it reads as green.
+      if [ "$verdict" = ERRORED ]; then
+        printf '    <testcase name="%s"><error message="suite errored"><![CDATA[\n' \
+               "$(xml_escape "$(basename "$t")")"
+        sed 's/]]>/]] >/g' "$out"
+        printf ']]></error></testcase>\n'
+      elif [ "$verdict" = "NO ASSERTIONS" ]; then
+        printf '    <testcase name="%s"><failure message="no assertions ran"/></testcase>\n' \
+               "$(xml_escape "$(basename "$t")")"
+      fi
+      printf '  </testsuite>\n'
+    } >>"$junit"
   done
+
+  # Written last: the totals belong on the root element, and they are not
+  # known until every suite has run.
+  local xml_body
+  xml_body="$(cat "$junit")"
+  {
+    printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+    printf '<testsuites tests="%d" failures="%d">\n' \
+           "$xml_total" "$xml_total_fail"
+    printf '%s\n' "$xml_body"
+    printf '</testsuites>\n'
+  } >"$junit"
 
   echo
   echo "== report =="
   cat "$report"
+  echo
   printf -- '-- %d suites, %d assertions, %d failed, %d suites not ok\n' \
          "${#suites[@]}" "$((total_pass + total_fail))" "$total_fail" "$bad_suites"
+  printf -- '-- JUnit XML: %s\n' "${junit#"$root"/}"
   return $status
 }
 

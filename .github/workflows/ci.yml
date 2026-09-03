@@ -35,3 +35,12 @@ jobs:
       # output replayed.
       - name: Run tests
         run: bin/test-emacs.sh --quiet
+
+      # `always()': the report is most worth having on the run that failed.
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: .test-emacs/report.xml
+          if-no-files-found: warn

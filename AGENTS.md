@@ -75,13 +75,15 @@ bin/test-emacs.sh --gui               # windowed test instance
 bin/test-emacs.sh --stop
 ```
 
-Every run ends with a per-suite report (`N pass`, `N fail`, verdict) and a
-totals line. A suite passes only if it exits clean *and* prints at least one
-`PASS`; one that dies before asserting anything is `ERRORED`/`NO ASSERTIONS`,
-not a pass. The suites don't use `ert-run-tests-batch` — each has its own
-`check` that princ's `PASS name`/`FAIL name`, and the script tallies those, so
-a new suite must keep that convention to be counted. CI calls the same script,
-so the local loop and CI cannot drift.
+Every run ends with a report: one line per suite (`N pass`, `N fail`, verdict)
+with every test name under it, a totals line, and the same results as JUnit XML
+in `.test-emacs/report.xml`. A suite passes only if it exits clean *and* prints
+at least one `PASS`; one that dies before asserting anything is
+`ERRORED`/`NO ASSERTIONS`, not a pass. The suites don't use
+`ert-run-tests-batch` — each has its own `check` that princ's `PASS name`/`FAIL
+name`, and the script tallies those, so a new suite must keep that convention
+to be listed and counted. CI calls the same script, so the local loop and CI
+cannot drift.
 
 For end-to-end pokes at the HTTP surface, start the server inside the test
 instance and curl its port:
