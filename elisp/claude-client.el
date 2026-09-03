@@ -1279,6 +1279,33 @@ interrupt-or-queue delivery policy -- unchanged."
       (with-current-buffer buffer
         (claude-client-add-note text)))))
 
+(cl-defmethod agent-backend-mention ((backend claude-client-backend) text)
+  "Queue TEXT as a mention in BACKEND's conversation without sending a turn.
+Deliberately not `claude-client-add-note', which is wrong for a mention
+at both ends: mid-turn a note abandons the turn in flight
+(`claude-client-note-interrupts'), and with nothing running it drains
+*immediately* -- delivering the mention as a turn of its own.  Pointing
+at some code is neither of those; it should sit in the conversation
+until the human's next prompt carries it along.
+
+So the text is queued and logged, and nothing is delivered.  The queue
+is `claude-client--pending-notes', whose existing drain already appends
+carried text to the next prompt -- see
+`claude-client--prompt-with-notes'."
+  (let ((buffer (oref backend buffer)))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let ((mention (string-trim text)))
+          (unless (string-empty-p mention)
+            ;; Coalesced like a note: mentioning the same lines twice
+            ;; before the model has seen either says nothing new.
+            (unless (member mention claude-client--pending-notes)
+              (setq claude-client--pending-notes
+                    (append claude-client--pending-notes (list mention))))
+            ;; `pending' is the truth here: nothing is being delivered.
+            (claude-client--push-event
+             buffer (list :kind 'note :text mention :pending t))))))))
+
 (cl-defmethod agent-backend-note-policy ((_backend claude-client-backend))
   "Return Claude's note delivery policy.
 `:interrupt' when `claude-client-note-interrupts' is on (a note

@@ -352,30 +352,12 @@ Signal a `user-error' when there is no live session."
 
 (defun mcp-emacs-run--selection-reference ()
   "Return a reference to the current selection for embedding in a prompt.
-In a file-visiting buffer, return an at-mention of the project-relative
-path with the active region's line span (or the single line at point
-when no region is active).  Otherwise return the selected text verbatim
-\(or the current line when no region is active)."
-  (let* ((beg (if (use-region-p) (region-beginning) (point)))
-         (end (if (use-region-p) (region-end) (point)))
-         (file (buffer-file-name)))
-    (if file
-        (let* ((root (mcp-emacs-run--project-root))
-               (rel (file-relative-name file root))
-               (start-line (line-number-at-pos beg))
-               ;; A region ending at column 0 covers up to the previous line.
-               (end-line (line-number-at-pos (if (and (use-region-p) (> end beg)
-                                                       (save-excursion
-                                                         (goto-char end) (bolp)))
-                                                  (1- end)
-                                                end))))
-          (if (and (use-region-p) (/= start-line end-line))
-              (format "@%s:%d-%d" rel start-line end-line)
-            (format "@%s:%d" rel start-line)))
-      (if (use-region-p)
-          (buffer-substring-no-properties beg end)
-        (buffer-substring-no-properties (line-beginning-position)
-                                        (line-end-position))))))
+Now a thin alias for `agent-backend-selection-reference', which this
+function was generalised into when the verb became backend-agnostic
+(issue #56).  Kept so the runner's own callers and the reference tests
+keep working from one implementation rather than two that can drift."
+  (require 'agent-backend)
+  (agent-backend-selection-reference))
 
 ;;;; Popup output window
 
@@ -648,7 +630,12 @@ Builds a reference for the active region (or point) with
 `mcp-emacs-run--selection-reference' and sends it to the current
 project's runner session without submitting, so the user can keep
 typing around the reference.  Requires a live session; does not launch
-one.  Mirrors claude-code-ide's `insert-at-mentioned'."
+one.  Mirrors claude-code-ide's `insert-at-mentioned'.
+
+Superseded by `agent-backend-mention-selection', which does this for
+whichever backend is live rather than for the eat runner only (issue
+#56).  This stays while the runner does, since typing into its TUI input
+line is a genuinely different mechanism from queueing a mention."
   (interactive)
   (let ((reference (mcp-emacs-run--selection-reference)))
     (mcp-emacs-run--send-to-buffer (mcp-emacs-run--resolve-session)
