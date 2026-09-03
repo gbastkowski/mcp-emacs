@@ -174,9 +174,15 @@ run_suites() {
     local name
     printf '\n%-38s %5s pass %5s fail  %s\n' \
            "$(basename "$t")" "$pass" "$fail" "$verdict" >>"$report"
+    # DESCRIBE lines are group headers from test-helper's `describe'; the
+    # expectations under one get indented beneath it.  A suite not yet
+    # converted emits no DESCRIBE at all and simply reads as a flat list.
     while IFS= read -r line; do
-      printf '  %s\n' "$line" >>"$report"
-    done < <(grep -E '^(PASS|FAIL) ' "$out")
+      case "$line" in
+        DESCRIBE\ *) printf '  %s\n' "${line#DESCRIBE }" >>"$report" ;;
+        *)           printf '    %s\n' "$line" >>"$report" ;;
+      esac
+    done < <(grep -E '^(PASS|FAIL|DESCRIBE) ' "$out")
     [ "$verdict" = ERRORED ] && printf '  (suite errored before finishing)\n' >>"$report"
     [ "$verdict" = "NO ASSERTIONS" ] && printf '  (no tests ran)\n' >>"$report"
 
@@ -198,14 +204,22 @@ run_suites() {
     {
       printf '  <testsuite name="%s" tests="%d" failures="%d">\n' \
              "$(xml_escape "$(basename "$t" .el)")" "$xml_tests" "$xml_failures"
+      # A `describe' becomes the testcase classname, which is how JUnit
+      # viewers show grouping -- the same nesting the text report indents.
+      local classname=""
       while IFS= read -r line; do
+        if [ "${line%% *}" = DESCRIBE ]; then
+          classname="$(xml_escape "${line#DESCRIBE }")"
+          continue
+        fi
         name="$(xml_escape "${line#* }")"
         if [ "${line%% *}" = PASS ]; then
-          printf '    <testcase name="%s"/>\n' "$name"
+          printf '    <testcase classname="%s" name="%s"/>\n' "$classname" "$name"
         else
-          printf '    <testcase name="%s"><failure message="check failed"/></testcase>\n' "$name"
+          printf '    <testcase classname="%s" name="%s"><failure message="check failed"/></testcase>\n' \
+                 "$classname" "$name"
         fi
-      done < <(grep -E '^(PASS|FAIL) ' "$out")
+      done < <(grep -E '^(PASS|FAIL|DESCRIBE) ' "$out")
       # An errored or empty suite has no testcases to report, so carry the
       # verdict on the suite element instead -- otherwise it reads as green.
       if [ "$verdict" = ERRORED ]; then
