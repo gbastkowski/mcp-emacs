@@ -64,7 +64,8 @@ wedges the instance takes the working session with it. Everything goes through
 plus runtime state under the git-ignored `.test-emacs/`.
 
 ```sh
-bin/test-emacs.sh                     # every suite, batch (what CI runs)
+bin/test-emacs.sh                     # every suite, batch
+bin/test-emacs.sh --quiet             # per-suite report only (what CI runs)
 bin/test-emacs.sh test/foo-test.el    # one or more suites
 bin/test-emacs.sh --compile           # byte-compile elisp/
 bin/test-emacs.sh --compile --strict  # ... warnings fatal
@@ -74,9 +75,13 @@ bin/test-emacs.sh --gui               # windowed test instance
 bin/test-emacs.sh --stop
 ```
 
-A suite passes only if it exits clean *and* prints at least one `PASS`; a suite
-that dies before asserting anything fails. CI calls the same script, so the
-local loop and CI cannot drift.
+Every run ends with a per-suite report (`N pass`, `N fail`, verdict) and a
+totals line. A suite passes only if it exits clean *and* prints at least one
+`PASS`; one that dies before asserting anything is `ERRORED`/`NO ASSERTIONS`,
+not a pass. The suites don't use `ert-run-tests-batch` — each has its own
+`check` that princ's `PASS name`/`FAIL name`, and the script tallies those, so
+a new suite must keep that convention to be counted. CI calls the same script,
+so the local loop and CI cannot drift.
 
 For end-to-end pokes at the HTTP surface, start the server inside the test
 instance and curl its port:
