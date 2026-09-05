@@ -82,6 +82,13 @@ it exits clean *and* prints at least one `PASS`; one that dies before asserting
 anything is `ERRORED`/`NO ASSERTIONS`, not a pass. CI calls the same script, so
 the local loop and CI cannot drift.
 
+What gets tested is the **current directory's git work tree**, not wherever the
+script lives, so running the main clone's copy from inside a worktree tests
+that worktree — it used to compile and test the main clone instead, silently,
+and still report green. A worktree run prints which tree it is testing and gets
+its own daemon socket and MCP port, derived from the path so they are stable
+across runs; packages stay shared with the main clone.
+
 ### Writing a suite
 
 These are batch scripts, not `ert` suites: loading the file runs it. The shared

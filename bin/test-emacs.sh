@@ -16,6 +16,11 @@
 #   - a package dir under .test-emacs/ shared across runs, so deps are
 #     installed once and ~/.emacs.d is never touched
 #
+# What gets tested is the current directory's git work tree, so running this
+# from a worktree tests that worktree even when the script itself lives in the
+# main clone.  Such a run gets its own socket and port, derived from the path
+# so they are stable across runs; packages stay shared with the main clone.
+#
 # Modes:
 #   bin/test-emacs.sh                     run every suite in batch
 #   bin/test-emacs.sh test/foo-test.el    run just these suites
@@ -30,21 +35,67 @@
 
 set -uo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Which checkout to test is the current directory's git work tree, not the one
+# this script happens to live in.  Deriving it from BASH_SOURCE meant running
+# the main clone's copy from inside a worktree silently compiled and tested the
+# main clone -- the worktree contributed nothing, and the run still reported
+# green, so the wrong checkout looked verified.
+#
+# Falling back to the script's own tree keeps `bin/test-emacs.sh' working from
+# outside any repo (a bare PATH invocation), which is how CI calls it.
+root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$script_root")"
+
+# Guard on the init file rather than on the script: it is what a run actually
+# loads, so this also catches a checkout old enough to predate test/init/.
+# Better to say which tree is unusable than to fall back to the script's own
+# and quietly test something else.
+if [ ! -f "$root/test/init/init.el" ]; then
+  echo "error: $root/test/init/init.el is missing; not a testable mcp-emacs checkout" >&2
+  exit 1
+fi
+
+# Say so when the two differ, so a worktree run cannot be mistaken for a main
+# one in a scrollback.
+if [ "$root" != "$script_root" ]; then
+  echo "== testing $root (script from $script_root)"
+fi
+
 cd "$root"
 
 EMACS="${EMACS:-emacs}"
 EMACSCLIENT="${EMACSCLIENT:-emacsclient}"
 
-server_name="mcp-emacs-test"
 state_dir="$root/.test-emacs"
-package_dir="$state_dir/package"
 home_dir="$state_dir/home"
 init_file="$root/test/init/init.el"
 
+# Packages are shared with the main clone rather than kept per-worktree: they
+# depend on the Emacs version, not on the checkout, so a worktree would
+# otherwise spend a MELPA refresh re-downloading the same three every time.
+package_dir="$script_root/.test-emacs/package"
+
+# The daemon socket and the MCP port are per-checkout, or two worktrees would
+# fight over one daemon and one listening port -- and `--eval' would silently
+# reach whichever started first.  The main clone keeps the documented names so
+# the common case stays predictable.
+if [ "$root" = "$script_root" ]; then
+  server_name="mcp-emacs-test"
+  default_port=8775
+else
+  # cksum of the path, not $RANDOM: the same worktree must resolve to the same
+  # socket and port across runs, or --daemon and a later --eval would not meet.
+  # cksum is POSIX, unlike md5/md5sum which differ across macOS and Linux.
+  worktree_hash="$(printf '%s' "$root" | cksum | cut -d' ' -f1)"
+  server_name="mcp-emacs-test-$worktree_hash"
+  # A range above the documented 8775, well below 65535.
+  default_port=$((8800 + worktree_hash % 1000))
+fi
+
 export MCP_EMACS_TEST_REPO="$root"
 export MCP_EMACS_TEST_PACKAGE_DIR="$package_dir"
-export MCP_EMACS_TEST_PORT="${MCP_EMACS_TEST_PORT:-8775}"
+export MCP_EMACS_TEST_PORT="${MCP_EMACS_TEST_PORT:-$default_port}"
 
 # plz is an optional runtime dependency of opencode-client, but installing it
 # here is what lets that file compile and be tested with plz present rather
