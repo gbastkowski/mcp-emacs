@@ -158,21 +158,27 @@ you can see what exists as well as what passed:
 ```
 == report ==
 
-orgspec-agenda-test.el                     9 pass     0 fail  ok
-  orgspec-agenda-files
-    PASS collects one file per active change
-    PASS excludes changes under archive/
-  orgspec-agenda-install
-    PASS registers exactly one agenda command
-    PASS keeps a single entry when installed twice
+orgspec-agenda-test.el                     9 pass     0 fail  ✅
+  📋 orgspec-agenda-files
+    ✅ collects one file per active change
+    ✅ excludes changes under archive/
+  📋 orgspec-agenda-install
+    ✅ registers exactly one agenda command
+    ✅ keeps a single entry when installed twice
     ...
 
-claude-client-test.el                    224 pass     0 fail  ok
+claude-client-test.el                    224 pass     0 fail  ✅
   ...
 
--- 19 suites, 700 assertions, 0 failed, 0 suites not ok
+✅ 19 suites, 700 assertions, 0 failed, 0 suites not ok
 -- JUnit XML: .test-emacs/report.xml
 ```
+
+A failure shows as `❌ <expectation>: got=… want=…`, and a suite that errored or
+asserted nothing keeps the louder `ERRORED` / `NO ASSERTIONS` wording. Set
+`MCP_EMACS_TEST_ASCII=1` (or `NO_COLOR`) for plain `PASS`/`FAIL` text. The
+JUnit XML is unaffected either way — the glyphs are applied when the report is
+rendered, not by the suites, so `PASS <name>` stays the format they print.
 
 The suites are batch scripts rather than `ert` suites — loading a file runs it —
 and they share one `describe`/`it` vocabulary from `test/test-helper.el`:

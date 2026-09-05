@@ -116,7 +116,10 @@ vocabulary is `test/test-helper.el` — require it, don't write another local
 - An error inside `it` fails that expectation instead of killing the suite.
 - End with `(test-helper-summary)`.
 - Report lines come from those `PASS`/`FAIL`/`DESCRIBE` prints, so a suite that
-  bypasses `check` isn't listed or counted.
+  bypasses `check` isn't listed or counted. Keep printing the words: the report
+  swaps in ✅/❌/📋 when rendering, and the counting, the exit status and CI's
+  verdict all read the words. `MCP_EMACS_TEST_ASCII=1` or `NO_COLOR` renders
+  them as text.
 
 For end-to-end pokes at the HTTP surface, start the server inside the test
 instance and curl its port:

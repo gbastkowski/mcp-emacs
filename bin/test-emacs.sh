@@ -97,6 +97,34 @@ export MCP_EMACS_TEST_REPO="$root"
 export MCP_EMACS_TEST_PACKAGE_DIR="$package_dir"
 export MCP_EMACS_TEST_PORT="${MCP_EMACS_TEST_PORT:-$default_port}"
 
+# Glyphs for the rendered report.  A pass is the line you skim past and a
+# failure is the one you stop at, so the two want to differ at a glance rather
+# than by a word that is four characters long either way.
+#
+# These are emoji on purpose, including in CI, whose logs render UTF-8 fine.
+# They are double-width, so they go before the description rather than inside
+# the aligned count columns, where they would shift the layout.
+#
+# NO_COLOR is the closest thing to a standard opt-out for terminal decoration,
+# and MCP_EMACS_TEST_ASCII is the explicit one; either falls back to the words.
+if [ -n "${MCP_EMACS_TEST_ASCII:-}" ] || [ -n "${NO_COLOR:-}" ]; then
+  GLYPH_PASS="PASS"
+  GLYPH_FAIL="FAIL"
+  GLYPH_GROUP="--"
+  GLYPH_OK="ok"
+  # The totals line reads as prose, so "-- 19 suites" beats "PASS 19 suites"
+  # when there is no glyph to carry the verdict.
+  GLYPH_TOTAL_OK="--"
+  GLYPH_TOTAL_BAD="--"
+else
+  GLYPH_PASS="✅"
+  GLYPH_FAIL="❌"
+  GLYPH_GROUP="📋"
+  GLYPH_OK="✅"
+  GLYPH_TOTAL_OK="✅"
+  GLYPH_TOTAL_BAD="❌"
+fi
+
 # plz is an optional runtime dependency of opencode-client, but installing it
 # here is what lets that file compile and be tested with plz present rather
 # than only through its soft-require fallback.
@@ -222,15 +250,25 @@ run_suites() {
     # Text report: the suite line, then every test name under it.  Listing
     # the names is the point -- counts alone do not tell you which tests
     # exist, so a test that silently stops being run looks like a pass.
-    local name
+    # Only the printed verdict becomes a glyph; `$verdict' itself stays a word
+    # because the exit status and the JUnit shape below both branch on it.
+    local name shown_verdict="$verdict"
+    [ "$verdict" = ok ] && shown_verdict="$GLYPH_OK"
     printf '\n%-38s %5s pass %5s fail  %s\n' \
-           "$(basename "$t")" "$pass" "$fail" "$verdict" >>"$report"
+           "$(basename "$t")" "$pass" "$fail" "$shown_verdict" >>"$report"
     # DESCRIBE lines are group headers from test-helper's `describe'; the
     # expectations under one get indented beneath it.  A suite not yet
     # converted emits no DESCRIBE at all and simply reads as a flat list.
+    #
+    # The words become glyphs here rather than in the suites, because
+    # "PASS name" is the wire format the counting above and CI's verdict both
+    # read.  Substituting at render time keeps that contract in words while
+    # every line a human reads is a symbol.
     while IFS= read -r line; do
       case "$line" in
-        DESCRIBE\ *) printf '  %s\n' "${line#DESCRIBE }" >>"$report" ;;
+        DESCRIBE\ *) printf '  %s %s\n' "$GLYPH_GROUP" "${line#DESCRIBE }" >>"$report" ;;
+        PASS\ *)     printf '    %s %s\n' "$GLYPH_PASS" "${line#PASS }" >>"$report" ;;
+        FAIL\ *)     printf '    %s %s\n' "$GLYPH_FAIL" "${line#FAIL }" >>"$report" ;;
         *)           printf '    %s\n' "$line" >>"$report" ;;
       esac
     done < <(grep -E '^(PASS|FAIL|DESCRIBE) ' "$out")
@@ -302,7 +340,10 @@ run_suites() {
   echo "== report =="
   cat "$report"
   echo
-  printf -- '-- %d suites, %d assertions, %d failed, %d suites not ok\n' \
+  # The whole-run verdict leads the totals line: it is the one thing worth
+  # seeing without reading, and the counts stay right behind it.
+  printf -- '%s %d suites, %d assertions, %d failed, %d suites not ok\n' \
+         "$([ "$status" = 0 ] && printf '%s' "$GLYPH_TOTAL_OK" || printf '%s' "$GLYPH_TOTAL_BAD")" \
          "${#suites[@]}" "$((total_pass + total_fail))" "$total_fail" "$bad_suites"
   printf -- '-- JUnit XML: %s\n' "${junit#"$root"/}"
   return $status
