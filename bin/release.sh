@@ -59,47 +59,22 @@ previous="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
 echo "== releasing $tag ${previous:+(previous: $previous)}${dry_run:+ [dry run]}"
 
 # Tests gate the release.  A tagged version is what other people install by
-# name, so it is the one point where a red suite must stop the line.  Mirrors
-# the CI loop: a suite that dies before printing anything must not pass.
+# name, so it is the one point where a red suite must stop the line.
 #
-# CI installs the soft dependencies (web-server, websocket) from MELPA; a
-# local run has to find them or orgspec-mcp-test.el dies on `require' and the
-# gate reports a dependency gap as a test failure.  Doom's straight build dir
-# already holds them, so those two directories are added when present.
+# Delegated to bin/test-emacs.sh rather than reimplemented here.  This gate
+# used to carry its own copy of the runner -- its own glob, its own pass/fail
+# contract, its own hunt for the soft dependencies in Doom's straight build
+# dir -- and the copies drifted the moment the suites changed: the glob still
+# matched every test/*.el, so test-helper.el (a library, no assertions) failed
+# the gate, and the dependency path was keyed on the Emacs version so a
+# different `emacs' on PATH reported a missing package as a broken suite.
 #
-# Only those two, never the whole straight tree: adding all of Doom's packages
-# also puts `eat' on the load-path, and mcp-emacs-run-test.el asserts that
-# `--ensure-eat' signals when eat is absent -- so a broad path turns a passing
-# suite red by removing its precondition.  The gate must mirror CI's
-# environment, not the editor's.
-#
-# Deliberately not a fallback that skips a suite it cannot load: a gate that
-# cannot tell broken code from a missing package is a gate that gets bypassed.
+# The runner already installs its own dependencies, isolates itself from the
+# editor's config, and is what CI runs, so calling it keeps one implementation
+# of "are the tests clean" instead of three that disagree.
 echo "-- running tests"
-straight_build="$HOME/.emacs.doom/.local/straight/build-$(emacs -Q --batch --eval '(princ emacs-version)' 2>/dev/null)"
-dep_args=()
-for dep in web-server websocket; do
-  if [ -d "$straight_build/$dep" ]; then
-    dep_args+=(-L "$straight_build/$dep")
-  fi
-done
-
-failed=""
-for t in test/*.el; do
-  out="$(emacs --batch \
-           --eval "(require 'package)" \
-           --eval "(package-initialize)" \
-           "${dep_args[@]}" \
-           -L elisp -l "$t" 2>&1)" || { failed="$failed $t(errored)"; continue; }
-  if printf '%s' "$out" | grep -q '^FAIL'; then
-    failed="$failed $t(failed)"
-    printf '%s\n' "$out" | grep '^FAIL' >&2
-  elif ! printf '%s' "$out" | grep -q '^PASS'; then
-    failed="$failed $t(no-assertions)"
-  fi
-done
-if [ -n "$failed" ]; then
-  echo "error: tests not clean:$failed" >&2
+if ! ./bin/test-emacs.sh --quiet; then
+  echo "error: tests not clean" >&2
   exit 1
 fi
 echo "   all suites clean"
