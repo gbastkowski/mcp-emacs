@@ -19,48 +19,28 @@ jobs:
         with:
           version: '29.4'
 
+      # Everything below runs through bin/test-emacs.sh, the same entry point
+      # used locally.  CI and the local loop drifting apart is how a suite ends
+      # up green in one and broken in the other; the script owns dependency
+      # install, the isolated init directory, the glob and the pass/fail
+      # contract, so there is only one of each.
       - name: Install dependencies
-        run: |
-          emacs --batch \
-            --eval "(require 'package)" \
-            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\"))" \
-            --eval "(package-initialize)" \
-            --eval "(package-refresh-contents)" \
-            --eval "(package-install 'web-server)" \
-            --eval "(package-install 'websocket)"
+        run: bin/test-emacs.sh --deps
 
-      # Globbed rather than listed: the explicit lists silently fell behind as
-      # files were added, so claude-client.el, mcp-emacs-run.el and
-      # opencode-client.el were never compiled or tested here at all.
       - name: Byte-compile
-        run: |
-          emacs --batch \
-            --eval "(require 'package)" \
-            --eval "(package-initialize)" \
-            -L elisp \
-            -f batch-byte-compile \
-            elisp/*.el
+        run: bin/test-emacs.sh --compile
 
+      # `--quiet': the per-suite report is the useful artefact in a log you
+      # only read when it is red, and a failing suite still gets its full
+      # output replayed.
       - name: Run tests
-        run: |
-          status=0
-          for t in test/*.el; do
-            echo "== $t =="
-            # A suite that dies before printing anything used to pass, because
-            # the check only grepped for FAIL.  Require the run to exit clean
-            # AND to have produced at least one PASS.
-            if emacs --batch \
-                 --eval "(require 'package)" \
-                 --eval "(package-initialize)" \
-                 -L elisp -l "$t" 2>&1 | tee /tmp/out.txt; then
-              :
-            else
-              echo "ERRORED: $t"; status=1; continue
-            fi
-            if grep -q '^FAIL' /tmp/out.txt; then
-              echo "TESTS FAILED in $t"; status=1
-            elif ! grep -q '^PASS' /tmp/out.txt; then
-              echo "NO ASSERTIONS RAN in $t"; status=1
-            fi
-          done
-          exit $status
+        run: bin/test-emacs.sh --quiet
+
+      # `always()': the report is most worth having on the run that failed.
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: .test-emacs/report.xml
+          if-no-files-found: warn

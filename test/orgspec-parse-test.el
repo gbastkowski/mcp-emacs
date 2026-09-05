@@ -1,7 +1,9 @@
-(add-to-list 'load-path (expand-file-name "elisp"))
-(require 'orgspec-parse)
+;;; orgspec-parse-test.el --- Tests for the orgspec parser -*- lexical-binding: t; -*-
 
-(defun check (l g w) (princ (format "%s %s\n" (if (equal g w) "PASS" "FAIL") l)))
+(add-to-list 'load-path (expand-file-name "elisp"))
+(add-to-list 'load-path (expand-file-name "test"))
+(require 'test-helper)
+(require 'orgspec-parse)
 
 (defun parse-test--change (s)
   (with-temp-buffer
@@ -9,8 +11,8 @@
     (insert s)
     (orgspec-parse-change "t")))
 
-;; A delta requirement: op, area, from, body, scenarios, impl all extracted.
-(let* ((chg (parse-test--change "* Delta
+(describe "orgspec-parse-change on a delta requirement"
+  (let* ((chg (parse-test--change "* Delta
 ** TODO Notify on lockout                            :ADDED:
 :PROPERTIES:
 :AREA: auth
@@ -24,24 +26,29 @@ The system SHALL notify.
 - WHEN b
 - THEN c
 "))
-       (req (car (orgspec-change-requirements chg))))
-  (check "parse-op" (orgspec-requirement-op req) 'added)
-  (check "parse-name" (orgspec-requirement-name req) "Notify on lockout")
-  (check "parse-area" (orgspec-requirement-area req) "auth")
-  (check "parse-scenarios" (length (orgspec-requirement-scenarios req)) 1)
-  (check "parse-scenario-name"
-         (orgspec-scenario-name (car (orgspec-requirement-scenarios req)))
-         "Lockout triggered")
-  (check "parse-impl" (length (orgspec-requirement-impl req)) 1)
-  (check "parse-normative"
-         (and (string-match-p orgspec-normative-regexp
-                              (orgspec-requirement-body req)) t) t)
-  (check "parse-source-has-subtree"
-         (and (string-match-p "Notify on lockout"
-                              (orgspec-requirement-source req)) t) t))
+         (req (car (orgspec-change-requirements chg))))
+    (it "reads the operation from the headline tag"
+      (check (orgspec-requirement-op req) 'added))
+    (it "takes the requirement name from the headline text"
+      (check (orgspec-requirement-name req) "Notify on lockout"))
+    (it "reads the area from the AREA property"
+      (check (orgspec-requirement-area req) "auth"))
+    (it "collects the scenarios below the requirement"
+      (check (length (orgspec-requirement-scenarios req)) 1))
+    (it "names each scenario after its headline"
+      (check (orgspec-scenario-name (car (orgspec-requirement-scenarios req)))
+             "Lockout triggered"))
+    (it "collects the links in the IMPL drawer"
+      (check (length (orgspec-requirement-impl req)) 1))
+    (it "keeps the normative wording in the body"
+      (check-that (string-match-p orgspec-normative-regexp
+                                  (orgspec-requirement-body req))))
+    (it "retains the whole subtree as the source text"
+      (check-that (string-match-p "Notify on lockout"
+                                  (orgspec-requirement-source req))))))
 
-;; RENAMED carries :FROM:.
-(let* ((chg (parse-test--change "* Delta
+(describe "orgspec-parse-change on a RENAMED requirement"
+  (let* ((chg (parse-test--change "* Delta
 ** New name                                          :RENAMED:
 :PROPERTIES:
 :AREA: auth
@@ -49,15 +56,24 @@ The system SHALL notify.
 :END:
 Renamed.
 "))
-       (req (car (orgspec-change-requirements chg))))
-  (check "parse-renamed-op" (orgspec-requirement-op req) 'renamed)
-  (check "parse-from" (orgspec-requirement-from req) "Old name"))
+         (req (car (orgspec-change-requirements chg))))
+    (it "reads the renamed operation from the headline tag"
+      (check (orgspec-requirement-op req) 'renamed))
+    (it "carries the previous name from the FROM property"
+      (check (orgspec-requirement-from req) "Old name"))))
 
-;; A spec buffer parses to plain (op nil) requirements at L1.
-(let* ((reqs (with-temp-buffer
-               (let ((org-inhibit-startup t)) (org-mode))
-               (insert "* Req one\nThe system SHALL a.\n** S1\n- GIVEN x\n* Req two\nThe system SHALL b.\n")
-               (orgspec-parse-spec))))
-  (check "parse-spec-count" (length reqs) 2)
-  (check "parse-spec-no-op" (orgspec-requirement-op (car reqs)) nil)
-  (check "parse-spec-name" (orgspec-requirement-name (car reqs)) "Req one"))
+(describe "orgspec-parse-spec"
+  (let* ((reqs (with-temp-buffer
+                 (let ((org-inhibit-startup t)) (org-mode))
+                 (insert "* Req one\nThe system SHALL a.\n** S1\n- GIVEN x\n* Req two\nThe system SHALL b.\n")
+                 (orgspec-parse-spec))))
+    (it "treats every level-one headline as a requirement"
+      (check (length reqs) 2))
+    (it "leaves the operation unset, since a spec records no delta"
+      (check (orgspec-requirement-op (car reqs)) nil))
+    (it "takes the requirement name from the headline text"
+      (check (orgspec-requirement-name (car reqs)) "Req one"))))
+
+(test-helper-summary)
+
+;;; orgspec-parse-test.el ends here

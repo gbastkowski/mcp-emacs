@@ -12,12 +12,12 @@ It started as an MCP server and grew into a small toolkit. See
 
 ## What's in here
 
-| Part | What it gives you | Docs |
-|---|---|---|
-| **MCP server** | 40+ tools letting any MCP client read and edit your live Emacs: buffers, selection, xref, tree-sitter, diagnostics, project, Org | [docs/tools.md](docs/tools.md) |
-| **Agent clients** | Run Claude Code or opencode *inside* Emacs — terminal-free in a normal buffer, or as a TUI — plus diff review of native edits | [docs/clients.md](docs/clients.md) |
-| **orgspec** | An org-native spec workflow: describe a change, implement it, fold it into an accumulating source of truth | [docs/orgspec.md](docs/orgspec.md) |
-| **Claude Code plugin** | Ships the MCP server, five skills, and a slash command as an installable plugin | [PLUGIN.md](PLUGIN.md) |
+| Part                   | What it gives you                                                                                                                | Docs                               |
+|------------------------|----------------------------------------------------------------------------------------------------------------------------------|------------------------------------|
+| **MCP server**         | 40+ tools letting any MCP client read and edit your live Emacs: buffers, selection, xref, tree-sitter, diagnostics, project, Org | [docs/tools.md](docs/tools.md)     |
+| **Agent clients**      | Run Claude Code or opencode *inside* Emacs — terminal-free in a normal buffer, or as a TUI — plus diff review of native edits    | [docs/clients.md](docs/clients.md) |
+| **orgspec**            | An org-native spec workflow: describe a change, implement it, fold it into an accumulating source of truth                       | [docs/orgspec.md](docs/orgspec.md) |
+| **Claude Code plugin** | Ships the MCP server, five skills, and a slash command as an installable plugin                                                  | [PLUGIN.md](PLUGIN.md)             |
 
 The server runs **inside your live Emacs session** and speaks MCP over HTTP.
 There is no separate process and no `emacsclient` round-trip per call: tool calls
@@ -129,6 +129,74 @@ The source PlantUML definition lives in `docs/architecture.puml`. Re-render with
   (also as [PDF](docs/reference.pdf)), explaining the Elisp features it leans on.
 - [`docs/VISION.md`](docs/VISION.md) — why this exists and where it is going.
 - [`AGENTS.md`](AGENTS.md) — conventions and gotchas for changing the code.
+
+## Tests
+
+Everything runs in a separate Emacs, never in the one you are working in.
+Fixtures pop windows, ediffs and `*claude-client*` buffers, and a suite that
+wedges its instance should not cost you your session.
+`bin/test-emacs.sh` gives the tests their own init directory (`test/init/`, no
+personal config), their own `emacsclient` socket, the MCP server on port 8775
+instead of 8765, and packages plus runtime state under a git-ignored
+`.test-emacs/`.
+
+```sh
+bin/test-emacs.sh                     # every suite in batch
+bin/test-emacs.sh --quiet             # report only — what CI runs
+bin/test-emacs.sh test/foo-test.el    # one or more suites
+bin/test-emacs.sh --compile           # byte-compile elisp/
+bin/test-emacs.sh --compile --strict  # ... treating warnings as errors
+bin/test-emacs.sh --daemon            # leave a test daemon up
+bin/test-emacs.sh --eval FORM         # eval FORM in the test daemon
+bin/test-emacs.sh --gui               # windowed test instance
+bin/test-emacs.sh --stop
+```
+
+Every run ends with a report listing each suite and every expectation in it, so
+you can see what exists as well as what passed:
+
+```
+== report ==
+
+orgspec-agenda-test.el                     9 pass     0 fail  ok
+  orgspec-agenda-files
+    PASS collects one file per active change
+    PASS excludes changes under archive/
+  orgspec-agenda-install
+    PASS registers exactly one agenda command
+    PASS keeps a single entry when installed twice
+    ...
+
+claude-client-test.el                    224 pass     0 fail  ok
+  ...
+
+-- 19 suites, 700 assertions, 0 failed, 0 suites not ok
+-- JUnit XML: .test-emacs/report.xml
+```
+
+The suites are batch scripts rather than `ert` suites — loading a file runs it —
+and they share one `describe`/`it` vocabulary from `test/test-helper.el`:
+
+```elisp
+(describe "orgspec-agenda-install"
+  (it "keeps a single entry when installed twice"
+    (check (length org-agenda-custom-commands) 1)))
+```
+
+so each report line states the behaviour being pinned down rather than naming a
+call site. [`AGENTS.md`](AGENTS.md) has the details for writing one.
+
+`--quiet` prints only the report, and replays the full output of any suite that
+is not `ok`. A suite counts as passing only if it exits clean *and* prints at
+least one `PASS`, so one that dies before asserting anything is reported as
+`ERRORED` or `NO ASSERTIONS` rather than passing quietly.
+
+The same results are written as JUnit XML to `.test-emacs/report.xml`, which CI
+uploads as an artifact and any JUnit viewer can render per test.
+
+The first run installs `web-server`, `websocket` and `plz` into
+`.test-emacs/`; later runs skip the archive refresh.
+`bin/test-emacs.sh --help` lists everything.
 
 ## Contributing
 
