@@ -1,8 +1,10 @@
+;;; orgspec-fold-test.el --- Tests for folding a delta into the specs -*- lexical-binding: t; -*-
+
 (add-to-list 'load-path (expand-file-name "elisp"))
+(add-to-list 'load-path (expand-file-name "test"))
+(require 'test-helper)
 (require 'orgspec-parse)
 (require 'orgspec-fold)
-
-(defun check (l g w) (princ (format "%s %s\n" (if (equal g w) "PASS" "FAIL") l)))
 
 ;; Parse a `* Delta' change string into its requirements (in order).
 (defun fold-test--reqs (change)
@@ -25,12 +27,19 @@ The system SHALL do the new thing.
 - THEN c
 ")
        (out (orgspec-fold-area "" (fold-test--reqs delta))))
-  (check "added-requirement-L1" (and (string-match-p "^\\* New thing" out) t) t)
-  (check "added-scenario-L2" (and (string-match-p "^\\*\\* New scenario" out) t) t)
-  (check "added-todo-stripped" (string-match-p "\\* TODO " out) nil)
-  (check "added-op-tag-dropped" (string-match-p ":ADDED:" out) nil)
-  (check "added-area-stripped" (string-match-p ":AREA:" out) nil)
-  (check "added-shall-kept" (and (string-match-p "SHALL" out) t) t))
+  (describe "orgspec-fold-area with an ADDED requirement"
+    (it "appends the new requirement as a top-level headline"
+      (check-that (string-match-p "^\\* New thing" out)))
+    (it "appends its scenarios one level below the requirement"
+      (check-that (string-match-p "^\\*\\* New scenario" out)))
+    (it "strips the TODO keyword from the folded headline"
+      (check (string-match-p "\\* TODO " out) nil))
+    (it "drops the delta operation tag"
+      (check (string-match-p ":ADDED:" out) nil))
+    (it "strips the AREA property that routed the requirement"
+      (check (string-match-p ":AREA:" out) nil))
+    (it "keeps the SHALL body text"
+      (check-that (string-match-p "SHALL" out)))))
 
 ;; --- ADDED with IMPL drawer kept --------------------------------------------
 
@@ -49,7 +58,9 @@ The system SHALL do it.
 - THEN c
 ")
        (out (orgspec-fold-area "" (fold-test--reqs delta))))
-  (check "added-impl-kept" (and (string-match-p ":IMPL:" out) t) t))
+  (describe "orgspec-fold-area with a hand-written IMPL drawer"
+    (it "preserves the IMPL drawer through the fold"
+      (check-that (string-match-p ":IMPL:" out)))))
 
 ;; --- REMOVED: existing requirement deleted ----------------------------------
 
@@ -70,8 +81,11 @@ The system SHALL go.
 Removed.
 ")
        (out (orgspec-fold-area spec (fold-test--reqs delta))))
-  (check "removed-gone" (string-match-p "Drop me" out) nil)
-  (check "removed-keeps-others" (and (string-match-p "^\\* Keep me" out) t) t))
+  (describe "orgspec-fold-area with a REMOVED requirement"
+    (it "deletes the named requirement from the spec"
+      (check (string-match-p "Drop me" out) nil))
+    (it "leaves the other requirements untouched"
+      (check-that (string-match-p "^\\* Keep me" out)))))
 
 ;; --- RENAMED: headline renamed via :FROM: -----------------------------------
 
@@ -89,8 +103,11 @@ The system SHALL exist.
 Renamed.
 ")
        (out (orgspec-fold-area spec (fold-test--reqs delta))))
-  (check "renamed-to-new" (and (string-match-p "^\\* New name" out) t) t)
-  (check "renamed-old-gone" (string-match-p "^\\* Old name" out) nil))
+  (describe "orgspec-fold-area with a RENAMED requirement"
+    (it "renames the requirement identified by FROM to the new headline"
+      (check-that (string-match-p "^\\* New name" out)))
+    (it "leaves no requirement under the old name"
+      (check (string-match-p "^\\* Old name" out) nil))))
 
 ;; --- MODIFIED: replace, keeping all current scenarios -----------------------
 
@@ -111,10 +128,15 @@ The system SHALL do new and improved.
 - GIVEN b
 ")
        (out (orgspec-fold-area spec (fold-test--reqs delta))))
-  (check "modified-body-updated" (and (string-match-p "new and improved" out) t) t)
-  (check "modified-old-body-gone" (string-match-p "SHALL do old" out) nil)
-  (check "modified-keeps-scenario" (and (string-match-p "Keep scenario" out) t) t)
-  (check "modified-adds-scenario" (and (string-match-p "Extra scenario" out) t) t))
+  (describe "orgspec-fold-area with a MODIFIED requirement"
+    (it "replaces the requirement body with the new wording"
+      (check-that (string-match-p "new and improved" out)))
+    (it "drops the superseded body text"
+      (check (string-match-p "SHALL do old" out) nil))
+    (it "carries over the scenarios the delta restates"
+      (check-that (string-match-p "Keep scenario" out)))
+    (it "adds the scenarios the delta introduces"
+      (check-that (string-match-p "Extra scenario" out)))))
 
 ;; --- MODIFIED drop-guard: dropping a current scenario is an error -----------
 
@@ -132,11 +154,12 @@ The system SHALL do it differently.
 *** Different scenario
 - GIVEN b
 "))
-  (check "modified-drop-guard-signals"
-         (condition-case _
-             (progn (orgspec-fold-area spec (fold-test--reqs delta)) nil)
-           (orgspec-fold-error t))
-         t))
+  (describe "orgspec-fold-area drop guard"
+    (it "signals rather than silently dropping a current scenario"
+      (check (condition-case _
+                 (progn (orgspec-fold-area spec (fold-test--reqs delta)) nil)
+               (orgspec-fold-error t))
+             t))))
 
 ;; --- Fixed apply order: REMOVED before ADDED (same name reused) -------------
 
@@ -163,5 +186,9 @@ The system SHALL do v2.
 Removed.
 ")
        (out (orgspec-fold-area spec (fold-test--reqs delta))))
-  (check "order-removed-then-added" (and (string-match-p "SHALL do v2" out)
-                                         (not (string-match-p "SHALL do v1" out)) t) t))
+  (describe "orgspec-fold-area apply order"
+    (it "applies REMOVED before ADDED so a reused name does not collide"
+      (check (and (string-match-p "SHALL do v2" out)
+                  (not (string-match-p "SHALL do v1" out)) t) t))))
+
+;;; orgspec-fold-test.el ends here

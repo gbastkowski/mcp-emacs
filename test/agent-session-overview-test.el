@@ -8,13 +8,10 @@
 ;; state, so they test without a live CLI or server.
 
 (add-to-list 'load-path (expand-file-name "elisp"))
+(add-to-list 'load-path (expand-file-name "test"))
+(require 'test-helper)
 (require 'cl-lib)
 (require 'agent-session-overview)
-
-(defvar failures 0)
-(defun check (l g w)
-  (unless (equal g w) (setq failures (1+ failures)))
-  (princ (format "%s %s: got=%S want=%S\n" (if (equal g w) "PASS" "FAIL") l g w)))
 
 (defmacro with-session-buffers (names &rest body)
   "Create buffers NAMES, run BODY, then kill them."
@@ -30,156 +27,175 @@
 
 ;;;; Enumeration
 
-;; All three naming schemes are recognised, and each row knows its backend.
-(with-session-buffers '("*claude-client:mcp-emacs:1*"
-                        "*claude:rdm-core:1*"
-                        "*opencode:some-title*")
-  (check "claude-client recognised"
-         (plist-get (entry-for "*claude-client:mcp-emacs:1*") :label) "claude")
-  (check "eat recognised"
-         (plist-get (entry-for "*claude:rdm-core:1*") :label) "eat")
-  (check "opencode recognised"
-         (plist-get (entry-for "*opencode:some-title*") :label) "opencode")
-  (check "all three listed together"
-         (length (agent-session-overview--sessions)) 3))
+(describe "agent-session-overview--sessions across naming schemes"
+  (with-session-buffers '("*claude-client:mcp-emacs:1*"
+                          "*claude:rdm-core:1*"
+                          "*opencode:some-title*")
+    (it "recognises a claude-client buffer as the claude backend"
+      (check (plist-get (entry-for "*claude-client:mcp-emacs:1*") :label) "claude"))
+    (it "recognises an eat runner buffer as the eat backend"
+      (check (plist-get (entry-for "*claude:rdm-core:1*") :label) "eat"))
+    (it "recognises an opencode buffer as the opencode backend"
+      (check (plist-get (entry-for "*opencode:some-title*") :label) "opencode"))
+    (it "lists all three naming schemes together"
+      (check (length (agent-session-overview--sessions)) 3))))
 
-;; Project and session identity come out of the buffer name where it
-;; carries them.
-(with-session-buffers '("*claude-client:mcp-emacs:2*")
-  (let ((e (entry-for "*claude-client:mcp-emacs:2*")))
-    (check "project from name" (plist-get e :project) "mcp-emacs")
-    (check "session from name" (plist-get e :session) "mcp-emacs:2")))
+(describe "agent-session-overview--sessions identity from the buffer name"
+  (with-session-buffers '("*claude-client:mcp-emacs:2*")
+    (let ((e (entry-for "*claude-client:mcp-emacs:2*")))
+      (it "takes the project out of the buffer name"
+        (check (plist-get e :project) "mcp-emacs"))
+      (it "takes the session out of the buffer name"
+        (check (plist-get e :session) "mcp-emacs:2"))))
 
-;; Two conversations in one project stay distinguishable -- the session
-;; number is what separates them.
-(with-session-buffers '("*claude-client:mcp-emacs:1*" "*claude-client:mcp-emacs:2*")
-  (let ((sessions (mapcar (lambda (e) (plist-get e :session))
-                          (agent-session-overview--sessions))))
-    (check "two rows in one project" (length sessions) 2)
-    (check "sessions distinguishable" (equal (nth 0 sessions) (nth 1 sessions)) nil)))
+  ;; Two conversations in one project stay distinguishable -- the session
+  ;; number is what separates them.
+  (with-session-buffers '("*claude-client:mcp-emacs:1*" "*claude-client:mcp-emacs:2*")
+    (let ((sessions (mapcar (lambda (e) (plist-get e :session))
+                            (agent-session-overview--sessions))))
+      (it "lists two rows for two conversations in one project"
+        (check (length sessions) 2))
+      (it "keeps the two sessions in one project distinguishable by number"
+        (check (equal (nth 0 sessions) (nth 1 sessions)) nil))))
 
-;; Opencode names buffers by title, so its project falls back to the
-;; buffer's own directory rather than being parsed out of the name.
-(with-session-buffers '("*opencode:my-chat*")
-  (with-current-buffer "*opencode:my-chat*"
-    (setq-local default-directory "/tmp/some-project/"))
-  (let ((e (entry-for "*opencode:my-chat*")))
-    (check "opencode project from directory" (plist-get e :project) "some-project")
-    (check "opencode session is its title" (plist-get e :session) "my-chat")))
+  ;; Opencode names buffers by title, so its project falls back to the
+  ;; buffer's own directory rather than being parsed out of the name.
+  (with-session-buffers '("*opencode:my-chat*")
+    (with-current-buffer "*opencode:my-chat*"
+      (setq-local default-directory "/tmp/some-project/"))
+    (let ((e (entry-for "*opencode:my-chat*")))
+      (it "falls back to the buffer's directory for an opencode project"
+        (check (plist-get e :project) "some-project"))
+      (it "uses the title as the session for opencode"
+        (check (plist-get e :session) "my-chat")))))
 
-;; Unrelated buffers are not sessions.
-(with-session-buffers '("*scratch-not-a-session*" "*claude-ish*")
-  (check "no false positives" (length (agent-session-overview--sessions)) 0))
+(describe "agent-session-overview--sessions rejecting non-sessions"
+  (with-session-buffers '("*scratch-not-a-session*" "*claude-ish*")
+    (it "does not mistake a similarly named buffer for a session"
+      (check (length (agent-session-overview--sessions)) 0)))
+
+  ;; Mode matching must not drag in a buffer that merely sets some
+  ;; claude-client variable without being a conversation.
+  (with-session-buffers '("*not-a-conversation*")
+    (with-current-buffer "*not-a-conversation*"
+      (setq-local claude-client--turn-active t))
+    (it "needs the major mode, not just a claude-client variable"
+      (check (entry-for "*not-a-conversation*") nil)))
+
+  (it "returns nothing when no session is live"
+    (check (agent-session-overview--sessions) nil)))
 
 ;; A session buffer whose name predates the `:<project>:<n>' scheme --
 ;; plain `*claude-client*' -- is still a live session and must be listed.
 ;; Found in a real Emacs, where exactly such a buffer was being missed.
-(with-session-buffers '("*claude-client*")
-  (with-current-buffer "*claude-client*"
-    (setq major-mode 'claude-client-mode)
-    (setq-local claude-client--turn-active nil)
-    (setq-local claude-client--process nil))
-  ;; The mode only has to be fbound for `--mode-match-p' to consult it, and
-  ;; the stub must be a lambda rather than a symbol like #'ignore: Emacs
-  ;; 29's `provided-mode-derived-p' treats a symbol-valued function as an
-  ;; alias and follows it, so `derived-mode-p' would compare against
-  ;; `ignore' and the buffer would not match.  Emacs 30 dropped that branch,
-  ;; which is why #'ignore passed locally and failed on CI's 29.4.
-  (cl-letf (((symbol-function 'claude-client-mode) (lambda () nil)))
-    (let ((e (entry-for "*claude-client*")))
-      (check "unnumbered session is listed" (and e t) t)
-      (check "unnumbered session backend" (plist-get e :label) "claude")
-      (check "unnumbered session identity" (plist-get e :session) "*claude-client*")
-      (check "unnumbered session state" (plist-get e :state) 'finished))))
-
-;; Mode matching must not drag in a buffer that merely sets some
-;; claude-client variable without being a conversation.
-(with-session-buffers '("*not-a-conversation*")
-  (with-current-buffer "*not-a-conversation*"
-    (setq-local claude-client--turn-active t))
-  (check "mode match needs the mode" (entry-for "*not-a-conversation*") nil))
-
-;; Nothing live at all.
-(check "no sessions when none exist" (agent-session-overview--sessions) nil)
+(describe "agent-session-overview--sessions with an unnumbered buffer name"
+  (with-session-buffers '("*claude-client*")
+    (with-current-buffer "*claude-client*"
+      (setq major-mode 'claude-client-mode)
+      (setq-local claude-client--turn-active nil)
+      (setq-local claude-client--process nil))
+    ;; The mode only has to be fbound for `--mode-match-p' to consult it, and
+    ;; the stub must be a lambda rather than a symbol like #'ignore: Emacs
+    ;; 29's `provided-mode-derived-p' treats a symbol-valued function as an
+    ;; alias and follows it, so `derived-mode-p' would compare against
+    ;; `ignore' and the buffer would not match.  Emacs 30 dropped that branch,
+    ;; which is why #'ignore passed locally and failed on CI's 29.4.
+    (cl-letf (((symbol-function 'claude-client-mode) (lambda () nil)))
+      (let ((e (entry-for "*claude-client*")))
+        (it "lists a session whose name predates the numbering scheme"
+          (check-that e))
+        (it "still identifies its backend"
+          (check (plist-get e :label) "claude"))
+        (it "uses the whole buffer name as the session"
+          (check (plist-get e :session) "*claude-client*"))
+        (it "still classifies its state"
+          (check (plist-get e :state) 'finished))))))
 
 ;;;; State classification
 
-;; claude-client reports working / idle / finished from its own state.
-(with-session-buffers '("*claude-client:p:1*")
-  (with-current-buffer "*claude-client:p:1*"
-    (setq-local claude-client--turn-active t)
-    (setq-local claude-client--process nil))
-  (check "mid-turn is working"
-         (plist-get (entry-for "*claude-client:p:1*") :state) 'working))
+(describe "agent-session-overview state for claude-client"
+  (with-session-buffers '("*claude-client:p:1*")
+    (with-current-buffer "*claude-client:p:1*"
+      (setq-local claude-client--turn-active t)
+      (setq-local claude-client--process nil))
+    (it "reports working while a turn is running"
+      (check (plist-get (entry-for "*claude-client:p:1*") :state) 'working)))
 
-(with-session-buffers '("*claude-client:p:1*")
-  (with-current-buffer "*claude-client:p:1*"
-    (setq-local claude-client--turn-active nil)
-    (setq-local claude-client--process nil))
-  (check "exited is finished"
-         (plist-get (entry-for "*claude-client:p:1*") :state) 'finished))
+  (with-session-buffers '("*claude-client:p:1*")
+    (with-current-buffer "*claude-client:p:1*"
+      (setq-local claude-client--turn-active nil)
+      (setq-local claude-client--process nil))
+    (it "reports finished once the process is gone"
+      (check (plist-get (entry-for "*claude-client:p:1*") :state) 'finished)))
 
-;; A live process with no turn running is idle, not finished.  The
-;; process here is a real one so `process-live-p' has something true to
-;; say without a CLI.
-(with-session-buffers '("*claude-client:p:1*")
-  (let ((proc (start-process "overview-test-idle" nil "sleep" "30")))
-    (unwind-protect
-        (progn
-          (with-current-buffer "*claude-client:p:1*"
-            (setq-local claude-client--turn-active nil)
-            (setq-local claude-client--process proc))
-          (check "live process between turns is idle"
-                 (plist-get (entry-for "*claude-client:p:1*") :state) 'idle))
-      (delete-process proc))))
+  ;; The process here is a real one so `process-live-p' has something true
+  ;; to say without a CLI.
+  (with-session-buffers '("*claude-client:p:1*")
+    (let ((proc (start-process "overview-test-idle" nil "sleep" "30")))
+      (unwind-protect
+          (progn
+            (with-current-buffer "*claude-client:p:1*"
+              (setq-local claude-client--turn-active nil)
+              (setq-local claude-client--process proc))
+            (it "reports idle, not finished, for a live process between turns"
+              (check (plist-get (entry-for "*claude-client:p:1*") :state) 'idle)))
+        (delete-process proc)))))
 
 ;; The eat runner and opencode report liveness only -- never a turn
 ;; state, because neither publishes one.
-(with-session-buffers '("*claude:p:1*" "*opencode:t*")
-  (check "eat with no process is dead"
-         (plist-get (entry-for "*claude:p:1*") :state) 'dead)
-  (check "opencode with no process is dead"
-         (plist-get (entry-for "*opencode:t*") :state) 'dead)
-  (check "eat never reports working"
-         (memq (plist-get (entry-for "*claude:p:1*") :state) '(working idle)) nil)
-  (check "opencode never reports working"
-         (memq (plist-get (entry-for "*opencode:t*") :state) '(working idle)) nil))
+(describe "agent-session-overview state for liveness-only backends"
+  (with-session-buffers '("*claude:p:1*" "*opencode:t*")
+    (it "reports an eat session with no process as dead"
+      (check (plist-get (entry-for "*claude:p:1*") :state) 'dead))
+    (it "reports an opencode session with no process as dead"
+      (check (plist-get (entry-for "*opencode:t*") :state) 'dead))
+    (it "never reports a turn state for eat"
+      (check (memq (plist-get (entry-for "*claude:p:1*") :state) '(working idle)) nil))
+    (it "never reports a turn state for opencode"
+      (check (memq (plist-get (entry-for "*opencode:t*") :state) '(working idle)) nil)))
 
-;; A turn-active flag left in an eat buffer must not promote it: eat's
-;; classifier reads the process, not stray buffer-local state.
-(with-session-buffers '("*claude:p:1*")
-  (with-current-buffer "*claude:p:1*"
-    (setq-local claude-client--turn-active t))
-  (check "eat ignores a turn flag"
-         (plist-get (entry-for "*claude:p:1*") :state) 'dead))
+  ;; A turn-active flag left in an eat buffer must not promote it: eat's
+  ;; classifier reads the process, not stray buffer-local state.
+  (with-session-buffers '("*claude:p:1*")
+    (with-current-buffer "*claude:p:1*"
+      (setq-local claude-client--turn-active t))
+    (it "ignores a stray turn flag in an eat buffer"
+      (check (plist-get (entry-for "*claude:p:1*") :state) 'dead))))
 
 ;;;; Rendering and the event subscriber
 
-;; Rows render as the four displayed columns.
-(with-session-buffers '("*claude-client:mcp-emacs:1*")
-  (let ((row (cadr (car (agent-session-overview--entries)))))
-    (check "row is 4 columns" (length row) 4)
-    (check "row backend column" (aref row 0) "claude")
-    (check "row state column" (aref row 3) "finished")))
+(describe "agent-session-overview--entries"
+  (with-session-buffers '("*claude-client:mcp-emacs:1*")
+    (let ((row (cadr (car (agent-session-overview--entries)))))
+      (it "renders a row as the four displayed columns"
+        (check (length row) 4))
+      (it "puts the backend in the first column"
+        (check (aref row 0) "claude"))
+      (it "puts the state in the last column"
+        (check (aref row 3) "finished")))))
 
-;; The subscriber must not let a render failure escape into the session
-;; that published the event.
-(cl-letf (((symbol-function 'agent-session-overview--render)
-           (lambda () (error "boom"))))
-  (check "render error is contained"
-         (progn (agent-session-overview--on-event nil '(:kind started)) 'survived)
-         'survived))
-
-;; Irrelevant kinds do not trigger a render at all.
-(let ((rendered 0))
+(describe "agent-session-overview--on-event"
+  ;; The subscriber must not let a render failure escape into the session
+  ;; that published the event.
   (cl-letf (((symbol-function 'agent-session-overview--render)
-             (lambda () (setq rendered (1+ rendered)))))
-    (agent-session-overview--on-event nil '(:kind text))
-    (check "text does not re-render" rendered 0)
-    (agent-session-overview--on-event nil '(:kind finished))
-    (check "finished re-renders" rendered 1)
-    (agent-session-overview--on-event nil '(:kind some-future-kind))
-    (check "unknown kind ignored" rendered 1)))
+             (lambda () (error "boom"))))
+    (it "contains a render error instead of raising it into the publisher"
+      (check (progn (agent-session-overview--on-event nil '(:kind started)) 'survived)
+             'survived)))
+
+  ;; Irrelevant kinds do not trigger a render at all.
+  (let ((rendered 0))
+    (cl-letf (((symbol-function 'agent-session-overview--render)
+               (lambda () (setq rendered (1+ rendered)))))
+      (agent-session-overview--on-event nil '(:kind text))
+      (it "does not re-render on a text event"
+        (check rendered 0))
+      (agent-session-overview--on-event nil '(:kind finished))
+      (it "re-renders on a finished event"
+        (check rendered 1))
+      (agent-session-overview--on-event nil '(:kind some-future-kind))
+      (it "ignores an unknown event kind"
+        (check rendered 1)))))
 
 ;;;; Actions
 
@@ -195,71 +211,102 @@ which is what the compiled and uncompiled paths both read."
      (goto-char (point-min))
      ,@body))
 
-;; Interrupting a session that is not mid-turn is refused rather than
-;; attempted.
-(with-session-buffers '("*claude-client:p:1*")
-  (with-current-buffer "*claude-client:p:1*"
-    (setq-local claude-client--turn-active nil)
-    (setq-local claude-client--process nil))
-  (let ((entry (entry-for "*claude-client:p:1*")))
-    (with-row-at-point entry
-      (check "interrupt refuses when idle"
-             (condition-case err
-                 (progn (agent-session-overview-interrupt-session) 'no-error)
-               (user-error (error-message-string err)))
-             "No turn is running for this session"))))
+(describe "agent-session-overview-interrupt-session"
+  (with-session-buffers '("*claude-client:p:1*")
+    (with-current-buffer "*claude-client:p:1*"
+      (setq-local claude-client--turn-active nil)
+      (setq-local claude-client--process nil))
+    (let ((entry (entry-for "*claude-client:p:1*")))
+      (with-row-at-point entry
+        (it "refuses rather than attempting when no turn is running"
+          (check (condition-case err
+                     (progn (agent-session-overview-interrupt-session) 'no-error)
+                   (user-error (error-message-string err)))
+                 "No turn is running for this session"))))))
 
-;; A row whose buffer has been killed is reported, not chased.
-(let ((entry (list :buffer (generate-new-buffer "*overview-dead*")
-                   :backend 'claude-client :state 'idle)))
-  (kill-buffer (plist-get entry :buffer))
-  (with-row-at-point entry
-    ;; `user-error' curls the apostrophe, so match on substance not glyph.
-    (check "dead buffer is reported"
-           (condition-case err
-               (progn (agent-session-overview-visit) 'no-error)
-             (user-error (and (string-match-p "buffer is gone"
-                                             (error-message-string err))
-                              'reported)))
-           'reported)))
+;; `k' is evil's `evil-previous-line', so an unconfirmed kill here ended
+;; sessions the human was only scrolling past.
+(describe "agent-session-overview-quit-session"
+  (with-session-buffers '("*claude-client:p:2*")
+    (with-current-buffer "*claude-client:p:2*"
+      (setq-local claude-client--turn-active nil)
+      (setq-local claude-client--process nil))
+    (let ((entry (entry-for "*claude-client:p:2*")))
+      (with-row-at-point entry
+        (it "leaves the process alone when the confirmation is declined"
+          (check (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) nil))
+                           ((symbol-function 'claude-client-quit)
+                            (lambda (&rest _) (error "should not be reached"))))
+                   (condition-case err
+                       (progn (agent-session-overview-quit-session) 'no-error)
+                     (user-error (error-message-string err))))
+                 "Session left running"))
+        (it "still quits the session when the confirmation is accepted"
+          (check (let ((quit nil))
+                   (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t))
+                             ((symbol-function 'claude-client-quit)
+                              (lambda (&rest _) (setq quit t)))
+                             ((symbol-function 'agent-session-overview--render)
+                              #'ignore))
+                     (agent-session-overview-quit-session)
+                     quit))
+                 t))))))
+
+(describe "agent-session-overview-visit"
+  (let ((entry (list :buffer (generate-new-buffer "*overview-dead*")
+                     :backend 'claude-client :state 'idle)))
+    (kill-buffer (plist-get entry :buffer))
+    (with-row-at-point entry
+      ;; `user-error' curls the apostrophe, so match on substance not glyph.
+      (it "reports a killed buffer rather than chasing it"
+        (check (condition-case err
+                   (progn (agent-session-overview-visit) 'no-error)
+                 (user-error (and (string-match-p "buffer is gone"
+                                                  (error-message-string err))
+                                  'reported)))
+               'reported)))))
 
 ;;;; Help
 
 ;; The key hint names every binding, so the list stays the one source of
 ;; truth for what the buffer can do.
-(let ((terse (agent-session-overview--key-hint))
-      (verbose (agent-session-overview--key-hint t)))
-  (dolist (binding agent-session-overview--help)
-    (check (format "hint names %s" (car binding))
-           (and (string-match-p (regexp-quote (car binding)) terse) t) t)
-    (check (format "verbose hint describes %s" (car binding))
-           (and (string-match-p (regexp-quote (cadr binding)) verbose) t) t)))
+(describe "agent-session-overview--key-hint"
+  (let ((terse (agent-session-overview--key-hint))
+        (verbose (agent-session-overview--key-hint t)))
+    (dolist (binding agent-session-overview--help)
+      (it "names every documented key in the terse hint"
+        (check-that (string-match-p (regexp-quote (car binding)) terse)
+                    (format "names %s in the terse hint" (car binding))))
+      (it "describes every documented key in the verbose hint"
+        (check-that (string-match-p (regexp-quote (cadr binding)) verbose)
+                    (format "describes %s in the verbose hint" (car binding)))))))
 
 ;; Every documented key is actually bound -- documenting an action that
 ;; does nothing is worse than not documenting it.  `g' and `q' come from
 ;; the parent mode, so look them up through the real keymap.
-(with-temp-buffer
-  (agent-session-overview-mode)
-  (dolist (binding agent-session-overview--help)
-    (let ((key (car binding)))
-      (check (format "%s is bound" key)
-             (and (commandp (key-binding (kbd key))) t)
-             t))))
+(describe "agent-session-overview-mode keymap"
+  (with-temp-buffer
+    (agent-session-overview-mode)
+    (dolist (binding agent-session-overview--help)
+      (let ((key (car binding)))
+        (it "actually binds every key the help documents"
+          (check-that (commandp (key-binding (kbd key)))
+                      (format "binds %s" key)))))))
 
-;; `?' opens a help buffer rather than signalling.
-(check "help renders"
-       (progn (agent-session-overview-help)
-              (and (get-buffer "*ai-sessions help*") t))
-       t)
+(describe "agent-session-overview-help"
+  (it "opens a help buffer rather than signalling"
+    (check (progn (agent-session-overview-help)
+                  (and (get-buffer "*ai-sessions help*") t))
+           t))
 
-;; The help text explains the per-backend state precision, which is the
-;; one thing about this buffer that surprises people.
-(with-current-buffer "*ai-sessions help*"
-  (let ((text (buffer-substring-no-properties (point-min) (point-max))))
-    (check "help explains claude states"
-           (and (string-match-p "working / idle / finished" text) t) t)
-    (check "help explains liveness-only backends"
-           (and (string-match-p "live / dead" text) t) t)))
+  ;; The help text explains the per-backend state precision, which is the
+  ;; one thing about this buffer that surprises people.
+  (with-current-buffer "*ai-sessions help*"
+    (let ((text (buffer-substring-no-properties (point-min) (point-max))))
+      (it "explains which states claude-client can report"
+        (check-that (string-match-p "working / idle / finished" text)))
+      (it "explains that other backends report liveness only"
+        (check-that (string-match-p "live / dead" text))))))
 (kill-buffer "*ai-sessions help*")
 
 ;; Issue #59: reading the help used to dismiss the overview behind it,
@@ -277,53 +324,56 @@ which is what the compiled and uncompiled paths both read."
 ;; must beat a matching `display-buffer-alist' entry, since that is how
 ;; the framework imposes a side window.  So stand in for the framework
 ;; with a rule that would force one, and require it to lose.
-(let ((overview (get-buffer-create agent-session-overview-buffer-name)))
-  (unwind-protect
-      (let ((display-buffer-alist
-             `((,(regexp-quote agent-session-overview--help-buffer-name)
-                (display-buffer-in-side-window)
-                (side . bottom)))))
-        (delete-other-windows)
-        (switch-to-buffer overview)
-        (let ((overview-window (selected-window)))
-          (agent-session-overview-help)
-          (let ((help-window (get-buffer-window
-                              agent-session-overview--help-buffer-name)))
-            (check "help gets its own window"
-                   (and (window-live-p help-window) t) t)
-            ;; The assertion that fails without the fix: a side window is
-            ;; the popup failure mode, and a plain split is what keeps `q'
-            ;; from taking the overview with it.
-            (check "help placement beats a side-window rule"
-                   (window-parameter help-window 'window-side) nil)
-            (check "help is split from the overview, not replacing it"
-                   (and (window-live-p overview-window)
-                        (eq (window-buffer overview-window) overview))
-                   t)
-            ;; The point of the issue: closing the help returns you to the
-            ;; list instead of taking it down too.
-            (quit-window nil help-window)
-            (check "quitting the help keeps the overview"
-                   (and (window-live-p (get-buffer-window overview)) t) t))))
-    (when (get-buffer agent-session-overview--help-buffer-name)
-      (kill-buffer agent-session-overview--help-buffer-name))
-    (kill-buffer overview)
-    (delete-other-windows)))
+(describe "agent-session-overview-help window placement"
+  (let ((overview (get-buffer-create agent-session-overview-buffer-name)))
+    (unwind-protect
+        (let ((display-buffer-alist
+               `((,(regexp-quote agent-session-overview--help-buffer-name)
+                  (display-buffer-in-side-window)
+                  (side . bottom)))))
+          (delete-other-windows)
+          (switch-to-buffer overview)
+          (let ((overview-window (selected-window)))
+            (agent-session-overview-help)
+            (let ((help-window (get-buffer-window
+                                agent-session-overview--help-buffer-name)))
+              (it "gives the help its own live window"
+                (check-that (window-live-p help-window)))
+              ;; The assertion that fails without the fix: a side window is
+              ;; the popup failure mode, and a plain split is what keeps `q'
+              ;; from taking the overview with it.
+              (it "wins over a display-buffer rule forcing a side window"
+                (check (window-parameter help-window 'window-side) nil))
+              (it "splits off the overview's window instead of replacing it"
+                (check (and (window-live-p overview-window)
+                            (eq (window-buffer overview-window) overview))
+                       t))
+              ;; The point of the issue: closing the help returns you to the
+              ;; list instead of taking it down too.
+              (quit-window nil help-window)
+              (it "leaves the overview standing when the help is quit"
+                (check-that (window-live-p (get-buffer-window overview)))))))
+      (when (get-buffer agent-session-overview--help-buffer-name)
+        (kill-buffer agent-session-overview--help-buffer-name))
+      (kill-buffer overview)
+      (delete-other-windows))))
 
 ;; The column headers keep the header-line, since only tabulated-list
 ;; aligns them with the data; the hint lives in the mode line and must
 ;; actually render there.
-(with-temp-buffer
-  (agent-session-overview-mode)
-  (check "columns keep the header-line" tabulated-list-use-header-line t)
-  ;; `format-mode-line' renders to "" in batch (there is no window), so
-  ;; assert the construct is installed and that it produces the keys.
-  (check "mode line carries the hint"
-         (and (member '(:eval (agent-session-overview--key-hint)) mode-line-format) t)
-         t)
-  (let ((hint (substring-no-properties (agent-session-overview--key-hint))))
-    (check "hint renders the keys"
-           (and (string-match-p "RET" hint) (string-match-p "\\?" hint) t) t)))
+(describe "agent-session-overview-mode display"
+  (with-temp-buffer
+    (agent-session-overview-mode)
+    (it "keeps the header-line so tabulated-list aligns the columns"
+      (check tabulated-list-use-header-line t))
+    ;; `format-mode-line' renders to "" in batch (there is no window), so
+    ;; assert the construct is installed and that it produces the keys.
+    (it "installs the key hint in the mode line"
+      (check (and (member '(:eval (agent-session-overview--key-hint)) mode-line-format) t)
+             t))
+    (let ((hint (substring-no-properties (agent-session-overview--key-hint))))
+      (it "renders the keys into the hint text"
+        (check (and (string-match-p "RET" hint) (string-match-p "\\?" hint) t) t)))))
 
 ;;;; Evil integration
 
@@ -331,30 +381,37 @@ which is what the compiled and uncompiled paths both read."
 ;; keys must be re-registered per state or they are all dead in a
 ;; Doom-style config.  Evil is absent in batch, so record what the setup
 ;; would bind by capturing `evil-define-key*' calls.
-(let (registered)
-  (cl-letf (((symbol-function 'evil-define-key*)
-             (lambda (states _map key def &rest _)
-               (push (list states (key-description key) def) registered))))
-    (agent-session-overview--setup-evil)
-    (let ((keys (mapcar #'cadr registered)))
-      (check "evil gets RET" (and (member "RET" keys) t) t)
-      (check "evil gets k" (and (member "k" keys) t) t)
-      (check "evil gets i" (and (member "i" keys) t) t)
-      (check "evil gets ?" (and (member "?" keys) t) t)
-      ;; `g' is already an evil prefix whose `g r' reverts, and `q'
-      ;; quits the window -- taking either would break a convention.
-      (check "evil keeps g" (member "g" keys) nil)
-      (check "evil keeps q" (member "q" keys) nil))
-    (check "evil bindings target normal and motion"
-           (seq-every-p (lambda (r) (equal (car r) '(normal motion))) registered) t)
-    (check "evil bindings are commands"
-           (seq-every-p (lambda (r) (commandp (nth 2 r))) registered) t)))
+(describe "agent-session-overview--setup-evil"
+  (let (registered)
+    (cl-letf (((symbol-function 'evil-define-key*)
+               (lambda (states _map key def &rest _)
+                 (push (list states (key-description key) def) registered))))
+      (agent-session-overview--setup-evil)
+      (let ((keys (mapcar #'cadr registered)))
+        (it "re-registers RET for evil"
+          (check (and (member "RET" keys) t) t))
+        (it "re-registers k for evil"
+          (check (and (member "k" keys) t) t))
+        (it "re-registers i for evil"
+          (check (and (member "i" keys) t) t))
+        (it "re-registers ? for evil"
+          (check (and (member "?" keys) t) t))
+        ;; `g' is already an evil prefix whose `g r' reverts, and `q'
+        ;; quits the window -- taking either would break a convention.
+        (it "leaves g to evil's own prefix"
+          (check (member "g" keys) nil))
+        (it "leaves q to evil's window quit"
+          (check (member "q" keys) nil)))
+      (it "registers every binding for the normal and motion states"
+        (check (seq-every-p (lambda (r) (equal (car r) '(normal motion))) registered) t))
+      (it "binds only commands"
+        (check (seq-every-p (lambda (r) (commandp (nth 2 r))) registered) t))))
 
-;; Absent evil, setup must be a silent no-op rather than an error.
-(cl-letf (((symbol-function 'fboundp) (lambda (s) (not (eq s 'evil-define-key*)))))
-  (check "no-op without evil"
-         (progn (agent-session-overview--setup-evil) 'survived) 'survived))
+  ;; Absent evil, setup must be a silent no-op rather than an error.
+  (cl-letf (((symbol-function 'fboundp) (lambda (s) (not (eq s 'evil-define-key*)))))
+    (it "is a silent no-op when evil is absent"
+      (check (progn (agent-session-overview--setup-evil) 'survived) 'survived))))
 
-(princ (format "\n%s\n" (if (zerop failures) "ALL PASS" (format "%d FAILURE(S)" failures))))
-(kill-emacs (if (zerop failures) 0 1))
+(test-helper-summary)
+
 ;;; agent-session-overview-test.el ends here

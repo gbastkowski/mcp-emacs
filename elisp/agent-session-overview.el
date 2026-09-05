@@ -241,12 +241,17 @@ call stack, so a rendering failure here must not reach that session."
   (pop-to-buffer (agent-session-overview--live-buffer-at-point)))
 
 (defun agent-session-overview-quit-session ()
-  "Shut down the session on the current line, without confirming.
-Deliberately unconfirmed, including mid-turn: the overview is the place
-you go to stop things."
+  "Shut down the session on the current line, after confirming.
+The overview is the place you go to stop things, so this stays a
+single key -- but it is bound to `k', which is also evil's
+`evil-previous-line', so moving the cursor up a list of sessions used to
+end one silently and unrecoverably.  A prompt is the cheapest fix that
+keeps the binding where the muscle memory expects it."
   (interactive)
   (let* ((entry (agent-session-overview--entry-at-point))
          (buffer (agent-session-overview--live-buffer-at-point)))
+    (unless (yes-or-no-p (format "Quit session %s? " (buffer-name buffer)))
+      (user-error "Session left running"))
     (pcase (plist-get entry :backend)
       ('claude-client
        (with-current-buffer buffer (claude-client-quit)))
@@ -275,7 +280,7 @@ you go to stop things."
 
 (defconst agent-session-overview--help
   '(("RET" "visit the session")
-    ("k"   "quit it, no confirmation")
+    ("k"   "quit it (asks first)")
     ("i"   "interrupt its turn")
     ("g"   "refresh")
     ("?"   "this help")

@@ -1,4 +1,8 @@
+;;; mcp-emacs-remote-test.el --- Tests for the remote transcript tap -*- lexical-binding: t; -*-
+
 (add-to-list 'load-path (expand-file-name "elisp"))
+(add-to-list 'load-path (expand-file-name "test"))
+(require 'test-helper)
 (require 'cl-lib)
 
 ;; Stub the two upstream modules the remote module requires, so the tests
@@ -20,7 +24,15 @@
 
 (require 'mcp-emacs-remote)
 
-(defun check (l g w) (princ (format "%s %s\n" (if (equal g w) "PASS" "FAIL") l)))
+;; The hook variables the taps subscribe to are owned by `agent-backend' and
+;; `mcp-emacs'; the remote module only forward-declares them, and a valueless
+;; `defvar' marks a symbol special just inside its own file.  Requiring the
+;; owners gets the real defvars, so a `let' below rebinds the same variable
+;; `add-hook' writes -- without them the test binds a lexical local and reads
+;; nil back.  Neither owner pulls in websocket.el or web-server, which is why
+;; these can be required where the two modules above are stubbed.
+(require 'agent-backend)
+(require 'mcp-emacs)
 
 (defun remote--kill-transcripts ()
   (dolist (b (buffer-list))
@@ -29,112 +41,117 @@
 
 ;; --- 5.1 Prompt input --------------------------------------------------------
 
-;; Empty / whitespace prompt -> user-error, nothing sent.
-(let ((sent nil))
-  (cl-letf (((symbol-function 'mcp-emacs-run-send-prompt) (lambda (tx) (setq sent tx))))
-    (check "empty-prompt-errors"
-           (condition-case _ (progn (mcp-emacs-remote--send "") nil) (user-error t)) t)
-    (check "whitespace-prompt-errors"
-           (condition-case _ (progn (mcp-emacs-remote--send "  \n ") nil) (user-error t)) t)
-    (check "empty-prompt-sends-nothing" sent nil)))
+(describe "mcp-emacs-remote--send"
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'mcp-emacs-run-send-prompt) (lambda (tx) (setq sent tx))))
+      (it "rejects an empty prompt"
+        (check (condition-case _ (progn (mcp-emacs-remote--send "") nil) (user-error t)) t))
+      (it "rejects a whitespace-only prompt"
+        (check (condition-case _ (progn (mcp-emacs-remote--send "  \n ") nil) (user-error t)) t))
+      (it "sends nothing when the prompt is rejected"
+        (check sent nil))))
 
-;; Non-empty prompt -> delivered via send-prompt.
-(let ((sent nil))
-  (cl-letf (((symbol-function 'mcp-emacs-run-send-prompt) (lambda (tx) (setq sent tx))))
-    (mcp-emacs-remote--send "hello claude")
-    (check "prompt-delivered" sent "hello claude")))
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'mcp-emacs-run-send-prompt) (lambda (tx) (setq sent tx))))
+      (mcp-emacs-remote--send "hello claude")
+      (it "delivers a non-empty prompt via send-prompt"
+        (check sent "hello claude")))))
 
-;; Whole-buffer send: empty buffer errors; non-empty delivers buffer text.
-(let ((sent nil))
-  (cl-letf (((symbol-function 'mcp-emacs-run-send-prompt) (lambda (tx) (setq sent tx))))
-    (with-temp-buffer
-      (check "buffer-empty-errors"
-             (condition-case _ (progn (mcp-emacs-remote-prompt-buffer) nil) (user-error t)) t))
-    (check "buffer-empty-sends-nothing" sent nil)
-    (with-temp-buffer
-      (insert "line one\nline two\n")
-      (mcp-emacs-remote-prompt-buffer))
-    (check "buffer-delivered" sent "line one\nline two\n")))
+(describe "mcp-emacs-remote-prompt-buffer"
+  (let ((sent nil))
+    (cl-letf (((symbol-function 'mcp-emacs-run-send-prompt) (lambda (tx) (setq sent tx))))
+      (with-temp-buffer
+        (it "rejects an empty buffer"
+          (check (condition-case _ (progn (mcp-emacs-remote-prompt-buffer) nil) (user-error t)) t)))
+      (it "sends nothing when the buffer is empty"
+        (check sent nil))
+      (with-temp-buffer
+        (insert "line one\nline two\n")
+        (mcp-emacs-remote-prompt-buffer))
+      (it "delivers the whole buffer text"
+        (check sent "line one\nline two\n")))))
 
 ;; --- 5.2 Transcript: one buffer per project, tool call recorded --------------
 
 (remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-alpha")))
-    (mcp-emacs-remote-record-tool-call "openDiff" '((tab_name . "t1")))
-    (mcp-emacs-remote-record-tool-call "openDiff" '((tab_name . "t2"))))
-  (let ((buf (get-buffer "*claude: proj-alpha*")))
-    (check "transcript-buffer-created" (and buf t) t)
-    (check "transcript-reused-single-buffer"
-           (length (seq-filter (lambda (b) (string-prefix-p "*claude: " (buffer-name b)))
-                               (buffer-list)))
-           1)
-    (with-current-buffer buf
-      (check "tool-heading-recorded"
-             (and (string-match-p "🔧 openDiff" (buffer-string)) t) t)
-      (check "tool-args-recorded"
-             (and (string-match-p "begin_src json" (buffer-string)) t) t))))
+(describe "mcp-emacs-remote-record-tool-call"
+  (let ((mcp-emacs-remote-enabled t))
+    (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-alpha")))
+      (mcp-emacs-remote-record-tool-call "openDiff" '((tab_name . "t1")))
+      (mcp-emacs-remote-record-tool-call "openDiff" '((tab_name . "t2"))))
+    (let ((buf (get-buffer "*claude: proj-alpha*")))
+      (it "creates a transcript buffer named after the project"
+        (check-that buf))
+      (it "reuses one buffer per project across calls"
+        (check (length (seq-filter (lambda (b) (string-prefix-p "*claude: " (buffer-name b)))
+                                   (buffer-list)))
+               1))
+      (with-current-buffer buf
+        (it "records the tool name as a heading"
+          (check-that (string-match-p "🔧 openDiff" (buffer-string))))
+        (it "records the tool arguments as a json block"
+          (check-that (string-match-p "begin_src json" (buffer-string)))))))
 
-;; Distinct projects -> distinct buffers.
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-beta")))
-    (mcp-emacs-remote-record-tool-call "openDiff" '((tab_name . "x"))))
-  (check "distinct-projects-distinct-buffers"
-         (and (get-buffer "*claude: proj-alpha*") (get-buffer "*claude: proj-beta*") t) t))
+  (let ((mcp-emacs-remote-enabled t))
+    (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-beta")))
+      (mcp-emacs-remote-record-tool-call "openDiff" '((tab_name . "x"))))
+    (it "gives distinct projects distinct transcript buffers"
+      (check-that (and (get-buffer "*claude: proj-alpha*")
+                       (get-buffer "*claude: proj-beta*")))))
 
-;; Quiet tools get a compact note, not a heading.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-q")))
-    (mcp-emacs-remote-record-tool-call "getDiagnostics" '()))
-  (with-current-buffer (get-buffer "*claude: proj-q*")
-    (check "quiet-tool-no-heading"
-           (and (not (string-match-p "🔧 getDiagnostics" (buffer-string)))
-                (string-match-p "getDiagnostics" (buffer-string)) t) t)))
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-q")))
+        (mcp-emacs-remote-record-tool-call "getDiagnostics" '()))
+      (with-current-buffer (get-buffer "*claude: proj-q*")
+        (it "notes a quiet tool compactly instead of as a heading"
+          (check-that (and (not (string-match-p "🔧 getDiagnostics" (buffer-string)))
+                           (string-match-p "getDiagnostics" (buffer-string)))))))))
 
 ;; --- 5.3 Diff outcome --------------------------------------------------------
 
 (remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-d")))
-    (mcp-emacs-remote-record-diff-outcome "tab-A" "FILE_SAVED" "new content")
-    (mcp-emacs-remote-record-diff-outcome "tab-B" "DIFF_REJECTED" "tab-B"))
-  (with-current-buffer (get-buffer "*claude: proj-d*")
-    (let ((s (buffer-string)))
-      (check "accept-recorded"
-             (and (string-match-p "openDiff accepted :: tab-A" s) t) t)
-      (check "reject-recorded"
-             (and (string-match-p "openDiff rejected :: tab-B" s) t) t))))
+(describe "mcp-emacs-remote-record-diff-outcome"
+  (let ((mcp-emacs-remote-enabled t))
+    (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-d")))
+      (mcp-emacs-remote-record-diff-outcome "tab-A" "FILE_SAVED" "new content")
+      (mcp-emacs-remote-record-diff-outcome "tab-B" "DIFF_REJECTED" "tab-B"))
+    (with-current-buffer (get-buffer "*claude: proj-d*")
+      (let ((s (buffer-string)))
+        (it "records a saved diff as accepted, naming the tab"
+          (check-that (string-match-p "openDiff accepted :: tab-A" s)))
+        (it "records a rejected diff as rejected, naming the tab"
+          (check-that (string-match-p "openDiff rejected :: tab-B" s)))))))
 
 ;; --- 5.4 Passive safety ------------------------------------------------------
 
-;; Disabled -> the tap records nothing.
 (remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled nil))
-  (mcp-emacs-remote--tap-call-tool nil "openDiff" '((tab_name . "z")) 1)
-  (check "disabled-records-nothing"
-         (seq-find (lambda (b) (string-prefix-p "*claude: " (buffer-name b))) (buffer-list))
-         nil))
+(describe "mcp-emacs-remote--tap-call-tool"
+  (let ((mcp-emacs-remote-enabled nil))
+    (mcp-emacs-remote--tap-call-tool nil "openDiff" '((tab_name . "z")) 1)
+    (it "records nothing while recording is disabled"
+      (check (seq-find (lambda (b) (string-prefix-p "*claude: " (buffer-name b))) (buffer-list))
+             nil)))
 
-;; A rendering failure never propagates out of the recorder.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-remote--append)
-             (lambda (&rest _) (error "boom"))))
-    (check "render-error-swallowed-tool"
-           (condition-case _ (progn (mcp-emacs-remote-record-tool-call "openDiff" '()) t)
-             (error nil))
-           t)
-    (check "render-error-swallowed-diff"
-           (condition-case _ (progn (mcp-emacs-remote-record-diff-outcome "t" "FILE_SAVED") t)
-             (error nil))
-           t)))
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-remote--append)
+                 (lambda (&rest _) (error "boom"))))
+        (it "swallows a rendering failure while recording a tool call"
+          (check (condition-case _ (progn (mcp-emacs-remote-record-tool-call "openDiff" '()) t)
+                   (error nil))
+                 t))
+        (it "swallows a rendering failure while recording a diff outcome"
+          (check (condition-case _ (progn (mcp-emacs-remote-record-diff-outcome "t" "FILE_SAVED") t)
+                   (error nil))
+                 t)))))
 
-;; The :before tap returns nil (does not alter the wrapped call's return).
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-r")))
-    (check "tap-returns-nil"
-           (mcp-emacs-remote--tap-call-tool nil "getDiagnostics" '() 1) nil)))
+  (let ((mcp-emacs-remote-enabled t))
+    (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-r")))
+      (it "returns nil so it cannot alter the wrapped call's return value"
+        (check (mcp-emacs-remote--tap-call-tool nil "getDiagnostics" '() 1) nil)))))
 
 (remote--kill-transcripts)
 
@@ -152,124 +169,131 @@
       (with-current-buffer buf
         (buffer-substring-no-properties (point-min) (point-max))))))
 
-;; Each event kind lands in the transcript.
 (remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
-    (mcp-emacs-remote--tap-runner-event
-     nil (list :kind 'started :session "abc-123" :model "claude-opus-5"))
-    (let ((text (remote--transcript-text)))
-      (check "runner-started-heading"
-             (and (string-match-p "^\\* Runner" text) t) t)
-      (check "runner-started-session"
-             (and (string-match-p ":SESSION: abc-123" text) t) t)
-      (check "runner-started-model"
-             (and (string-match-p ":MODEL: claude-opus-5" text) t) t))))
+(describe "mcp-emacs-remote--tap-runner-event"
+  (let ((mcp-emacs-remote-enabled t))
+    (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+      (mcp-emacs-remote--tap-runner-event
+       nil (list :kind 'started :session "abc-123" :model "claude-opus-5"))
+      (let ((text (remote--transcript-text)))
+        (it "opens a Runner heading when the runner starts"
+          (check-that (string-match-p "^\\* Runner" text)))
+        (it "records the session id of a started runner"
+          (check-that (string-match-p ":SESSION: abc-123" text)))
+        (it "records the model of a started runner"
+          (check-that (string-match-p ":MODEL: claude-opus-5" text))))))
 
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
-    (mcp-emacs-remote--tap-runner-event nil (list :kind 'text :text "hello there"))
-    (check "runner-text-recorded"
-           (and (string-match-p "assistant :: hello there" (remote--transcript-text)) t)
-           t)))
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+        (mcp-emacs-remote--tap-runner-event nil (list :kind 'text :text "hello there"))
+        (it "records assistant text on the assistant channel"
+          (check-that (string-match-p "assistant :: hello there" (remote--transcript-text)))))))
 
-;; A tool call reuses the existing tool-call recorder, so runner tool calls
-;; and IDE-surface tool calls render identically in the transcript.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
-    (mcp-emacs-remote--tap-runner-event
-     nil (list :kind 'tool-use :name "mcp__emacs__apply_diff"
-               :input '((path . "/tmp/x"))))
-    (let ((text (remote--transcript-text)))
-      (check "runner-tool-heading"
-             (and (string-match-p "🔧 mcp__emacs__apply_diff" text) t) t)
-      (check "runner-tool-args"
-             (and (string-match-p "/tmp/x" text) t) t))))
+  ;; A tool call reuses the existing tool-call recorder, so runner tool calls
+  ;; and IDE-surface tool calls render identically in the transcript.
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+        (mcp-emacs-remote--tap-runner-event
+         nil (list :kind 'tool-use :name "mcp__emacs__apply_diff"
+                   :input '((path . "/tmp/x"))))
+        (let ((text (remote--transcript-text)))
+          (it "renders a runner tool call with the same heading as an IDE tool call"
+            (check-that (string-match-p "🔧 mcp__emacs__apply_diff" text)))
+          (it "records the runner tool call's input arguments"
+            (check-that (string-match-p "/tmp/x" text)))))))
 
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
-    (mcp-emacs-remote--tap-runner-event
-     nil (list :kind 'tool-result :text "Status: applied\nnew\n"))
-    (check "runner-result-first-line"
-           (and (string-match-p "result :: Status: applied" (remote--transcript-text)) t)
-           t)))
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+        (mcp-emacs-remote--tap-runner-event
+         nil (list :kind 'tool-result :text "Status: applied\nnew\n"))
+        (it "records only the first line of a tool result"
+          (check-that (string-match-p "result :: Status: applied"
+                                      (remote--transcript-text)))))))
 
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
-    (mcp-emacs-remote--tap-runner-event nil (list :kind 'finished :subtype "success"))
-    (check "runner-finished"
-           (and (string-match-p "runner success" (remote--transcript-text)) t) t)))
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+        (mcp-emacs-remote--tap-runner-event nil (list :kind 'finished :subtype "success"))
+        (it "records how the runner finished"
+          (check-that (string-match-p "runner success" (remote--transcript-text)))))))
 
-;; Recording is off by default: the subscriber must stay silent (and create
-;; no transcript buffer) unless the feature is enabled.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled nil))
-  (mcp-emacs-remote--tap-runner-event nil (list :kind 'text :text "should not appear"))
-  (check "runner-disabled-silent" (remote--transcript-text) nil))
+  ;; Recording is off by default: the subscriber must stay silent (and create
+  ;; no transcript buffer) unless the feature is enabled.
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled nil))
+      (mcp-emacs-remote--tap-runner-event nil (list :kind 'text :text "should not appear"))
+      (it "stays silent and creates no transcript while disabled"
+        (check (remote--transcript-text) nil))))
 
-;; The human's own writes land in the same transcript, on the same channel
-;; as the runner's events -- one shared record, not two.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
-    (mcp-emacs-remote--tap-runner-event
-     nil (list :kind 'note :text "check the error path" :pending t))
-    (check "runner-note-recorded"
-           (and (string-match-p "human :: check the error path"
-                                (remote--transcript-text))
-                t)
-           t)))
+  ;; The human's own writes land in the same transcript, on the same channel
+  ;; as the runner's events -- one shared record, not two.
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+        (mcp-emacs-remote--tap-runner-event
+         nil (list :kind 'note :text "check the error path" :pending t))
+        (it "records a human note in the same transcript as the runner's events"
+          (check-that (string-match-p "human :: check the error path"
+                                      (remote--transcript-text)))))))
 
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
-    (mcp-emacs-remote--tap-runner-event
-     nil (list :kind 'notes-delivered :notes '("a" "b")))
-    (check "runner-notes-delivered-recorded"
-           (and (string-match-p "carried 2 note" (remote--transcript-text)) t) t)))
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+        (mcp-emacs-remote--tap-runner-event
+         nil (list :kind 'notes-delivered :notes '("a" "b")))
+        (it "records how many notes were carried into the turn"
+          (check-that (string-match-p "carried 2 note" (remote--transcript-text)))))))
 
-;; An unknown event kind is ignored rather than guessed at, so adding a new
-;; kind to the runner cannot produce a malformed transcript entry.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
-    (mcp-emacs-remote--tap-runner-event nil (list :kind 'brand-new-kind :text "x"))
-    (check "runner-unknown-kind-ignored" (remote--transcript-text) nil)))
+  ;; An unknown event kind is ignored rather than guessed at, so adding a new
+  ;; kind to the runner cannot produce a malformed transcript entry.
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-s")))
+        (mcp-emacs-remote--tap-runner-event nil (list :kind 'brand-new-kind :text "x"))
+        (it "ignores an unknown event kind rather than guessing at it"
+          (check (remote--transcript-text) nil)))))
 
-;; A failure inside the transcript must never propagate into the runner.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-remote--append)
-             (lambda (&rest _) (error "boom"))))
-    (check "runner-error-swallowed"
-           (condition-case _
-               (progn (mcp-emacs-remote--tap-runner-event
-                       nil (list :kind 'text :text "x"))
-                      t)
-             (error nil))
-           t)))
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-remote--append)
+                 (lambda (&rest _) (error "boom"))))
+        (it "never propagates a transcript failure into the runner"
+          (check (condition-case _
+                     (progn (mcp-emacs-remote--tap-runner-event
+                             nil (list :kind 'text :text "x"))
+                            t)
+                   (error nil))
+                 t))))))
 
-;; enable/disable manage hook membership, and both are idempotent.
-(let ((agent-backend-event-functions nil))
-  (cl-letf (((symbol-function 'advice-add) #'ignore)
-            ((symbol-function 'advice-remove) #'ignore))
-    (mcp-emacs-remote-enable)
-    (check "enable-subscribes"
-           (and (memq #'mcp-emacs-remote--tap-runner-event
-                      agent-backend-event-functions) t) t)
-    (mcp-emacs-remote-enable)
-    (check "enable-idempotent"
-           (length (seq-filter (lambda (f) (eq f #'mcp-emacs-remote--tap-runner-event))
-                               agent-backend-event-functions))
-           1)
-    (mcp-emacs-remote-disable)
-    (check "disable-unsubscribes"
-           (memq #'mcp-emacs-remote--tap-runner-event agent-backend-event-functions)
-           nil)))
+(describe "mcp-emacs-remote-enable and mcp-emacs-remote-disable"
+  (let ((agent-backend-event-functions nil))
+    (cl-letf (((symbol-function 'advice-add) #'ignore)
+              ((symbol-function 'advice-remove) #'ignore))
+      (mcp-emacs-remote-enable)
+      (it "subscribes the runner tap to the event hook"
+        (check-that (memq #'mcp-emacs-remote--tap-runner-event
+                          agent-backend-event-functions)))
+      (mcp-emacs-remote-enable)
+      (it "keeps a single runner subscription when enabled twice"
+        (check (length (seq-filter (lambda (f) (eq f #'mcp-emacs-remote--tap-runner-event))
+                                   agent-backend-event-functions))
+               1))
+      (mcp-emacs-remote-disable)
+      (it "unsubscribes the runner tap again"
+        (check (memq #'mcp-emacs-remote--tap-runner-event agent-backend-event-functions)
+               nil)))))
 
 (remote--kill-transcripts)
 
@@ -280,80 +304,90 @@
 ;; the human's Org edits and the AI's activity in the order they happened.
 
 (remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
-    (mcp-emacs-remote--tap-org-task-event
-     (list :kind 'session-status :path "/tmp/s.org" :status "STRT"))
-    (check "org-session-status-recorded"
-           (and (string-match-p "org session :: STRT" (remote--transcript-text)) t) t)))
+(describe "mcp-emacs-remote--tap-org-task-event"
+  (let ((mcp-emacs-remote-enabled t))
+    (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+      (mcp-emacs-remote--tap-org-task-event
+       (list :kind 'session-status :path "/tmp/s.org" :status "STRT"))
+      (it "records an Org session status change"
+        (check-that (string-match-p "org session :: STRT" (remote--transcript-text))))))
+
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+        (mcp-emacs-remote--tap-org-task-event
+         (list :kind 'item-status :path "/tmp/s.org" :ref "write tests" :status "DONE"))
+        (it "records an Org item status change, naming the item"
+          (check-that (string-match-p "org item :: write tests"
+                                      (remote--transcript-text)))))))
+
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+        (mcp-emacs-remote--tap-org-task-event
+         (list :kind 'item-added :path "/tmp/s.org" :text "new thing" :status "TODO"))
+        (it "records a newly added Org item with its keyword and text"
+          (check-that (string-match-p "org item added :: TODO new thing"
+                                      (remote--transcript-text)))))))
+
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+        (mcp-emacs-remote--tap-org-task-event
+         (list :kind 'note :path "/tmp/s.org" :text "first line\nsecond"))
+        (it "records only the first line of a multi-line Org note"
+          (check-that (and (string-match-p "org note :: first line" (remote--transcript-text))
+                           (not (string-match-p "second" (remote--transcript-text)))))))))
+
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled nil))
+      (mcp-emacs-remote--tap-org-task-event
+       (list :kind 'session-status :path "/tmp/s.org" :status "STRT"))
+      (it "stays silent and creates no transcript while disabled"
+        (check (remote--transcript-text) nil))))
+
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
+        (mcp-emacs-remote--tap-org-task-event (list :kind 'brand-new :path "/tmp/s.org"))
+        (it "ignores an unknown Org event kind rather than guessing at it"
+          (check (remote--transcript-text) nil)))))
+
+  (progn
+    (remote--kill-transcripts)
+    (let ((mcp-emacs-remote-enabled t))
+      (cl-letf (((symbol-function 'mcp-emacs-remote--append)
+                 (lambda (&rest _) (error "boom"))))
+        (it "never lets a transcript failure break the Org write being observed"
+          (check (condition-case _
+                     (progn (mcp-emacs-remote--tap-org-task-event
+                             (list :kind 'note :path "/tmp/s.org" :text "x"))
+                            t)
+                   (error nil))
+                 t))))))
+
+(describe "mcp-emacs-remote-enable and mcp-emacs-remote-disable for org-task events"
+  (let ((mcp-emacs-org-task-event-functions nil)
+        (agent-backend-event-functions nil))
+    (cl-letf (((symbol-function 'advice-add) #'ignore)
+              ((symbol-function 'advice-remove) #'ignore))
+      (mcp-emacs-remote-enable)
+      (it "subscribes the org-task tap to the org-task event hook"
+        (check-that (memq #'mcp-emacs-remote--tap-org-task-event
+                          mcp-emacs-org-task-event-functions)))
+      (mcp-emacs-remote-disable)
+      (it "unsubscribes the org-task tap again"
+        (check (memq #'mcp-emacs-remote--tap-org-task-event
+                     mcp-emacs-org-task-event-functions)
+               nil)))))
 
 (remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
-    (mcp-emacs-remote--tap-org-task-event
-     (list :kind 'item-status :path "/tmp/s.org" :ref "write tests" :status "DONE"))
-    (check "org-item-status-recorded"
-           (and (string-match-p "org item :: write tests" (remote--transcript-text)) t) t)))
 
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
-    (mcp-emacs-remote--tap-org-task-event
-     (list :kind 'item-added :path "/tmp/s.org" :text "new thing" :status "TODO"))
-    (check "org-item-added-recorded"
-           (and (string-match-p "org item added :: TODO new thing"
-                                (remote--transcript-text)) t) t)))
+(test-helper-summary)
 
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
-    (mcp-emacs-remote--tap-org-task-event
-     (list :kind 'note :path "/tmp/s.org" :text "first line\nsecond"))
-    (check "org-note-first-line-only"
-           (and (string-match-p "org note :: first line" (remote--transcript-text))
-                (not (string-match-p "second" (remote--transcript-text))) t)
-           t)))
-
-;; Disabled -> silent, and no transcript buffer created.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled nil))
-  (mcp-emacs-remote--tap-org-task-event
-   (list :kind 'session-status :path "/tmp/s.org" :status "STRT"))
-  (check "org-disabled-silent" (remote--transcript-text) nil))
-
-;; Unknown kinds are ignored rather than guessed at.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-run--project-root) (lambda () "/tmp/proj-o")))
-    (mcp-emacs-remote--tap-org-task-event (list :kind 'brand-new :path "/tmp/s.org"))
-    (check "org-unknown-kind-ignored" (remote--transcript-text) nil)))
-
-;; A transcript failure must never break the Org write being observed.
-(remote--kill-transcripts)
-(let ((mcp-emacs-remote-enabled t))
-  (cl-letf (((symbol-function 'mcp-emacs-remote--append)
-             (lambda (&rest _) (error "boom"))))
-    (check "org-error-swallowed"
-           (condition-case _
-               (progn (mcp-emacs-remote--tap-org-task-event
-                       (list :kind 'note :path "/tmp/s.org" :text "x"))
-                      t)
-             (error nil))
-           t)))
-
-;; enable/disable manage the org-task hook too.
-(let ((mcp-emacs-org-task-event-functions nil)
-      (agent-backend-event-functions nil))
-  (cl-letf (((symbol-function 'advice-add) #'ignore)
-            ((symbol-function 'advice-remove) #'ignore))
-    (mcp-emacs-remote-enable)
-    (check "org-enable-subscribes"
-           (and (memq #'mcp-emacs-remote--tap-org-task-event
-                      mcp-emacs-org-task-event-functions) t) t)
-    (mcp-emacs-remote-disable)
-    (check "org-disable-unsubscribes"
-           (memq #'mcp-emacs-remote--tap-org-task-event
-                 mcp-emacs-org-task-event-functions)
-           nil)))
-
-(remote--kill-transcripts)
+;;; mcp-emacs-remote-test.el ends here

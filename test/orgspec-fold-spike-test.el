@@ -12,11 +12,10 @@
 ;;   emacs --batch -L elisp -l test/orgspec-fold-spike-test.el
 ;; A FAIL line in the output fails the run (CI greps for FAIL).
 
+(add-to-list 'load-path (expand-file-name "test"))
+(require 'test-helper)
 (require 'org)
 (require 'org-element)
-
-(defun check (l g w)
-  (princ (format "%s %s\n" (if (equal g w) "PASS" "FAIL") l)))
 
 ;; A delta requirement as stored in a change file: L2 headline carrying a TODO
 ;; keyword and an :ADDED: op tag, an :AREA: routing property, an :IMPL: drawer,
@@ -74,19 +73,22 @@ The system SHALL already do a thing.
     (org-set-tags nil)                  ; drop :ADDED: op tag
 
     (let ((result (buffer-string)))
-      ;; requirement re-leveled L2 -> L1, scenario L3 -> L2
-      (check "requirement is L1"
-             (and (string-match-p "^\\* Notify on account lockout" result) t) t)
-      (check "scenario is L2"
-             (and (string-match-p "^\\*\\* Lockout triggered" result) t) t)
-      ;; workflow state removed from the durable spec
-      (check "TODO stripped" (string-match-p "\\* TODO " result) nil)
-      (check "op tag dropped" (string-match-p ":ADDED:" result) nil)
-      ;; traceability kept
-      (check "IMPL drawer kept"
-             (and (string-match-p ":IMPL:" result) t) t)
-      ;; existing content untouched
-      (check "existing requirement intact"
-             (and (string-match-p "^\\* Existing requirement" result) t) t))))
+      (describe "org-paste-subtree re-leveling"
+        (it "promotes the delta requirement from L2 to L1"
+          (check-that (string-match-p "^\\* Notify on account lockout" result)))
+        (it "promotes its scenario from L3 to L2"
+          (check-that (string-match-p "^\\*\\* Lockout triggered" result))))
+
+      (describe "the fold rules"
+        (it "strips the workflow TODO keyword from the durable spec"
+          (check (string-match-p "\\* TODO " result) nil))
+        (it "drops the op tag from the durable spec"
+          (check (string-match-p ":ADDED:" result) nil))
+        (it "keeps the :IMPL: traceability drawer"
+          (check-that (string-match-p ":IMPL:" result)))
+        (it "leaves the existing spec content untouched"
+          (check-that (string-match-p "^\\* Existing requirement" result)))))))
+
+(test-helper-summary)
 
 ;;; orgspec-fold-spike-test.el ends here

@@ -553,12 +553,12 @@ subscribers on either name see every event."
 ;;
 ;; Delivery is deliberately conservative in this slice: the note is logged
 ;; and visible *immediately*, but it is only handed to the model when the
-;; current turn ends.  Nothing is aborted mid tool-call.  That is not a
-;; claim that queueing is the right interruption rule -- it is the honest
-;; behaviour for a one-shot runner that has no way to steer a turn in
-;; flight (no multi-turn stdin, no `--resume').  Deciding finish/abort/
-;; re-plan is still the open question in #39, and it needs a runner that
-;; can act on the answer.
+;; current turn ends.  Nothing is aborted mid tool-call.  That is a choice
+;; about the interruption rule, not a limit of the runner: this runner does
+;; have multi-turn stdin (`--input-format stream-json', so the process
+;; survives `finished' and serves further turns) and `--resume'.  Whether a
+;; note should finish, abort, or re-plan the turn in flight is still the
+;; open question in #39.
 
 ;;;###autoload
 (defun claude-client-add-note (text)
@@ -1050,7 +1050,14 @@ with the one being answered."
    (claude-client--turn-active
     (user-error "A turn is already running; add a note with `n' instead"))
    ((not (process-live-p claude-client--process))
-    (user-error "No live Claude process; start one with `g'"))
+    ;; A killed process leaves the session id behind, and the transcript is
+    ;; on disk, so the conversation can be picked up where it stopped --
+    ;; point at `r' rather than `g', which would start a fresh session and
+    ;; erase this log.
+    (if claude-client--session-id
+        (user-error
+         "No live Claude process; `r' resumes this conversation (`g' starts a new one)")
+      (user-error "No live Claude process; start one with `g'")))
    (t
     (let ((text (claude-client--prompt-with-notes prompt)))
       (claude-client--push-event (current-buffer)
@@ -1384,6 +1391,56 @@ turn to end)."
       (with-current-buffer buffer
         (claude-client--render)))))
 
+;;;; Help
+
+(defconst claude-client--help-buffer-name "*claude-client help*"
+  "Name of the buffer `claude-client-help' writes to.")
+
+(defconst claude-client--help
+  '(("s"       "send the next turn")
+    ("n"       "add a note (queued until the turn ends)")
+    ("i"       "interrupt the turn, keeping the session")
+    ("r"       "resume a past session here")
+    ("TAB"     "expand or collapse the tool result at point")
+    ("?"       "this help")
+    ("C-c C-q" "kill the CLI process for this buffer")
+    ("C-c C-r" "resume, by session id")
+    ("q"       "bury the conversation"))
+  "The bindings, as (KEY DESCRIPTION).
+The destructive pair is spelled `C-c'-prefixed on purpose: `k' and `g'
+stay evil motions here, see `claude-client--evil-keys'.")
+
+(defun claude-client--display-help (buffer _alist)
+  "Display help BUFFER in a plain window split from the conversation.
+Returns the new window, as a `display-buffer' action function must.
+Mirrors `agent-session-overview--display-help', and for the same reason:
+under a popup framework `q' in the help window would otherwise tear down
+the conversation's popup along with the help."
+  (let* ((base (or (get-buffer-window (current-buffer))
+                   (selected-window)))
+         (window (split-window base nil 'below)))
+    (set-window-buffer window buffer)
+    window))
+
+;;;###autoload
+(defun claude-client-help ()
+  "Describe what you can do from a Claude conversation buffer."
+  (interactive)
+  (let ((display-buffer-alist
+         (cons `(,(regexp-quote claude-client--help-buffer-name)
+                 (claude-client--display-help))
+               display-buffer-alist)))
+    (with-help-window claude-client--help-buffer-name
+      (princ "Claude conversation\n\n")
+      (dolist (binding claude-client--help)
+        (princ (format "  %-8s %s\n" (car binding) (cadr binding))))
+      (princ "\nOne process per conversation, kept alive across turns, so `s'\n")
+      (princ "continues the same session with its context.  If the process is\n")
+      (princ "gone, `r' picks the session up where it stopped; `g' would start\n")
+      (princ "a new one and erase this log.\n"))
+    (when-let* ((window (get-buffer-window claude-client--help-buffer-name)))
+      (fit-window-to-buffer window))))
+
 ;;;; Major mode
 
 (defvar claude-client-mode-map
@@ -1394,6 +1451,7 @@ turn to end)."
     (define-key map (kbd "s") #'claude-client-send)
     (define-key map (kbd "r") #'claude-client-resume)
     (define-key map (kbd "i") #'claude-client-interrupt)
+    (define-key map (kbd "?") #'claude-client-help)
     (define-key map (kbd "TAB") #'claude-client-toggle-tool-result)
     map)
   "Keymap for `claude-client-mode'.
@@ -1403,18 +1461,23 @@ re-registers them.  The evil-safe `C-c'-prefixed vocabulary lives in
 `agent-backend-mode-map' and works either way.")
 
 (defconst claude-client--evil-keys
-  '(("g" . claude-client-start)
-    ("k" . claude-client-quit)
-    ("n" . claude-client-add-note)
+  '(("n" . claude-client-add-note)
     ("s" . claude-client-send)
     ("r" . claude-client-resume)
     ("i" . claude-client-interrupt)
+    ("?" . claude-client-help)
     ;; Not single-letter, but evil's motion state does claim TAB
     ;; (`evil-jump-forward'), so it needs re-registering the same way.
     ("TAB" . claude-client-toggle-tool-result))
   "The single-letter bindings to re-register with evil.
-Mirrors `claude-client-mode-map'; kept as data so both paths bind the
-same set.")
+Deliberately a subset of `claude-client-mode-map': `k' and `g' are left
+to evil.  Both are vim motions (`evil-previous-line', the `gg' prefix)
+and both had destructive commands behind them here -- `k' killed the CLI
+process and `g' erased the log and started a new session -- so moving the
+cursor up in a conversation silently ended it, and `gg' was dead because
+`g' consumed the prefix.  Under evil they stay motions; the commands are
+still reachable as `C-c C-q' and `C-c C-r' (see `agent-backend-mode-map')
+and are listed by `?'.")
 
 (declare-function evil-define-key* "evil-core"
                   (state keymap key def &rest bindings))

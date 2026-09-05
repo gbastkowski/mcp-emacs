@@ -4,3 +4,6 @@
 # Build artifacts (unrelated JS tooling may land in the repo root)
 dist/
 node_modules/
+
+# Packages and runtime state of the isolated test Emacs (bin/test-emacs.sh)
+.test-emacs/
