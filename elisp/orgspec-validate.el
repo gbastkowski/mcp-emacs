@@ -1,7 +1,7 @@
 ;;; orgspec-validate.el --- Hard-gate validator for orgspec changes  -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.10.0
+;; Version: 1.10.1
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
