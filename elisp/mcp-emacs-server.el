@@ -603,6 +603,22 @@ Returns nil for notifications, which require no response."
             (json-key-type 'symbol))
         (json-read-from-string body)))))
 
+(defun mcp-emacs-server--release-connection (process)
+  "Delete PROCESS and drop its entry from the owning server's request list.
+Cleanup for a connection held open with `:keep-alive'.  `ws-filter' only
+prunes its `requests' list on the path that deletes the process itself,
+and it leaves a kept-alive request with `ws-active' set, so a request
+whose callback never deletes the process leaks the entry forever: the
+list only grows, every later filter call scans the dead entries, and
+`ws-stop' still holds their processes.  Doing both here is what makes
+abandoning a review cost nothing."
+  (when-let* ((server (plist-get (process-plist process) :server)))
+    (setf (ws-requests server)
+          (cl-remove-if (lambda (r) (eq process (ws-process r)))
+                        (ws-requests server))))
+  (when (process-live-p process)
+    (delete-process process)))
+
 (defun mcp-emacs-server--handler (request)
   "Top-level `web-server' handler for an MCP REQUEST."
   (with-slots (process headers) request
@@ -621,12 +637,18 @@ Returns nil for notifications, which require no response."
                   (alist-get 'params rpc)
                   (alist-get 'id rpc)
                   (lambda (response)
-                    (when (process-live-p process)
-                      (let ((json (json-encode response)))
-                        (ws-response-header
-                         process 200 '("Content-Type" . "application/json"))
-                        (process-send-string process json))
-                      (delete-process process)))))
+                    ;; Answering a dead client is pointless, but releasing
+                    ;; the connection is not: the cleanup sits outside the
+                    ;; liveness check so a client that gave up waiting --
+                    ;; a timed-out MCP call, a killed CLI -- still frees
+                    ;; the socket and its request entry.
+                    (unwind-protect
+                        (when (process-live-p process)
+                          (let ((json (json-encode response)))
+                            (ws-response-header
+                             process 200 '("Content-Type" . "application/json"))
+                            (process-send-string process json)))
+                      (mcp-emacs-server--release-connection process)))))
             (throw 'close-connection :keep-alive)
           (let* ((response (mcp-emacs-server--dispatch rpc)))
             (if response
@@ -687,5 +709,15 @@ or from a launcher script via `emacsclient --eval'."
     (message "mcp-emacs server stopped")))
 
 (provide 'mcp-emacs-server)
+
+;; Optional modules that register onto `mcp-emacs-server-extra-tools' are
+;; loaded here, *after* `provide': they require this file in turn, so
+;; requiring them at the top would be circular.  Loading them at all is what
+;; makes their tools exist before a client's initialize handshake reads the
+;; tool list -- left to autoload they register only once something else
+;; happens to call into them, which for a whole session is never, and the
+;; client then never learns the tools are there.  Soft, so a checkout
+;; without orgspec still serves the core tools.
+(require 'orgspec-mcp nil t)
 
 ;;; mcp-emacs-server.el ends here

@@ -11,6 +11,8 @@
 (require 'test-helper)
 (require 'json)
 (require 'cl-lib)
+;; Before the web-server stub below: it defines its classes with `defclass'.
+(require 'eieio)
 (require 'mcp-emacs)
 ;; `mcp-emacs-server' hard-requires web-server, which is usually absent in
 ;; batch.  Satisfy the require with a stub feature before loading it; these
@@ -19,8 +21,25 @@
   (defun ws-response-header (&rest _) nil)
   (defun ws-start (&rest _) nil)
   (defun ws-stop (&rest _) nil)
+  ;; `--release-connection' prunes the owning server's request list, so the
+  ;; accessors it reaches for must exist here too.  Mirrors web-server's own
+  ;; shape: `ws-process' is the reader on a request, `ws-requests' on a
+  ;; server, and the latter has to be `setf'-able.
+  (defclass ws-server () ((requests :initarg :requests :accessor ws-requests
+                                    :initform nil)))
+  (defclass ws-request () ((process :initarg :process :accessor ws-process
+                                    :initform nil)))
   (provide 'web-server))
 (require 'mcp-emacs-server)
+
+;; The three slots `--handler' destructures.  Standing in for a real
+;; `ws-request' lets a test drive the handler end to end -- including its
+;; deferred callback -- instead of restating that callback's logic, which
+;; would pass against the very bug it is meant to catch.
+(defclass mcp-srv-test--handler-request ()
+  ((process :initarg :process)
+   (headers :initarg :headers)
+   (body    :initarg :body)))
 
 (defun mcp-srv--text (response)
   "Return the text payload of a JSON-RPC RESPONSE object built by the server."
@@ -124,6 +143,96 @@
       (it "round-trips through `json-encode' without error"
         (check-that (stringp encoded))))))
 
+;;;; Releasing a kept-alive connection
+;; A deferred request holds its socket open and stays in web-server's
+;; `requests' list, and `ws-filter' only prunes that list on the path that
+;; deletes the process itself.  So the deferred callback owns both halves of
+;; the cleanup, and it has to do them even when the client is already gone --
+;; a timed-out MCP call or a killed CLI used to leave the socket in CLOSED and
+;; the dead request in the list forever, where every later filter call
+;; rescanned it and `ws-stop' still held its process.
+
+(describe "mcp-emacs-server--release-connection with a live client"
+  (let* ((proc (start-process "release-live" nil "sleep" "30"))
+         (request (make-instance 'ws-request :process proc))
+         (server (make-instance 'ws-server :requests (list request))))
+    (set-process-plist proc (list :server server))
+    (mcp-emacs-server--release-connection proc)
+    (it "deletes the connection process"
+      (check (process-live-p proc) nil))
+    (it "drops the request from the server's list"
+      (check (ws-requests server) nil))))
+
+(describe "mcp-emacs-server--release-connection with a client already gone"
+  (let* ((proc (start-process "release-dead" nil "true"))
+         (request (make-instance 'ws-request :process proc))
+         (server (make-instance 'ws-server :requests (list request))))
+    (set-process-plist proc (list :server server))
+    (delete-process proc)
+    (mcp-emacs-server--release-connection proc)
+    (it "still drops the request, so the list cannot grow without bound"
+      (check (ws-requests server) nil))))
+
+(describe "mcp-emacs-server--release-connection with other requests pending"
+  (let* ((proc (start-process "release-mine" nil "sleep" "30"))
+         (other (start-process "release-other" nil "sleep" "30"))
+         (mine (make-instance 'ws-request :process proc))
+         (theirs (make-instance 'ws-request :process other))
+         (server (make-instance 'ws-server :requests (list mine theirs))))
+    (set-process-plist proc (list :server server))
+    (mcp-emacs-server--release-connection proc)
+    (it "leaves a concurrent request in the list"
+      (check (ws-requests server) (list theirs)))
+    (it "leaves the concurrent request's process alone"
+      (check-that (process-live-p other)))
+    (delete-process other)))
+
+(describe "mcp-emacs-server--release-connection on a process with no server"
+  ;; Nothing registers a `:server' on a process the tests construct by hand,
+  ;; and a plist without one must not turn cleanup into an error.
+  (let ((proc (start-process "release-orphan" nil "sleep" "30")))
+    (it "returns without signalling"
+      (check (condition-case err
+                 (progn (mcp-emacs-server--release-connection proc) 'no-error)
+               (error (error-message-string err)))
+             'no-error))
+    (it "still deletes the process"
+      (check (process-live-p proc) nil))))
+
+(describe "the handler's deferred callback when the client has gone away"
+  ;; The regression, driven through `--handler' itself rather than through a
+  ;; lambda that restates it: the cleanup used to sit inside the liveness
+  ;; check, so a client that gave up waiting left its socket and its request
+  ;; entry behind.  Asserting on a copy of the handler's logic would pass
+  ;; against the buggy handler, which is the whole failure mode this guards.
+  (let* ((proc (start-process "deferred-dead" nil "sleep" "30"))
+         (request (make-instance 'ws-request :process proc))
+         (server (make-instance 'ws-server :requests (list request)))
+         (tool (list :name "fake_async_dead"
+                     :async-handler
+                     (lambda (_args done)
+                       ;; The client vanishes while the human is deciding.
+                       (delete-process proc)
+                       (funcall done "Status: rejected"))))
+         (mcp-emacs-server-extra-tools (list tool))
+         (body (json-encode
+                (list (cons "jsonrpc" "2.0") (cons "id" 7)
+                      (cons "method" "tools/call")
+                      (cons "params"
+                            (list (cons "name" "fake_async_dead")
+                                  (cons "arguments" (list (cons "path" "/tmp/x")))))))))
+    (set-process-plist proc (list :server server))
+    (let ((kept (catch 'close-connection
+                  (mcp-emacs-server--handler
+                   (make-instance 'mcp-srv-test--handler-request
+                                  :process proc
+                                  :headers (list (cons :POST "/mcp"))
+                                  :body body)))))
+      (it "still defers, since the tool is async"
+        (check kept :keep-alive)))
+    (it "releases the request entry even though the client died first"
+      (check (ws-requests server) nil))))
+
 (describe "async handler arguments"
   (let* ((seen nil)
          (tool (list :name "fake_async3"
@@ -146,8 +255,8 @@
 ;; as proper characters instead of raw bytes that prompt for a coding
 ;; system when written into a buffer.
 
-(require (quote eieio))
-(defclass mcp-srv-test--request () ((body :initarg :body)))
+(defclass mcp-srv-test--request ()
+  ((body :initarg :body)))
 
 (describe "mcp-emacs-server--parse-body"
   ;; A UTF-8 em dash (U+2014) inside the raw body decodes to one character.
