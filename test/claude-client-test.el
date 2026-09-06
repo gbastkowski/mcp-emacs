@@ -1834,6 +1834,42 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
             (check (progn (claude-client--setup-evil) :no-error) :no-error)))
       (kill-buffer buf))))
 
+;; Issue #71: `?' used to split unconditionally, so each press stacked
+;; another window onto the one help buffer and squeezed the conversation out.
+(describe "claude-client-help"
+  (let ((buf (get-buffer-create "*claude-client:help-test:1*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf (claude-client-mode))
+          (delete-other-windows)
+          (switch-to-buffer buf)
+          ;; Counted before the help exists, so the toggle is asserted to
+          ;; restore this layout rather than merely to change it.
+          (let ((base (length (window-list))))
+            (claude-client-help)
+            (it "shows the help on the first press"
+              (check-that (window-live-p
+                           (get-buffer-window claude-client--help-buffer-name))))
+            (it "splits rather than replacing, leaving the conversation up"
+              (check-that (window-live-p (get-buffer-window buf))))
+            (it "shows the help in exactly one window"
+              (check (length (get-buffer-window-list
+                              claude-client--help-buffer-name nil t))
+                     1))
+            ;; A second press closes it instead of splitting again -- the
+            ;; stacking this issue was about.
+            (claude-client-help)
+            (it "closes the help on a second press, so `?' toggles"
+              (check (get-buffer-window claude-client--help-buffer-name) nil))
+            (it "takes its split back, restoring the original layout"
+              (check (length (window-list)) base))
+            (it "leaves the conversation standing"
+              (check-that (window-live-p (get-buffer-window buf))))))
+      (when (get-buffer claude-client--help-buffer-name)
+        (kill-buffer claude-client--help-buffer-name))
+      (kill-buffer buf)
+      (delete-other-windows))))
+
 (test-helper-summary)
 
 ;;; claude-client-test.el ends here

@@ -1402,7 +1402,7 @@ turn to end)."
     ("i"       "interrupt the turn, keeping the session")
     ("r"       "resume a past session here")
     ("TAB"     "expand or collapse the tool result at point")
-    ("?"       "this help")
+    ("?"       "toggle this help")
     ("C-c C-q" "kill the CLI process for this buffer")
     ("C-c C-r" "resume, by session id")
     ("q"       "bury the conversation"))
@@ -1412,34 +1412,52 @@ stay evil motions here, see `claude-client--evil-keys'.")
 
 (defun claude-client--display-help (buffer _alist)
   "Display help BUFFER in a plain window split from the conversation.
-Returns the new window, as a `display-buffer' action function must.
+Returns the window, as a `display-buffer' action function must.
 Mirrors `agent-session-overview--display-help', and for the same reason:
 under a popup framework `q' in the help window would otherwise tear down
-the conversation's popup along with the help."
-  (let* ((base (or (get-buffer-window (current-buffer))
-                   (selected-window)))
-         (window (split-window base nil 'below)))
-    (set-window-buffer window buffer)
-    window))
+the conversation's popup along with the help.
+
+An existing window already showing BUFFER is reused rather than split
+from again, so repeated `?' cannot stack windows onto the same buffer
+and squeeze the conversation out."
+  (or (get-buffer-window buffer)
+      (let* ((base (or (get-buffer-window (current-buffer))
+                       (selected-window)))
+             (window (split-window base nil 'below)))
+        (set-window-buffer window buffer)
+        window)))
 
 ;;;###autoload
 (defun claude-client-help ()
-  "Describe what you can do from a Claude conversation buffer."
+  "Toggle the help describing what you can do from this conversation.
+Showing it again when it is already up closes it: `?' is how the help is
+dismissed as well as summoned, so reading the bindings never leaves a
+window behind to clean up by hand."
   (interactive)
-  (let ((display-buffer-alist
-         (cons `(,(regexp-quote claude-client--help-buffer-name)
-                 (claude-client--display-help))
-               display-buffer-alist)))
-    (with-help-window claude-client--help-buffer-name
-      (princ "Claude conversation\n\n")
-      (dolist (binding claude-client--help)
-        (princ (format "  %-8s %s\n" (car binding) (cadr binding))))
-      (princ "\nOne process per conversation, kept alive across turns, so `s'\n")
-      (princ "continues the same session with its context.  If the process is\n")
-      (princ "gone, `r' picks the session up where it stopped; `g' would start\n")
-      (princ "a new one and erase this log.\n"))
-    (when-let* ((window (get-buffer-window claude-client--help-buffer-name)))
-      (fit-window-to-buffer window))))
+  (if-let* ((window (get-buffer-window claude-client--help-buffer-name)))
+      ;; Delete the window rather than `quit-window': the help window is one
+      ;; this command split off itself, so closing the help means taking the
+      ;; split back.  `quit-window' would only bury the buffer and leave the
+      ;; window showing whatever was there before, which is the same window
+      ;; leak from the other side.  `ignore-errors' covers the sole-window
+      ;; frame, where there is no split to undo.
+      (progn (unless (ignore-errors (delete-window window) t)
+               (quit-window nil window))
+             (bury-buffer claude-client--help-buffer-name))
+    (let ((display-buffer-alist
+           (cons `(,(regexp-quote claude-client--help-buffer-name)
+                   (claude-client--display-help))
+                 display-buffer-alist)))
+      (with-help-window claude-client--help-buffer-name
+        (princ "Claude conversation\n\n")
+        (dolist (binding claude-client--help)
+          (princ (format "  %-8s %s\n" (car binding) (cadr binding))))
+        (princ "\nOne process per conversation, kept alive across turns, so `s'\n")
+        (princ "continues the same session with its context.  If the process is\n")
+        (princ "gone, `r' picks the session up where it stopped; `g' would start\n")
+        (princ "a new one and erase this log.\n"))
+      (when-let* ((window (get-buffer-window claude-client--help-buffer-name)))
+        (fit-window-to-buffer window)))))
 
 ;;;; Major mode
 
@@ -1515,4 +1533,3 @@ inherited and the buffer-local `agent-backend--instance' holds a fresh
               (make-instance 'claude-client-backend
                              :buffer (current-buffer))))
 (provide 'claude-client)
-

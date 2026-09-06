@@ -283,7 +283,7 @@ keeps the binding where the muscle memory expects it."
     ("k"   "quit it (asks first)")
     ("i"   "interrupt its turn")
     ("g"   "refresh")
-    ("?"   "this help")
+    ("?"   "toggle this help")
     ("q"   "bury the overview"))
   "The bindings, as (KEY DESCRIPTION).
 One list drives the header-line hint, the `?' buffer, and the keymap, so
@@ -318,39 +318,53 @@ window, so `q' is the plain `quit-window' and only the help closes.
 The split comes from the overview's window when it is on screen, so the
 help is shown beside the list rather than replacing it; with no such
 window, the selected one is split instead."
-  (let* ((base (or (get-buffer-window agent-session-overview-buffer-name)
-                   (selected-window)))
-         (window (split-window base nil 'below)))
-    (set-window-buffer window buffer)
-    window))
+  (or (get-buffer-window buffer)
+      (let* ((base (or (get-buffer-window agent-session-overview-buffer-name)
+                       (selected-window)))
+             (window (split-window base nil 'below)))
+        (set-window-buffer window buffer)
+        window)))
 
 (defun agent-session-overview-help ()
-  "Describe what you can do from the overview.
-`q' in the help window returns to the session list; see
-`agent-session-overview--display-help' for why that needs arranging."
+  "Toggle the help describing what you can do from the overview.
+Showing it again when it is already up closes it, so `?' both summons
+and dismisses the bindings.  `q' in the help window returns to the
+session list; see `agent-session-overview--display-help' for why that
+needs arranging."
   (interactive)
-  (let* ((entries agent-session-overview--help)
-         ;; Prepended to a local copy so this placement outranks any user
-         ;; or framework rule, the same tactic as
-         ;; `mcp-emacs-run--display-popup'.
-         (display-buffer-alist
-          (cons `(,(regexp-quote agent-session-overview--help-buffer-name)
-                  (agent-session-overview--display-help))
-                display-buffer-alist)))
-    (with-help-window agent-session-overview--help-buffer-name
-      (princ "AI session overview\n\n")
-      (princ "Every live AI session, across all backends, in one list.\n\n")
-      (dolist (binding entries)
-        (princ (format "  %-5s %s\n" (car binding) (cadr binding))))
-      (princ "\nState is only as precise as its backend allows.\n\n")
-      (princ "  claude    working / idle / finished -- it publishes turn events\n")
-      (princ "  eat       live / dead -- a terminal, with no turn events\n")
-      (princ "  opencode  live / dead -- publishes no turn-end event\n")
-      (princ "\nWorking/idle is never guessed from output activity: that would\n")
-      (princ "read a long model think as idle and a spinner as work.\n"))
-    (when-let* ((window (get-buffer-window
-                         agent-session-overview--help-buffer-name)))
-      (fit-window-to-buffer window))))
+  (if-let* ((window (get-buffer-window
+                     agent-session-overview--help-buffer-name)))
+      ;; Delete the window rather than `quit-window': the help window is one
+      ;; this command split off itself, so closing the help means taking the
+      ;; split back.  `quit-window' would only bury the buffer and leave the
+      ;; window showing whatever was there before, which is the same window
+      ;; leak from the other side.  `ignore-errors' covers the sole-window
+      ;; frame, where there is no split to undo.
+      (progn (unless (ignore-errors (delete-window window) t)
+               (quit-window nil window))
+             (bury-buffer agent-session-overview--help-buffer-name))
+    (let* ((entries agent-session-overview--help)
+           ;; Prepended to a local copy so this placement outranks any user
+           ;; or framework rule, the same tactic as
+           ;; `mcp-emacs-run--display-popup'.
+           (display-buffer-alist
+            (cons `(,(regexp-quote agent-session-overview--help-buffer-name)
+                    (agent-session-overview--display-help))
+                  display-buffer-alist)))
+      (with-help-window agent-session-overview--help-buffer-name
+        (princ "AI session overview\n\n")
+        (princ "Every live AI session, across all backends, in one list.\n\n")
+        (dolist (binding entries)
+          (princ (format "  %-5s %s\n" (car binding) (cadr binding))))
+        (princ "\nState is only as precise as its backend allows.\n\n")
+        (princ "  claude    working / idle / finished -- it publishes turn events\n")
+        (princ "  eat       live / dead -- a terminal, with no turn events\n")
+        (princ "  opencode  live / dead -- publishes no turn-end event\n")
+        (princ "\nWorking/idle is never guessed from output activity: that would\n")
+        (princ "read a long model think as idle and a spinner as work.\n"))
+      (when-let* ((window (get-buffer-window
+                           agent-session-overview--help-buffer-name)))
+        (fit-window-to-buffer window)))))
 
 (defvar agent-session-overview-mode-map
   (let ((map (make-sparse-keymap)))

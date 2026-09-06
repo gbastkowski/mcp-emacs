@@ -357,6 +357,42 @@ which is what the compiled and uncompiled paths both read."
         (kill-buffer agent-session-overview--help-buffer-name))
       (kill-buffer overview)
       (delete-other-windows))))
+;; Issue #71: `?' used to split unconditionally, so each press stacked
+;; another window onto the one help buffer and squeezed the list out.
+(describe "agent-session-overview-help repeated"
+  (let ((overview (get-buffer-create agent-session-overview-buffer-name)))
+    (unwind-protect
+        (progn
+          (delete-other-windows)
+          (switch-to-buffer overview)
+          ;; Counted before the help exists, so the toggle is asserted to
+          ;; restore this layout rather than merely to change it.
+          (let ((base (length (window-list))))
+            (agent-session-overview-help)
+            (it "shows the help on the first press"
+              (check-that (window-live-p
+                           (get-buffer-window
+                            agent-session-overview--help-buffer-name))))
+            (it "shows the help in exactly one window"
+              (check (length (get-buffer-window-list
+                              agent-session-overview--help-buffer-name nil t))
+                     1))
+            ;; A second press closes it instead of splitting again -- the
+            ;; stacking this issue was about.
+            (agent-session-overview-help)
+            (it "closes the help on a second press, so `?' toggles"
+              (check (get-buffer-window
+                      agent-session-overview--help-buffer-name)
+                     nil))
+            (it "takes its split back, restoring the original layout"
+              (check (length (window-list)) base))
+            (it "leaves the overview standing"
+              (check-that (window-live-p (get-buffer-window overview))))))
+      (when (get-buffer agent-session-overview--help-buffer-name)
+        (kill-buffer agent-session-overview--help-buffer-name))
+      (kill-buffer overview)
+      (delete-other-windows))))
+
 
 ;; The column headers keep the header-line, since only tabulated-list
 ;; aligns them with the data; the hint lives in the mode line and must
