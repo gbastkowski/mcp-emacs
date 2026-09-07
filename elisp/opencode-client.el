@@ -48,6 +48,7 @@
 (require 'plz nil t)
 (require 'agent-backend)
 (require 'agent-prompt)
+(require 'agent-permission)
 
 (declare-function plz "plz"
                   (method url &rest rest))
@@ -468,7 +469,53 @@ translated events on `agent-backend-event-functions'."
                  (when pid
                    (remhash pid (oref backend parts))
                    (opencode-client--render))))
+              ;; opencode has a real gate: it asks before the tool runs and
+              ;; waits for the reply.  Both event generations are handled --
+              ;; `permission.v2.asked' names the call in `action' and
+              ;; `resources', the older `permission.asked' nests it under
+              ;; `permission' -- so the menu appears whichever the server
+              ;; speaks.
+              ((or "permission.v2.asked" "permission.asked")
+               (opencode-client--ask-permission backend buffer data))
               (_ nil))))))))
+
+(defun opencode-client--permission-input (data)
+  "Return the tool input to show for permission event DATA.
+`resources' is the list of things the call would touch, which is the
+part a human actually judges; the older shape carries the same under
+`permission'."
+  (let ((resources (append (alist-get 'resources data) nil))
+        (legacy (alist-get 'permission data)))
+    (cond
+     (resources `((command . ,(mapconcat (lambda (r) (format "%s" r))
+                                         resources "\n"))))
+     (legacy (if (consp legacy) legacy `((command . ,(format "%s" legacy)))))
+     (t nil))))
+
+(defun opencode-client--ask-permission (backend buffer data)
+  "Raise permission event DATA from BACKEND as a decision in BUFFER.
+Answers through the shared `agent-permission' menu rather than a
+`y-or-n-p', so opencode's gate and Claude's hook look the same to the
+human.  Nothing here waits: the reply is posted from the menu's
+continuation, and opencode holds the call open until it arrives."
+  (when-let* ((request-id (alist-get 'id data)))
+    (agent-backend--publish
+     buffer (list :kind 'permission-request :id request-id))
+    (unless (member request-id (agent-permission-pending-ids))
+      (agent-permission-request
+       request-id
+       (or (alist-get 'action data) "opencode")
+       (opencode-client--permission-input data)
+       :cwd (agent-backend-project-root backend)
+       :window (get-buffer-window buffer)
+       ;; No timeout: opencode waits indefinitely for a reply, so a
+       ;; deadline here would answer `deny' on the human's behalf while
+       ;; the session was still perfectly willing to wait.
+       :resolve
+       (lambda (decision _reason)
+         (agent-backend-reply-permission
+          backend request-id
+          (if (eq decision 'allow) "allow" "deny")))))))
 
 (defun opencode-client--publish-part (buffer part)
   "Publish PART from BUFFER as a shared `:kind' event, when renderable.
@@ -818,11 +865,22 @@ the shared note path (`agent-backend-add-note')."
 
 ;;;###autoload
 (defun opencode-client-answer-permission (request-id)
-  "Prompt the user to allow or deny permission REQUEST-ID in the active session."
+  "Answer permission REQUEST-ID in the active session.
+Kept as the manual escape hatch.  A request that arrived over the stream
+has already raised its own menu, so this is for answering one by id --
+after a reconnect that missed the event, or when the menu was killed."
   (interactive (list (read-string "Permission request id: ")))
-  (agent-backend-reply-permission
-   (opencode-client--active-backend) request-id
-   (if (y-or-n-p "opencode: allow this request? ") "allow" "deny")))
+  (let ((backend (opencode-client--active-backend)))
+    (if (member request-id (agent-permission-pending-ids))
+        (message "That request is already open; answer it in its buffer")
+      (agent-permission-request
+       request-id "opencode" nil
+       :cwd (agent-backend-project-root backend)
+       :resolve
+       (lambda (decision _reason)
+         (agent-backend-reply-permission
+          backend request-id
+          (if (eq decision 'allow) "allow" "deny")))))))
 
 (defun opencode-client--reply-question (backend id request-id answer)
   "Reply ANSWER to question REQUEST-ID of session ID on BACKEND's server."

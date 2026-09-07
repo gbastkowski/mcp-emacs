@@ -113,6 +113,34 @@ Proxied MCP tools are denied by default, so the write path
 the human ever sees the ediff."
   :type '(repeat string)
   :group 'claude-client)
+(defcustom claude-client-gate-tools '("Bash")
+  "Tools whose calls a human answers in Emacs before they run.
+Each entry is a `PreToolUse' matcher -- a tool name, or a regexp over
+tool names -- installed as a hook in the session's settings.  Nil
+installs no hook at all, which is how the gate is turned off.
+
+`Bash' by default, and deliberately not `*'.  The mutating built-ins are
+already disabled outright (`claude-client-disallowed-tools'), so gating
+them would raise a menu for a call that cannot happen; gating the read
+and search tools would raise one on nearly every call, and a gate that
+is tedious gets switched off.  A shell command is the case where the
+tool name alone does not tell you whether to allow it."
+  :type '(repeat string)
+  :group 'claude-client)
+
+(defcustom claude-client-gate-script
+  (expand-file-name "bin/permission-gate.sh"
+                    (file-name-directory
+                     (directory-file-name
+                      (file-name-directory
+                       (or load-file-name buffer-file-name
+                           (locate-library "claude-client") "")))))
+  "Path to the `PreToolUse' hook script that asks Emacs for a decision.
+Resolved from this file's own location, so a checkout or a straight
+build finds its own copy rather than whatever is on PATH."
+  :type 'file
+  :group 'claude-client)
+
 
 (defcustom claude-client-deliver-notes t
   "When non-nil, hand queued notes to the model as a turn of their own.
@@ -316,14 +344,53 @@ pointing at the running server's endpoint."
                                               (url . ,url)))))))))
         file)))
 
+(declare-function mcp-emacs-server-ensure "mcp-emacs-server" ())
+(defvar mcp-emacs-server-port)
+
+(defun claude-client--gate-hooks ()
+  "Return the `hooks' settings value installing the permission gate.
+Nil when the gate is switched off or its script is missing, so a
+misconfigured path degrades to the previous behaviour rather than
+wiring every call to a hook that cannot run.
+
+The port travels in the hook's environment rather than being discovered
+by the script: this Emacs knows which port it is serving on, and a
+script left guessing would find the wrong instance whenever a test
+daemon or a worktree is also up."
+  (when (and claude-client-gate-tools
+             claude-client-gate-script
+             (file-exists-p claude-client-gate-script))
+    (let ((port (if (boundp 'mcp-emacs-server-port) mcp-emacs-server-port 8765)))
+      `((PreToolUse
+         . ,(vconcat
+             (mapcar
+              (lambda (matcher)
+                `((matcher . ,matcher)
+                  (hooks . [((type . "command")
+                             (command . ,(format "MCP_EMACS_PORT=%d %s"
+                                                 port
+                                                 (shell-quote-argument
+                                                  claude-client-gate-script))))])))
+              claude-client-gate-tools)))))))
+
 (defun claude-client--settings-file ()
-  "Write and return a settings file allowlisting the mcp-emacs tools."
-  (let ((file (make-temp-file "claude-client-settings-" nil ".json")))
+  "Write and return a settings file for the session.
+Allowlists the mcp-emacs tools, and installs the `PreToolUse' hook that
+routes gated calls to a human in Emacs.
+
+Note this file *layers* onto the user's own settings rather than
+replacing them: `--settings' adds to `.claude/settings.json' and
+`settings.local.json' instead of overriding, so the project's existing
+permission rules still apply to the session."
+  (let ((file (make-temp-file "claude-client-settings-" nil ".json"))
+        (hooks (claude-client--gate-hooks)))
     (with-temp-file file
       (insert (json-encode
-               `((permissions
-                  . ((allow . ,(vconcat claude-client-allowed-mcp-tools))
-                     (deny . [])))))))
+               (append
+                `((permissions
+                   . ((allow . ,(vconcat claude-client-allowed-mcp-tools))
+                      (deny . []))))
+                (when hooks `((hooks . ,hooks)))))))
     file))
 
 (defun claude-client--system-prompt-file ()
