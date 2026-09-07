@@ -112,8 +112,8 @@ At the time of writing the project is roughly 9,600 lines of Emacs Lisp across
 23 files in `elisp/`, plus about 6,600 lines of tests across 24 files in
 `test/`, and some 630 lines of shell in `bin/`. Every file is
 `lexical-binding: t`, every public function has a docstring, and CI
-byte-compiles everything and runs the full suite on Emacs 29.4 — 22 suites
-and around 800 assertions.
+byte-compiles everything and runs the full suite on Emacs 29.4 — currently
+22 suites and 833 assertions.
 
 The test suites are not `ert` suites, despite what the file names suggest;
 they are batch scripts with a shared `check` vocabulary. Chapter 20 explains
@@ -4947,7 +4947,7 @@ Handlers are thin adapters that format a value into text:
 # The Test Suite
 
 23 test files, roughly 6,600 lines, run on every push and pull request — 22
-suites and around 800 assertions. This chapter covers how they work, why they
+suites and 833 assertions. This chapter covers how they work, why they
 are shaped the way they are, and how to write a new one — because if you are
 going to modify this code, this is the chapter that lets you do it with
 confidence.
