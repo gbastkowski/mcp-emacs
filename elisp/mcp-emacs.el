@@ -905,6 +905,23 @@ content.  Edits the live buffer only; does not save."
 (defconst mcp-emacs-org-task-wait-poll-interval 0.2
   "Seconds between change checks while waiting, yielding to the event loop.")
 
+(defun mcp-emacs--wait-tick (seconds)
+  "Yield to the event loop for SECONDS while a tool call waits.
+
+Deliberately not `accept-process-output': tool handlers run
+synchronously from the web server's process filter (`ws-call-handler'),
+and `accept-process-output' will not re-enter the filter of the process
+it is already filtering, so it returns at once instead of waiting.  The
+enclosing poll loop then spins at 100% CPU for its whole timeout.
+
+`sit-for' yields the event loop proper, so timers, redisplay, ediff and
+other tool calls all keep running.  It also returns immediately when
+input is pending, which would bring the spin back, so fall through to
+`sleep-for' in that case: the wait is what matters here, not staying
+responsive to a keystroke we are not going to read."
+  (unless (sit-for seconds)
+    (sleep-for seconds)))
+
 (defun mcp-emacs-org-task-wait-for-change (path token timeout)
   "Wait until the session file at PATH changes past TOKEN, or TIMEOUT elapses.
 TOKEN is a baseline change token from a prior read; when nil or already
@@ -932,7 +949,7 @@ a change indication, the new token, and the current session view."
           (while (and baseline
                       (= (mcp-emacs-org-task--token) baseline)
                       (< (float-time) deadline))
-            (accept-process-output nil mcp-emacs-org-task-wait-poll-interval))
+            (mcp-emacs--wait-tick mcp-emacs-org-task-wait-poll-interval))
           (let ((changed (or (null baseline)
                              (/= (mcp-emacs-org-task--token) baseline))))
             (format "Changed: %s\n%s"
@@ -1236,8 +1253,8 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
               (let ((deadline (+ (float-time) secs)))
                 (while (and (null (car result))
                             (< (float-time) deadline))
-                  (accept-process-output
-                   nil mcp-emacs-org-task-wait-poll-interval)))
+                  (mcp-emacs--wait-tick
+                   mcp-emacs-org-task-wait-poll-interval)))
               (cond
                ((eq (car result) 'applied)
                 (format "Status: applied\n%s"
