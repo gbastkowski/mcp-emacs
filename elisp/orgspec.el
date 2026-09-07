@@ -1,7 +1,7 @@
 ;;; orgspec.el --- Org-native spec workflow (OpenSpec-inspired)  -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.11.0
+;; Version: 1.12.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
