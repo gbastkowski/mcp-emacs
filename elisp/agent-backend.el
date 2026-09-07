@@ -496,6 +496,7 @@ The backend instance lives in the buffer-local `agent-backend--instance'."
 (declare-function mcp-emacs-popup-show "mcp-emacs-run" (content &optional kind))
 (declare-function opencode-client-create-session "opencode-client" (&optional title))
 (declare-function claude-client-start "claude-client" (prompt &optional resume-id))
+(declare-function claude-client-open "claude-client" ())
 
 ;;;; Backend selection
 
@@ -533,8 +534,7 @@ opencode is not reachable under `auto'."
     (require 'claude-client nil t))
   (if (agent-backend-prefer-opencode-p)
       (opencode-client-create-session)
-    (claude-client-start
-     (read-string "Prompt: "))))
+    (claude-client-open)))
 
 (provide 'agent-backend)
 ;;; agent-backend.el ends here

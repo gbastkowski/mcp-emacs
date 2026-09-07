@@ -60,6 +60,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'agent-backend)
+(require 'agent-prompt)
 
 ;; Soft dependency: prose is fontified as markdown when `markdown-mode' is
 ;; installed, and rendered plain when it is not (see
@@ -1036,6 +1037,23 @@ instead when the point is to redirect rather than to stop."
   (claude-client--send-interrupt claude-client--process))
 
 ;;;###autoload
+(defun claude-client-send-prompt ()
+  "Compose the next turn of this conversation and send it.
+The `s' binding.  Text is written in a composition buffer split from
+this conversation's window; `C-c C-c' there sends it."
+  (interactive)
+  (unless (derived-mode-p 'claude-client-mode)
+    (user-error "Not in a Claude conversation buffer"))
+  (when claude-client--turn-active
+    (user-error "A turn is already running; add a note with `n' instead"))
+  (let ((conversation (current-buffer)))
+    (agent-prompt-read
+     (lambda (text)
+       (when (buffer-live-p conversation)
+         (with-current-buffer conversation (claude-client-send text))))
+     nil (buffer-name conversation) (selected-window))))
+
+;;;###autoload
 (defun claude-client-send (prompt)
   "Send PROMPT as the next turn of this conversation.
 Reuses the running CLI process, so the model keeps the session and its
@@ -1067,6 +1085,28 @@ with the one being answered."
       (claude-client--send-turn claude-client--process text)))))
 
 ;;;; Entry point
+
+;;;###autoload
+(defun claude-client-open ()
+  "Open a Claude conversation and compose its first prompt.
+The conversation buffer is created and displayed first, with no process
+yet, so the prompt can be composed in a split of the window it will
+answer in.  Sending starts the CLI; aborting leaves an empty
+conversation buffer, which `g' will reuse.
+
+Called from inside a conversation buffer -- the `g' binding -- this
+restarts that conversation in place, exactly as `claude-client-start'
+does, so the composed prompt replaces the existing log."
+  (interactive)
+  (let* ((buffer (if (derived-mode-p 'claude-client-mode)
+                     (current-buffer)
+                   (claude-client--new-buffer)))
+         (window (claude-client--display buffer)))
+    (agent-prompt-read
+     (lambda (text)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer (claude-client-start text))))
+     nil (buffer-name buffer) window)))
 
 ;;;###autoload
 (defun claude-client-start (prompt &optional resume-id)
@@ -1155,9 +1195,15 @@ either runner can be resumed in this one."
            (pick (completing-read "Resume session: " alist nil t))
            (file (cdr (assoc pick alist))))
       (when file
-        (claude-client-start
-         (read-string "Prompt: ")
-         (mcp-emacs-run-resume--session-id file))))))
+        (let* ((session (mcp-emacs-run-resume--session-id file))
+               (buffer (claude-client--new-buffer))
+               (window (claude-client--display buffer)))
+          (agent-prompt-read
+           (lambda (text)
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (claude-client-start text session))))
+           nil (buffer-name buffer) window))))))
 
 (defun claude-client--label (buffer)
   "Return a `completing-read' label for conversation BUFFER.
@@ -1228,7 +1274,7 @@ on a frame you are not looking at is worse than surprising."
   (let* ((bufs (claude-client--project-buffers (claude-client--project-root)))
          (buf (claude-client--pick bufs "Toggle conversation: ")))
     (cond
-     ((null buf) (call-interactively #'claude-client-start))
+     ((null buf) (call-interactively #'claude-client-open))
      ;; This frame: hide it.
      ((get-buffer-window buf) (claude-client--hide-window (get-buffer-window buf)))
      ;; Another frame only: raise that frame and select the window there.
@@ -1463,10 +1509,10 @@ window behind to clean up by hand."
 
 (defvar claude-client-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "g") #'claude-client-start)
+    (define-key map (kbd "g") #'claude-client-open)
     (define-key map (kbd "k") #'claude-client-quit)
     (define-key map (kbd "n") #'claude-client-add-note)
-    (define-key map (kbd "s") #'claude-client-send)
+    (define-key map (kbd "s") #'claude-client-send-prompt)
     (define-key map (kbd "r") #'claude-client-resume)
     (define-key map (kbd "i") #'claude-client-interrupt)
     (define-key map (kbd "?") #'claude-client-help)
@@ -1480,7 +1526,7 @@ re-registers them.  The evil-safe `C-c'-prefixed vocabulary lives in
 
 (defconst claude-client--evil-keys
   '(("n" . claude-client-add-note)
-    ("s" . claude-client-send)
+    ("s" . claude-client-send-prompt)
     ("r" . claude-client-resume)
     ("i" . claude-client-interrupt)
     ("?" . claude-client-help)

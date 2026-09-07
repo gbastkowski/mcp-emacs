@@ -47,6 +47,7 @@
 (require 'subr-x)
 (require 'plz nil t)
 (require 'agent-backend)
+(require 'agent-prompt)
 
 (declare-function plz "plz"
                   (method url &rest rest))
@@ -780,6 +781,19 @@ current project's server host/port."
                        :port (oref server port))))))
 
 ;;;###autoload
+(defun opencode-client-compose (&optional steer)
+  "Compose a prompt for the active session and send it.
+With prefix arg STEER, deliver it as a steering message mid-turn."
+  (interactive "P")
+  (let ((conversation (current-buffer)))
+    (agent-prompt-read
+     (lambda (text)
+       (when (buffer-live-p conversation)
+         (with-current-buffer conversation
+           (opencode-client-send-prompt text steer))))
+     nil (buffer-name conversation) (selected-window))))
+
+;;;###autoload
 (defun opencode-client-send-prompt (text &optional steer)
   "Send TEXT as a prompt to the active session.
 With prefix arg STEER, deliver it as a steering message mid-turn --
@@ -827,7 +841,7 @@ the shared note path (`agent-backend-add-note')."
 
 (defvar opencode-client-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-c") #'opencode-client-send-prompt)
+    (define-key map (kbd "C-c C-c") #'opencode-client-compose)
     (define-key map (kbd "C-c C-k") #'opencode-client-interrupt)
     (define-key map (kbd "g")       #'opencode-client-send-prompt)
     map)

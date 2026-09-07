@@ -1673,7 +1673,7 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
     (unwind-protect
         (claude-test--with-stubs
             (list (cons 'claude-client--project-root (lambda () "/tmp/proj-a/"))
-                  (cons 'claude-client-start (lambda (&rest _) (interactive) (setq started t)))
+                  (cons 'claude-client-open (lambda (&rest _) (interactive) (setq started t)))
                   (cons 'claude-client--display (lambda (b) (setq shown b)))
                   (cons 'delete-window (lambda (&optional w) (setq deleted (or w t)))))
           ;; Nothing yet: toggle starts a conversation.
@@ -1776,7 +1776,7 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
             (setq default-directory "/tmp/proj-b/"))
           (claude-test--with-stubs
               (list (cons 'claude-client--project-root (lambda () "/tmp/proj-a/"))
-                    (cons 'claude-client-start (lambda (&rest _) (interactive) (setq started t)))
+                    (cons 'claude-client-open (lambda (&rest _) (interactive) (setq started t)))
                     (cons 'claude-client--display #'ignore))
             (claude-client-toggle))
           (it "starts a new one rather than showing another project's conversation"
@@ -1791,9 +1791,9 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
   (let ((buf (claude-test--buffer)))
     (unwind-protect
         (with-current-buffer buf
-          (it "binds `s' to send"
+          (it "binds `s' to compose the next turn"
             (check (lookup-key claude-client-mode-map (kbd "s"))
-                   'claude-client-send))
+                   'claude-client-send-prompt))
           (it "binds `n' to add a note"
             (check (lookup-key claude-client-mode-map (kbd "n"))
                    'claude-client-add-note))

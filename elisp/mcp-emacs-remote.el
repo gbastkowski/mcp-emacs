@@ -48,6 +48,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'agent-prompt)
 (require 'json)
 (require 'mcp-emacs-run)
 (require 'mcp-emacs-ide)
@@ -87,15 +88,15 @@ launch one."
 
 ;;;###autoload
 (defun mcp-emacs-remote-prompt (&optional initial)
-  "Read a prompt from the minibuffer and send it to the Claude session.
-When a region is active, seed the minibuffer with the region text so it
-can be edited or confirmed before sending (INITIAL overrides the seed).
+  "Compose a prompt in a buffer and send it to the Claude session.
+When a region is active, it seeds the composition buffer so it can be
+edited or confirmed before sending (INITIAL overrides the seed).
 Empty or whitespace-only input is not sent.  The prompt is auto-submitted
 to the current project's running session; no session is launched."
   (interactive
    (list (when (use-region-p)
            (buffer-substring-no-properties (region-beginning) (region-end)))))
-  (mcp-emacs-remote--send (read-string "Claude prompt: " initial)))
+  (agent-prompt-read #'mcp-emacs-remote--send initial "remote"))
 
 ;;;###autoload
 (defun mcp-emacs-remote-prompt-buffer ()
