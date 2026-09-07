@@ -16,6 +16,10 @@ The shared layer under the two conversation clients is
 [`agent-session-overview.el`](#session-overview) lists what every backend is
 doing in one buffer.
 
+Prompts are written in a composition buffer rather than the minibuffer;
+`elisp/agent-prompt.el` provides it, backend-agnostically, for every surface
+here.
+
 ## Session overview
 
 `elisp/agent-session-overview.el` lists every live AI session — across all
@@ -83,7 +87,7 @@ Conversations are per project, one buffer and one subprocess each, named
 across several. Turns are multi-turn over a single subprocess, so the session id
 and its context carry across turns.
 
-- `M-x claude-client-start` — open a conversation (prompts for the first prompt).
+- `M-x claude-client-open` — open a conversation and compose its first prompt.
 - `M-x claude-client-resume` — reopen a past session. It reads the same on-disk
   session store the terminal runner's picker uses, so a session started in
   either runner continues in the other. Only the model's context comes back —
@@ -92,6 +96,18 @@ and its context carry across turns.
 
 In the conversation buffer: `s` send, `i` interrupt, `n` add note, `r` resume,
 `g` start, `k` quit, `TAB` expand the tool result under point.
+
+**Writing a prompt.** `g` and `s` open a composition buffer rather than
+reading from the minibuffer, so a prompt can be multiline, edited, and pasted
+into. `C-c C-c` sends it, `C-c C-k` discards it, and `M-p`/`M-n` walk back
+through prompts sent this session. Under evil, `ZZ` and `ZQ` send and discard
+as they would in `git-commit`, and the buffer opens in insert state.
+
+The prompt window is a split of the conversation's own window, so several
+conversations can each have their own: below by default, or to the right when
+the conversation window is shorter than
+`agent-prompt-split-height-threshold` (20 lines) and cannot spare the rows.
+Set `agent-prompt-use-minibuffer` to restore the old `read-string` prompt.
 
 **Appearance.** The buffer separates what the harness did from what the model
 said. Structural chrome — the session banner, prompts, tool calls and their
@@ -290,8 +306,8 @@ first so only one IDE lockfile is published.
 from ordinary Emacs input and watch its tool activity as a live Org
 transcript — without reading the terminal.
 
-- **Prompt input** — `mcp-emacs-remote-prompt` reads a prompt from the
-  minibuffer (seeded from the active region when one is set) and sends it to the
+- **Prompt input** — `mcp-emacs-remote-prompt` composes a prompt in a buffer
+  (seeded from the active region when one is set) and sends it to the
   current project's running session; `mcp-emacs-remote-prompt-buffer` sends the
   whole current buffer. Both auto-submit via `mcp-emacs-run-send-prompt` and
   require a live session (they never launch one). Empty or whitespace-only input

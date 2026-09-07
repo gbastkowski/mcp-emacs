@@ -31,7 +31,7 @@ Org state of the running session.
   [Quickstart](#quickstart).
 - **"I want to run the agent from inside Emacs."**
   → [docs/clients.md](docs/clients.md). Start with the terminal-free
-  `claude-client` (`M-x claude-client-start`) or `opencode-client`.
+  `claude-client` (`M-x claude-client-open`) or `opencode-client`.
 - **"I want the agent's edits gated behind a diff I approve."**
   → Either use `apply_diff` (works everywhere), or turn on the
   [IDE integration](docs/clients.md#ide-integration-native-edit-diff-review) to
