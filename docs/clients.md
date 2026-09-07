@@ -148,10 +148,15 @@ Lines that are a bare field label with no value — the dozen `labels:` /
 `assignees:` rows `gh issue view` answers with — are dropped outright. Set the
 option to `nil` to show every line.
 
-**Notes.** A note written mid-turn abandons that turn immediately and is
-delivered as the next one (`claude-client-note-interrupts`, on by default); with
-it off, notes queue instead. `claude-client-max-pending-notes` (default 20)
-bounds the queue, dropping oldest first.
+**Input.** `s` is the only input key. Idle, it sends what you wrote as the
+next turn; mid-turn, it queues it to be carried into the next one. It never
+interrupts — `i` does that, and `i` then `s` is how you redirect the model
+now, because a note drained after an interrupt carries a re-plan preamble
+telling the model not to resume. `s` used to be a dead end mid-turn, erroring
+to tell you to press `n`; `n` is gone, and so is the `claude-client-note-interrupts`
+option that silently decided whether typing abandoned the model's work.
+`claude-client-max-pending-notes` (default 20) bounds the queue, dropping
+oldest first.
 
 **Permission gate.** A tool call the session is not allowed to make is a
 question rather than a dead end: it raises a small buffer naming the tool and
@@ -472,12 +477,18 @@ silence rather than breaking a reader. This is what lets the remote Org
 transcript record both opencode and Claude sessions through one subscriber.
 
 **The mode.** `agent-backend-mode` derives from `special-mode` and binds the
-common actions in a shared keymap (`C-c C-s` send, `C-c C-i` interrupt, `C-c
-C-n` add-note, `C-c C-q` quit, `C-c C-r` resume); each backend's major mode
-derives from it and layers its own keys on top.
+common actions in a shared keymap (`C-c C-s` input, `C-c C-i` interrupt, `C-c
+C-q` quit, `C-c C-r` resume); each backend's major mode derives from it and
+layers its own keys on top. There is deliberately no note key: `C-c C-s` takes
+whatever you have to say whether or not a turn is running.
 
-**Note policy.** `agent-backend-note-policy` names how a human note written
-mid-turn reaches the model. opencode notes ARE steering prompts (`:steer`),
-delivered immediately via its HTTP API; Claude keeps its native
-interrupt-or-queue machinery (`:interrupt` when `claude-client-note-interrupts`
-is on, `:queue` when off).
+**Input and notes.** `agent-backend-input` is the one verb behind the input
+key: it sends when the conversation is idle and carries the text into the next
+turn when one is in flight, never interrupting. The default routes to
+`agent-backend-send`, so a backend whose service accepts mid-turn text needs no
+method of its own — opencode posts with `queue` delivery and inherits it.
+
+`agent-backend-note-policy` names how a human note reaches the model.
+opencode notes ARE steering prompts (`:steer`), delivered immediately via its
+HTTP API, which it can do without abandoning the turn; Claude's is always
+`:queue`.

@@ -646,7 +646,11 @@ Maps opencode part types onto the shared vocabulary: a text part becomes
         (opencode-client--stop-stream)))))
 
 (cl-defmethod agent-backend-send ((backend opencode-client-backend) prompt)
-  "Send PROMPT to BACKEND's session as the next turn."
+  "Send PROMPT to BACKEND's session as the next turn.
+Posted with `queue' delivery, so text arriving mid-turn is run as the
+next turn rather than refused.  That is already what the input verb
+promises, so opencode needs no `agent-backend-input' method of its own
+-- the base default routes here (issue #69)."
   (let ((id (oref backend session-id)))
     (unless id (user-error "opencode: no active session"))
     (opencode-client--request

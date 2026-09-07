@@ -1,12 +1,14 @@
 * The agent-backend class defines the conversation lifecycle interface
 
 The agent-backend module MUST define an EIEIO base class with
-cl-defgeneric methods for connect, quit, send, interrupt, add-note,
-note-policy, reply-permission, reply-question, list-sessions, resume,
-seed-history, project-root, and render, and MUST provide no-op or
+cl-defgeneric methods for connect, quit, send, input, interrupt,
+add-note, note-policy, reply-permission, reply-question, list-sessions,
+resume, seed-history, project-root, and render, and MUST provide no-op or
 user-error default implementations for the optional capabilities
 (permission/question replies, history seeding, resume, sessions) so a
-backend that lacks them needs no stubs.
+backend that lacks them needs no stubs.  agent-backend-input MUST
+default to send, so only a backend that has to queue mid-turn text
+itself needs a method.
 
 ** A minimal backend compiles against the defaults
 GIVEN a backend subclass implementing only connect, send, interrupt,
@@ -48,8 +50,9 @@ THEN the subscriber runs without error
 
 agent-backend-mode MUST derive from special-mode, MUST hold the backend
 instance in a buffer-local variable, and MUST bind the common actions
-(send, interrupt, add-note, quit, resume) in a shared keymap that
-derived backend modes extend.
+(input, interrupt, quit, resume) in a shared keymap that derived
+backend modes extend.  There MUST NOT be a separate note key: the input
+key takes what the human has to say whether or not a turn is running.
 
 ** The instance is visible to subscribers
 GIVEN a buffer in a derived backend mode
@@ -59,7 +62,8 @@ THEN it is the backend object of that conversation
 ** The common keys are bound
 GIVEN a derived backend mode
 WHEN the shared keymap is inspected
-THEN send, interrupt, add-note, quit, and resume are bound
+THEN input, interrupt, quit, and resume are bound, and no note key is
+bound
 
 * Session overview buffer
 

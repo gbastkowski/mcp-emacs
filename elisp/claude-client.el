@@ -141,7 +141,6 @@ build finds its own copy rather than whatever is on PATH."
   :type 'file
   :group 'claude-client)
 
-
 (defcustom claude-client-deliver-notes t
   "When non-nil, hand queued notes to the model as a turn of their own.
 A note is always recorded immediately.  This controls whether it also
@@ -150,24 +149,9 @@ of a turn can be sent straight back as the next one, so \"add a thought
 at any time\" changes what the model does rather than only what the log
 says.  Set to nil to keep notes as a record the human relays by hand.
 
-Delivery timing is `claude-client-note-interrupts'."
-  :type 'boolean
-  :group 'claude-client)
-
-(defcustom claude-client-note-interrupts t
-  "When non-nil, a note written mid-turn abandons that turn immediately.
-This is the answer to the interruption question in #39.
-
-With this on, writing a note is how the human redirects the model *now*:
-the in-flight turn is interrupted, and the note is re-sent as the next
-turn along with the fact that the previous one was cut short, so the
-model re-plans rather than resuming.  The partial work of the abandoned
-turn is lost -- that is the price of acting immediately, and it is the
-whole point of \"add a thought at any time\".
-
-With it off, notes queue and are delivered when the turn ends on its
-own; nothing is ever abandoned.  `claude-client-interrupt' is still
-available either way for a deliberate stop."
+Notes are always queued and delivered when the turn ends; nothing in
+flight is ever abandoned to make room for one.  Stopping a turn is
+`claude-client-interrupt', asked for explicitly (issue #69)."
   :type 'boolean
   :group 'claude-client)
 
@@ -634,11 +618,10 @@ subscribers on either name see every event."
 The note is recorded at once, so it is part of the shared record the
 moment it is written and every subscriber sees it.
 
-What happens next depends on `claude-client-note-interrupts'.  By
-default a note written while a turn is running abandons that turn and
-is delivered immediately, so the model re-plans around it; otherwise it
-waits until the turn ends on its own.  With nothing running it is
-delivered straight away either way."
+A note written while a turn is running waits until that turn ends on
+its own; with nothing running it is delivered straight away.  Nothing in
+flight is ever abandoned to make room for a note -- stopping a turn is
+`claude-client-interrupt', asked for explicitly (issue #69)."
   (interactive "sNote: ")
   (unless (derived-mode-p 'claude-client-mode)
     (user-error "Not in a Claude conversation buffer"))
@@ -663,30 +646,14 @@ delivered straight away either way."
            (current-buffer) (list :kind 'note-dropped :text dropped)))))
     (claude-client--push-event
      (current-buffer)
-     (list :kind 'note :text note
-           ;; `pending' means "the model has not seen this yet".  When the
-           ;; note interrupts, it is about to be delivered, so it is not.
-           :pending (and running (not claude-client-note-interrupts))))
-    (cond
-     ;; Redirect now: abandon the turn.  The drain happens when `result'
-     ;; arrives for the interrupted turn, which also marks the turn over --
-     ;; draining here would race that and deliver into a dying turn.
-     ;;
-     ;; `claude-client--interrupted' also serves as the backpressure guard:
-     ;; a second note arriving before the abandoned turn has finished dying
-     ;; must not fire another interrupt.  The turn is already ending and the
-     ;; note is already queued, so it rides out on the same delivery.
-     ((and running claude-client-note-interrupts
-           (not claude-client--interrupted)
-           (process-live-p claude-client--process))
-      (setq claude-client--interrupted t)
-      (claude-client--push-event (current-buffer) (list :kind 'interrupted))
-      (claude-client--send-interrupt claude-client--process))
-     ;; Nothing running: there is nothing to wait for, and the drain fires on
-     ;; `result', so a queued note would otherwise sit until some later turn
-     ;; happened to end -- or forever, if none did.
-     ((not running)
-      (claude-client--drain-notes (current-buffer))))))
+     ;; `pending' means "the model has not seen this yet", which is
+     ;; exactly the case while a turn is running.
+     (list :kind 'note :text note :pending running))
+    ;; Nothing running: there is nothing to wait for, and the drain fires
+    ;; on `result', so a queued note would otherwise sit until some later
+    ;; turn happened to end -- or forever, if none did.
+    (unless running
+      (claude-client--drain-notes (current-buffer)))))
 
 (defun claude-client--drain-notes (buffer)
   "Surface BUFFER's pending notes now that its turn has ended.
@@ -1116,6 +1083,26 @@ can decide to start one."
            (claude-client--buffers))))
 
 ;;;###autoload
+(defun claude-client-input (text)
+  "Give TEXT to this conversation, whether or not a turn is running.
+The one input verb behind `s': it sends TEXT as the next turn when the
+conversation is idle, and queues it to be carried into the next turn
+when one is in flight.  It never interrupts.
+
+`s' and `n' used to differ only mid-turn, and there `s' was a dead end
+that errored telling you to press `n' -- so the state the runner already
+knew was something the human had to know too, and get wrong first
+(issue #69).  Stopping a turn is `i', asked for explicitly; `i' then `s'
+composes the old interrupting note, since a note drained after an
+interrupt carries the re-plan preamble."
+  (interactive "sInput: ")
+  (unless (derived-mode-p 'claude-client-mode)
+    (user-error "Not in a Claude conversation buffer"))
+  (if claude-client--turn-active
+      (claude-client-add-note text)
+    (claude-client-send text)))
+
+;;;###autoload
 (defun claude-client-send-prompt (&optional pick)
   "Compose the next turn of a Claude conversation and send it.
 The `s' binding inside a conversation, and worth binding globally: run
@@ -1142,10 +1129,6 @@ this was called from seeds that buffer -- see
         ;; Nothing to continue: composing a first turn is what was meant,
         ;; the same fallback `claude-client-toggle' makes.
         (call-interactively #'claude-client-open)
-      (with-current-buffer conversation
-        (when claude-client--turn-active
-          (user-error "A turn is already running in %s; add a note with `n' instead"
-                      (buffer-name conversation))))
       ;; The prompt splits the conversation's own window, not the code
       ;; window it was called from, so the draft sits under the log it
       ;; belongs to -- and a hidden conversation is shown first, since
@@ -1155,7 +1138,10 @@ this was called from seeds that buffer -- see
         (agent-prompt-read
          (lambda (text)
            (when (buffer-live-p conversation)
-             (with-current-buffer conversation (claude-client-send text))))
+             ;; `input', not `send': a turn can start while the prompt
+             ;; buffer is open (a queued note draining, say), and the text
+             ;; should then be carried forward rather than refused.
+             (with-current-buffer conversation (claude-client-input text))))
          nil (buffer-name conversation) window source)))))
 
 ;;;###autoload
@@ -1171,7 +1157,7 @@ with the one being answered."
     (user-error "Not in a Claude conversation buffer"))
   (cond
    (claude-client--turn-active
-    (user-error "A turn is already running; add a note with `n' instead"))
+    (user-error "A turn is already running; `s' carries text into the next one"))
    ((not (process-live-p claude-client--process))
     ;; A killed process leaves the session id behind, and the transcript is
     ;; on disk, so the conversation can be picked up where it stopped --
@@ -1431,8 +1417,8 @@ turn -- so this only checks the executable is runnable."
 
 (cl-defmethod agent-backend-add-note ((backend claude-client-backend) text)
   "Add TEXT as a human note to BACKEND's conversation.
-Uses Claude's native note machinery -- the pending-notes queue, the
-interrupt-or-queue delivery policy -- unchanged."
+Uses Claude's native note machinery -- the pending-notes queue, drained
+when the turn ends -- unchanged."
   (let ((buffer (oref backend buffer)))
     (when (buffer-live-p buffer)
       (with-current-buffer buffer
@@ -1441,11 +1427,9 @@ interrupt-or-queue delivery policy -- unchanged."
 (cl-defmethod agent-backend-mention ((backend claude-client-backend) text)
   "Queue TEXT as a mention in BACKEND's conversation without sending a turn.
 Deliberately not `claude-client-add-note', which is wrong for a mention
-at both ends: mid-turn a note abandons the turn in flight
-(`claude-client-note-interrupts'), and with nothing running it drains
-*immediately* -- delivering the mention as a turn of its own.  Pointing
-at some code is neither of those; it should sit in the conversation
-until the human's next prompt carries it along.
+with nothing running: it drains *immediately*, delivering the mention as
+a turn of its own.  Pointing at some code is not that; it should sit in
+the conversation until the human's next prompt carries it along.
 
 So the text is queued and logged, and nothing is delivered.  The queue
 is `claude-client--pending-notes', whose existing drain already appends
@@ -1503,11 +1487,12 @@ not the eat terminal's, and the runner is on its way out."
              (when (buffer-live-p err) (kill-buffer err)))))))))
 
 (cl-defmethod agent-backend-note-policy ((_backend claude-client-backend))
-  "Return Claude's note delivery policy.
-`:interrupt' when `claude-client-note-interrupts' is on (a note
-abandons the turn in flight); `:queue' when off (notes wait for the
-turn to end)."
-  (if claude-client-note-interrupts :interrupt :queue))
+  "Return Claude's note delivery policy, which is always `:queue'.
+Notes wait for the turn in flight to end on its own.  This was once
+configurable (`claude-client-note-interrupts'), which meant a defcustom
+silently decided whether typing abandoned the model's work; stopping a
+turn is now only ever `claude-client-interrupt' (issue #69)."
+  :queue)
 
 ;; Claude never emits permission or question requests: its gate is the
 ;; ediff review (mcp-emacs-ide), not a stream-json request.  The base
@@ -1549,8 +1534,7 @@ turn to end)."
   "Name of the buffer `claude-client-help' writes to.")
 
 (defconst claude-client--help
-  '(("s"       "send the next turn")
-    ("n"       "add a note (queued until the turn ends)")
+  '(("s"       "say something: sends, or carries into the next turn")
     ("i"       "interrupt the turn, keeping the session")
     ("r"       "resume a past session here")
     ("TAB"     "expand or collapse the tool result at point")
@@ -1604,6 +1588,9 @@ window behind to clean up by hand."
         (princ "Claude conversation\n\n")
         (dolist (binding claude-client--help)
           (princ (format "  %-8s %s\n" (car binding) (cadr binding))))
+        (princ "\n`s' is the only input key: idle it sends, mid-turn it carries the\n")
+        (princ "text into the next turn.  It never interrupts -- `i' does that, and\n")
+        (princ "`i' then `s' is how you redirect the model now.\n")
         (princ "\nOne process per conversation, kept alive across turns, so `s'\n")
         (princ "continues the same session with its context.  If the process is\n")
         (princ "gone, `r' picks the session up where it stopped; `g' would start\n")
@@ -1617,7 +1604,6 @@ window behind to clean up by hand."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "g") #'claude-client-open)
     (define-key map (kbd "k") #'claude-client-quit)
-    (define-key map (kbd "n") #'claude-client-add-note)
     (define-key map (kbd "s") #'claude-client-send-prompt)
     (define-key map (kbd "r") #'claude-client-resume)
     (define-key map (kbd "i") #'claude-client-interrupt)
@@ -1631,8 +1617,7 @@ re-registers them.  The evil-safe `C-c'-prefixed vocabulary lives in
 `agent-backend-mode-map' and works either way.")
 
 (defconst claude-client--evil-keys
-  '(("n" . claude-client-add-note)
-    ("s" . claude-client-send-prompt)
+  '(("s" . claude-client-send-prompt)
     ("r" . claude-client-resume)
     ("i" . claude-client-interrupt)
     ("?" . claude-client-help)

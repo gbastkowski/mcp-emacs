@@ -21,10 +21,14 @@
 ;; A minimal backend implements only `agent-backend-connect',
 ;; `agent-backend-send', `agent-backend-interrupt',
 ;; `agent-backend-add-note', `agent-backend-note-policy', and
-;; `agent-backend-quit'.  Every optional capability has a default on the
-;; base class -- a no-op, nil, or, for `agent-backend-resume', a
-;; `user-error' -- so a minimal subclass compiles against the defaults
-;; without stubs.
+;; `agent-backend-quit'.  `agent-backend-input' -- the one verb behind
+;; the input key, which sends or carries forward but never interrupts --
+;; defaults to `agent-backend-send' and only needs a method where the
+;; backend has to queue mid-turn text itself.
+;;
+;; Every optional capability has a default on the base class -- a no-op,
+;; nil, or, for `agent-backend-resume', a `user-error' -- so a minimal
+;; subclass compiles against the defaults without stubs.
 
 ;;; Code:
 
@@ -81,6 +85,17 @@ When the note reaches the model is BACKEND's note policy; see the
 
 (cl-defgeneric agent-backend-note-policy (backend)
   "Return BACKEND's note delivery policy (`:steer' or `:queue').")
+
+(cl-defgeneric agent-backend-input (backend text)
+  "Give TEXT to BACKEND, whether or not a turn is running.
+The one verb for \"here is what I want to say\": it sends when the
+conversation is idle and carries the text into the next turn when one is
+in flight, and it never abandons work in progress -- that is
+`agent-backend-interrupt', asked for explicitly.
+
+Backends that can accept text mid-turn without local state (opencode
+queues server-side) need no method; the default routes to
+`agent-backend-send'.")
 
 (cl-defgeneric agent-backend-reply-permission (backend request-id decision)
   "Reply DECISION to BACKEND's permission request REQUEST-ID.
@@ -144,6 +159,12 @@ backend, so a backend that can do neither says so rather than pretending
 \(issue #56).  CALLBACK is called with the answer text, on success only.")
 
 ;;;; Default implementations
+
+(cl-defmethod agent-backend-input ((backend agent-backend) text)
+  "Default input: hand TEXT to BACKEND as an ordinary turn.
+Correct for any backend whose service accepts text while a turn runs, so
+only backends that have to queue locally override this."
+  (agent-backend-send backend text))
 
 (cl-defmethod agent-backend-note-policy ((backend agent-backend))
   "Return BACKEND's note delivery policy."
@@ -452,11 +473,25 @@ none to take it from."
   (agent-backend-interrupt agent-backend--instance))
 
 (defun agent-backend-add-note-command (text)
-  "Add TEXT as a human note to this buffer's conversation."
+  "Add TEXT as a human note to this buffer's conversation.
+Kept as a command for callers that mean a note specifically -- the MCP
+surface and mentions -- while the key belongs to
+`agent-backend-input-command' (issue #69)."
   (interactive "sNote: ")
   (unless agent-backend--instance
     (user-error "No agent backend in this buffer"))
   (agent-backend-add-note agent-backend--instance text))
+
+(defun agent-backend-input-command (text)
+  "Give TEXT to this buffer's conversation, running or not.
+The one input verb: `agent-backend-input' sends it when the conversation
+is idle and carries it into the next turn when one is in flight.  It
+never interrupts; `agent-backend-interrupt-command' does that when it is
+what you mean."
+  (interactive "sInput: ")
+  (unless agent-backend--instance
+    (user-error "No agent backend in this buffer"))
+  (agent-backend-input agent-backend--instance text))
 
 (defun agent-backend-quit-command ()
   "Shut down this buffer's backend."
@@ -474,15 +509,19 @@ none to take it from."
 
 (defvar agent-backend-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c C-s") #'agent-backend-send-command)
+    (define-key map (kbd "C-c C-s") #'agent-backend-input-command)
     (define-key map (kbd "C-c C-i") #'agent-backend-interrupt-command)
-    (define-key map (kbd "C-c C-n") #'agent-backend-add-note-command)
     (define-key map (kbd "C-c C-q") #'agent-backend-quit-command)
     (define-key map (kbd "C-c C-r") #'agent-backend-resume-command)
     map)
   "Keymap for `agent-backend-mode'.
 The shared, C-c-prefixed vocabulary; per-backend extra keys stay in the
-derived mode maps (claude-client-mode-map, opencode-client-mode-map).")
+derived mode maps (claude-client-mode-map, opencode-client-mode-map).
+
+There is deliberately no note key: `C-c C-s' takes whatever you have to
+say whether or not a turn is running, so a second key that differed only
+mid-turn was a distinction to make rather than a choice worth having
+(issue #69).")
 
 (define-derived-mode agent-backend-mode special-mode "agent"
   "Major mode for a conversation buffer driven by an `agent-backend'.

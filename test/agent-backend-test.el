@@ -268,6 +268,30 @@
       (set-window-buffer (selected-window) (get-buffer-create "*scratch*"))
       (kill-buffer conv))))
 
+;; `agent-backend-input' is the one verb behind the input key: it sends
+;; when idle and carries forward when a turn is running, and it never
+;; interrupts (issue #69).
+(describe "agent-backend-input"
+  (let ((b (agent-backend))
+        (sent nil))
+    (cl-letf (((symbol-function 'agent-backend-send)
+               (lambda (_backend text) (setq sent text))))
+      (agent-backend-input b "say this")
+      (it "defaults to an ordinary turn, so a minimal backend needs no method"
+        (check sent "say this")))))
+
+(describe "agent-backend-mode-map input key"
+  (it "binds C-c C-s to the input command"
+    (check (lookup-key agent-backend-mode-map (kbd "C-c C-s"))
+           'agent-backend-input-command))
+  ;; A second key that differed only mid-turn was a distinction to make
+  ;; rather than a choice worth having.
+  (it "leaves C-c C-n unbound, since the input key takes notes too"
+    (check (lookup-key agent-backend-mode-map (kbd "C-c C-n")) nil))
+  (it "keeps the interrupt key, which is now the only way to stop a turn"
+    (check (lookup-key agent-backend-mode-map (kbd "C-c C-i"))
+           'agent-backend-interrupt-command)))
+
 (test-helper-summary)
 
 ;;; agent-backend-test.el ends here

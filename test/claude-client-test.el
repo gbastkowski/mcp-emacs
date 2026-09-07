@@ -913,13 +913,12 @@ stays alive after `result', so process liveness cannot stand in for it."
   (let ((buf (claude-test--buffer)))
     (unwind-protect
         (with-current-buffer buf
-          (let ((claude-client-note-interrupts nil))
-            (claude-test--with-running-turn
-             (claude-client-add-note "rendered note")))
+          (claude-test--with-running-turn
+           (claude-client-add-note "rendered note"))
           (it "shows the note in the conversation buffer"
             (check-that (string-match-p "> rendered note" (claude-test--text buf))))
-          ;; `pending' means the model has not seen it.  Only true when the
-          ;; note waits; an interrupting note is about to be delivered.
+          ;; `pending' means the model has not seen it, which is every note
+          ;; written while a turn runs (issue #69).
           (it "marks a waiting note pending, since the model has not seen it"
             (check (plist-get (car claude-client--events) :pending) t)))
       (kill-buffer buf))))
@@ -1065,8 +1064,8 @@ stays alive after `result', so process liveness cannot stand in for it."
                      (lambda (_p s) (setq sent s))))
             (setq claude-client--process 'fake)
             (setq-local claude-client-deliver-notes nil)
-            (let ((claude-client-note-interrupts nil))
-              (claude-test--with-running-turn (claude-client-add-note "quiet note")))
+            (claude-test--with-running-turn
+             (claude-client-add-note "quiet note"))
             (setq claude-client--turn-active t)
             (claude-test--feed buf (concat claude-test--result "\n"))
             (it "sends nothing when delivery is switched off"
@@ -1325,8 +1324,11 @@ stays alive after `result', so process liveness cannot stand in for it."
                    t)))
       (kill-buffer buf))))
 
-;; A note written mid-turn interrupts it, rather than waiting.
-(describe "claude-client-note-interrupts"
+;; A note written mid-turn always waits for that turn to end.  This used
+;; to be configurable (`claude-client-note-interrupts'), which meant a
+;; defcustom silently decided whether typing abandoned the model's work
+;; (issue #69).
+(describe "a note written mid-turn"
   (let ((buf (claude-test--buffer))
         (sent nil))
     (unwind-protect
@@ -1335,39 +1337,22 @@ stays alive after `result', so process liveness cannot stand in for it."
                     ((symbol-function 'process-send-string)
                      (lambda (_p s) (setq sent s))))
             (setq claude-client--process 'fake)
-            (let ((claude-client-note-interrupts t))
-              (claude-test--with-running-turn
-               (claude-client-add-note "stop, do the other thing")))
-            (it "abandons the running turn instead of making the note wait"
-              (check-that (and sent (string-match-p "interrupt" sent))))
-            (it "logs the interruption"
-              (check-that (memq 'interrupted (claude-test--kinds buf))))
-            ;; Still queued: it is delivered when `result' arrives for the
-            ;; turn being abandoned, not written into a dying turn.
-            (it "keeps the note queued until the abandoned turn's `result' arrives"
-              (check claude-client--pending-notes '("stop, do the other thing")))))
-      (kill-buffer buf)))
-
-  ;; Opting out restores the queueing behaviour: nothing is abandoned.
-  (let ((buf (claude-test--buffer))
-        (sent nil))
-    (unwind-protect
-        (with-current-buffer buf
-          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
-                    ((symbol-function 'process-send-string)
-                     (lambda (_p s) (setq sent s))))
-            (setq claude-client--process 'fake)
-            (let ((claude-client-note-interrupts nil))
-              (claude-test--with-running-turn (claude-client-add-note "later")))
-            (it "abandons nothing when switched off"
+            (claude-test--with-running-turn
+             (claude-client-add-note "stop, do the other thing"))
+            (it "abandons nothing, so the turn's work is not thrown away"
               (check sent nil))
-            (it "falls back to queueing the note"
-              (check claude-client--pending-notes '("later")))))
+            (it "queues the note until the turn ends on its own"
+              (check claude-client--pending-notes '("stop, do the other thing")))
+            (it "logs it as pending, since the model has not seen it yet"
+              (check-that (plist-get (car (last claude-client--events)) :pending)))
+            (it "logs no interruption"
+              (check (memq 'interrupted (claude-test--kinds buf)) nil))))
       (kill-buffer buf))))
 
-;; After an interrupt the delivered turn tells the model not to resume, so it
-;; re-plans around the note instead of carrying on with abandoned work.
-(describe "the turn delivered after an interrupt"
+;; Redirecting the model now is `i' then `s': the interrupt is explicit, and
+;; the note drained afterwards still carries the re-plan framing, so the
+;; behaviour the old interrupting note had is composed rather than lost.
+(describe "the turn delivered after an explicit interrupt"
   (let ((buf (claude-test--buffer))
         (sent nil))
     (unwind-protect
@@ -1376,9 +1361,10 @@ stays alive after `result', so process liveness cannot stand in for it."
                     ((symbol-function 'process-send-string)
                      (lambda (_p s) (setq sent s))))
             (setq claude-client--process 'fake)
-            (let ((claude-client-note-interrupts t)
-                  (claude-client-deliver-notes t))
-              (claude-test--with-running-turn (claude-client-add-note "change course")))
+            (let ((claude-client-deliver-notes t))
+              (claude-test--with-running-turn
+               (claude-client-interrupt)
+               (claude-client-add-note "change course")))
             (setq sent nil)
             ;; The interrupted turn's result arrives; the note goes out now.
             (setq claude-client--turn-active t)
@@ -1400,8 +1386,7 @@ stays alive after `result', so process liveness cannot stand in for it."
                     ((symbol-function 'process-send-string)
                      (lambda (_p s) (setq sent s))))
             (setq claude-client--process 'fake)
-            (let ((claude-client-note-interrupts nil)
-                  (claude-client-deliver-notes t))
+            (let ((claude-client-deliver-notes t))
               (claude-test--with-running-turn (claude-client-add-note "fyi")))
             (setq sent nil claude-client--turn-active t)
             (claude-test--feed buf (concat claude-test--result "\n"))
@@ -1413,11 +1398,10 @@ stays alive after `result', so process liveness cannot stand in for it."
 
 ;;;; Backpressure (issue #39)
 ;;
-;; Several notes in quick succession while the model is slow.  Once a turn is
-;; being interrupted it is already ending, so further notes ride out on the
-;; same delivery rather than firing more interrupts into a dying turn.
+;; Several notes in quick succession while the model is slow.  They all ride
+;; out on the same delivery when the turn ends; none of them touches the turn
+;; in flight (issue #69).
 
-;; Two notes during one turn interrupt it once, and both are delivered.
 (describe "several notes during one turn"
   (let ((buf (claude-test--buffer))
         (interrupts 0))
@@ -1431,15 +1415,15 @@ stays alive after `result', so process liveness cannot stand in for it."
             (setq claude-client--process 'fake claude-client--turn-active t)
             (claude-client-add-note "first")
             (claude-client-add-note "second")
-            (it "fires one interrupt, not one per note into a dying turn"
-              (check interrupts 1))
+            (it "interrupts nothing, however many notes arrive"
+              (check interrupts 0))
             (it "queues every note for the same delivery"
               (check claude-client--pending-notes '("first" "second")))
-            (it "logs a single interrupted event"
+            (it "logs no interrupted event"
               (check (length (seq-filter
                               (lambda (e) (eq (plist-get e :kind) 'interrupted))
                               claude-client--events))
-                     1))))
+                     0))))
       (kill-buffer buf)))
 
   ;; An exact repeat says nothing new, so it is coalesced rather than sent twice.
@@ -1794,9 +1778,10 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
           (it "binds `s' to compose the next turn"
             (check (lookup-key claude-client-mode-map (kbd "s"))
                    'claude-client-send-prompt))
-          (it "binds `n' to add a note"
-            (check (lookup-key claude-client-mode-map (kbd "n"))
-                   'claude-client-add-note))
+          ;; `n' is gone: it differed from `s' only mid-turn, and there `s'
+          ;; was a dead end that errored telling you to press `n' (issue #69).
+          (it "leaves `n' unbound, since `s' now takes input either way"
+            (check (lookup-key claude-client-mode-map (kbd "n")) nil))
           ;; The evil table must stay in step with the keymap, since the two
           ;; are bound from separate places.
           (it "keeps the evil table in step with the keymap, bound from separate places"
@@ -1828,7 +1813,9 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
           ;; survive regardless.
           (it "inherits the parent mode's evil-safe C-c C-s"
             (check (lookup-key agent-backend-mode-map (kbd "C-c C-s"))
-                   'agent-backend-send-command))
+                   'agent-backend-input-command))
+          (it "leaves C-c C-n unbound, mirroring the dropped `n'"
+            (check (lookup-key agent-backend-mode-map (kbd "C-c C-n")) nil))
           ;; Guarded so a snipe-less Emacs is a no-op rather than an error.
           (it "makes `claude-client--setup-evil' a no-op without evil, not an error"
             (check (progn (claude-client--setup-evil) :no-error) :no-error)))
@@ -1941,22 +1928,26 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
 
 (describe "claude-client-send-prompt with a turn already running"
   (let ((conversation (get-buffer-create "*claude-client:proj:1*"))
-        (code (get-buffer-create "*claude-send-prompt-code*")))
+        (code (get-buffer-create "*claude-send-prompt-code*"))
+        (composed nil))
     (unwind-protect
         (progn
           (with-current-buffer conversation
             (claude-client-mode)
             (setq default-directory "/tmp/proj/"
                   claude-client--turn-active t))
-          (with-current-buffer code
-            (setq default-directory "/tmp/proj/")
-            (it "refuses, naming the conversation that is busy"
-              (check (condition-case err
-                         (progn (claude-client-send-prompt) nil)
-                       (user-error (and (string-match-p "proj:1"
-                                                        (error-message-string err))
-                                        t)))
-                     t))))
+          (cl-letf (((symbol-function 'agent-prompt-read)
+                     (lambda (_cb &optional _initial label _window _source)
+                       (setq composed label) nil))
+                    ((symbol-function 'claude-client--display)
+                     (lambda (buffer) (get-buffer-window buffer t))))
+            (with-current-buffer code
+              (setq default-directory "/tmp/proj/")
+              (claude-client-send-prompt)))
+          ;; Mid-turn `s' composes rather than refusing: the text is carried
+          ;; into the next turn (issue #69), so there is nothing to reject.
+          (it "composes anyway, since the text will be carried forward"
+            (check composed "*claude-client:proj:1*")))
       (let ((kill-buffer-query-functions nil))
         (dolist (b (list conversation code))
           (when (buffer-live-p b) (kill-buffer b)))))))
@@ -2007,6 +1998,63 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
       (let ((kill-buffer-query-functions nil))
         (dolist (buf (list a b code))
           (when (buffer-live-p buf) (kill-buffer buf)))))))
+
+;; The one input verb: `s' used to be a dead end mid-turn, erroring to tell
+;; you to press `n' -- state the runner already knew, that the human had to
+;; know too and got wrong first (issue #69).
+(describe "claude-client-input while idle"
+  (let ((buf (claude-test--buffer))
+        (sent nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                    ((symbol-function 'process-send-string)
+                     (lambda (_p s) (setq sent s))))
+            (setq claude-client--process 'fake claude-client--turn-active nil)
+            (claude-client-input "do the thing")
+            (it "sends it as the next turn"
+              (check-that (and sent (string-match-p "do the thing" sent))))
+            (it "marks the turn in flight"
+              (check claude-client--turn-active t))
+            (it "logs it as a prompt, not a note"
+              (check (plist-get (car (last claude-client--events)) :kind) 'prompt))))
+      (kill-buffer buf))))
+
+(describe "claude-client-input during a turn"
+  (let ((buf (claude-test--buffer))
+        (sent nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                    ((symbol-function 'process-send-string)
+                     (lambda (_p s) (setq sent s))))
+            (setq claude-client--process 'fake)
+            (claude-test--with-running-turn (claude-client-input "and also this"))
+            (it "writes nothing to the running turn"
+              (check sent nil))
+            (it "queues it to be carried into the next turn"
+              (check claude-client--pending-notes '("and also this")))
+            (it "never interrupts, so the turn's work survives"
+              (check (memq 'interrupted (claude-test--kinds buf)) nil))))
+      (kill-buffer buf)))
+
+  (let ((buf (generate-new-buffer "*claude-input-outside*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (it "refuses outside a conversation buffer"
+            (check (condition-case _ (progn (claude-client-input "x") nil)
+                     (user-error t))
+                   t)))
+      (kill-buffer buf))))
+
+(describe "the Claude note policy"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Constant now: the interrupt-or-queue choice is gone (issue #69).
+          (it "is always queue, so a note never abandons a turn"
+            (check (agent-backend-note-policy agent-backend--instance) :queue)))
+      (kill-buffer buf))))
 
 (test-helper-summary)
 
