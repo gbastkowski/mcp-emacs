@@ -1,0 +1,162 @@
+#+TITLE: gate-tool-permissions-in-emacs
+
+* Intent
+A permission decision in a Claude session is currently a dead end.  The
+human never gets asked: the call is refused somewhere inside the CLI, the
+turn carries on, and the only trace is an error the model has to interpret
+on its own.  Fixing it means leaving the session to hand-write a glob into
+~.claude/settings.local.json~ -- and getting that glob right is its own
+guessing game (an allowlist entry of ~Bash(bin/test-emacs.sh *)~ does not
+cover ~./bin/test-emacs.sh~, and a ~Read(//tmp/dir/**)~ deny rule was
+observed to silently not match at all).
+
+The decision should be raised where the work is happening: a small menu
+buffer in Emacs, answered before the call runs, with "always allow"
+writing the rule the human would otherwise have had to author by hand.
+
+* Scope
+In scope: a pre-call permission gate for the Claude client.  A
+~PreToolUse~ hook installed into the session's settings, an HTTP endpoint
+on the mcp-emacs server that raises the decision, a key-driven menu buffer
+that answers it, and the "always allow" path that appends a rule to
+~.claude/settings.local.json~.
+
+Also in scope: putting the menu buffer itself on ~agent-backend~, so
+opencode's already-implemented permission gate
+(~agent-backend-reply-permission~) can surface in the same UI rather than
+growing a second one.
+
+Out of scope: changing which tools are disabled outright.  Claude's own
+mutating tools stay off via ~--disallowedTools~ and ~apply_diff~ remains
+the only write path; this change gates the calls that are *attempted*, it
+does not re-open the ones that are structurally closed.
+
+Also out of scope: reading and displaying the effective allowlist with
+provenance (issue #73's original framing).  A working pre-call gate makes
+that a reporting convenience rather than the fix, so it is left for later.
+
+* Approach
+The mechanism is a ~PreToolUse~ hook, chosen after establishing that the
+two obvious alternatives do not work:
+
+- ~can_use_tool~, the CLI's own "may I run this?" stdio control request,
+  is never emitted in headless mode (verified against 2.1.220), and
+  ~--permission-prompt-tool~ no longer exists.
+- ~permission_denials~ in the ~result~ message is post-hoc *and*
+  unreliable: a denied ~Bash~ call was recorded there, but a denied ~Read~
+  was blocked twice while ~permission_denials~ stayed empty.  The
+  dependable post-hoc signal is a ~tool_result~ with ~is_error:true~
+  carrying ~<tool_use_error>~, which is still after the fact.
+
+~PreToolUse~ is different in the one way that matters: the CLI blocks
+synchronously waiting for it, so there is something to answer.  Verified in
+~--print~ mode -- the hook receives ~tool_name~, ~tool_input~ (the real
+command), ~tool_use_id~, ~session_id~, ~cwd~ and ~permission_mode~ on
+stdin, and returning ~permissionDecision: "deny"~ blocked the call and
+delivered the reason to the model verbatim.
+
+- Hook script over HTTP, not elisp in-process: the hook is a subprocess the
+  CLI spawns and waits on, so it POSTs the payload to the mcp-emacs server
+  and prints whatever decision comes back.  Keeping the script dumb means
+  the decision logic stays in Emacs where it can be tested.
+- A dedicated HTTP path, not an MCP tool: the gate must not be callable by
+  the model it is gating.  Registering it in the tool registry would put
+  self-approval one tool call away, so it gets its own endpoint that the
+  hook posts to and ~tools/list~ never mentions.
+- Answer from the deferral path, not the process filter: this is a
+  human-answered request, so it holds the connection open with
+  ~:keep-alive~ and answers from a callback, the way ~apply_diff~ does.
+  Process filters run with ~inhibit-quit=t~ and no command loop, which is
+  exactly what leaves a review displayed but its keys dead.
+- Fail safe, fail closed: an unanswered gate denies rather than allows, and
+  says so in the reason.  The CLI enforces its own hook timeout, so the
+  Emacs-side wait has to expire first for the human to see why.
+- "Always allow" writes the rule the human would have had to guess, and
+  shows it first.  ~--settings~ *layers* onto the JSON settings files
+  rather than replacing them (and ~--strict-mcp-config~ scopes only MCP
+  servers), so ~.claude/settings.local.json~ is shared with the terminal
+  CLI: a write there changes other sessions too.  That makes an explicit
+  confirmation of the exact rule text mandatory, not a nicety.
+- Default the matcher to the mutating and shell tools rather than ~*~.
+  Gating reads as well would raise a menu on nearly every call, and a gate
+  that is tedious gets switched off.
+
+* Tasks
+- [X] Add the ~PreToolUse~ hook script: read the payload on stdin, POST it
+  to the mcp-emacs server, print the decision JSON, deny on any transport
+  failure
+- [X] Add the server endpoint that raises a pending decision and answers it
+  from the ~:async-handler~ deferral, denying on timeout
+- [X] Add the menu buffer on ~agent-backend~: show the tool, its input and
+  the project, with keys for allow once / deny / always allow
+- [X] Wire the hook into ~claude-client--settings-file~, with a
+  customisable matcher defaulting to the mutating and shell tools
+- [X] Implement "always allow": propose the rule from ~tool_input~, show
+  the exact text, write to ~.claude/settings.local.json~ only on explicit
+  confirmation
+- [X] Route opencode's ~agent-backend-reply-permission~ through the same
+  menu buffer
+- [X] Tests: a decision allows and denies; an unanswered gate denies; the
+  rule proposed for a shell call matches that call; a transport failure
+  denies; the menu keys reach their commands
+- [X] Update ~docs/clients.md~ with the gate and how to turn it off
+
+* Delta
+** DONE Tool permission decisions are answered in Emacs before the call runs                        :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The Claude client SHALL raise a permission decision to the human before the
+tool call runs, and SHALL carry the human's answer back to the CLI as the
+decision for that call.  The gate MUST fail closed: a decision that is not
+answered denies the call and reports why.  The tools that are gated MUST be
+configurable, and the gate MUST NOT loosen the tools that are disabled
+outright -- ~apply_diff~ remains the only write path.
+*** A gated call waits for the human
+- GIVEN a session whose matcher gates the shell tool
+- WHEN the model attempts a shell call
+- THEN the human is shown the tool and the command it would run, and the
+  call does not proceed until they answer
+*** Allow and deny reach the CLI
+- GIVEN a pending permission decision
+- WHEN the human allows it
+- THEN the call proceeds; and when the human denies it instead, the call is
+  blocked and the reason is delivered to the model
+*** An unanswered gate denies
+- GIVEN a pending permission decision that nobody answers
+- WHEN the Emacs-side wait expires
+- THEN the call is denied and the reason says it went unanswered
+*** A broken gate denies rather than opening up
+- GIVEN a hook that cannot reach the mcp-emacs server
+- WHEN a gated call is attempted
+- THEN the call is denied rather than allowed by default
+** DONE Always-allow writes the rule the human would have had to author                             :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The client SHALL be able to turn a permission decision into a durable
+allowlist rule, deriving the rule from the attempted call rather than
+asking the human to write a glob.  Because the settings file is shared with
+the terminal CLI, the exact rule text MUST be shown and explicitly
+confirmed before it is written, and the write MUST NOT broaden the rule
+beyond what was shown.
+*** The proposed rule matches the call it came from
+- GIVEN a denied shell call
+- WHEN a rule is proposed for it
+- THEN that rule matches that call
+*** Nothing is written without confirmation
+- GIVEN a proposed allowlist rule
+- WHEN the human declines it
+- THEN the settings file is unchanged
+** DONE One permission UI serves every backend                                                      :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+The permission menu SHALL live on ~agent-backend~ so that a backend with
+its own permission gate answers through the same buffer as the Claude hook,
+rather than each backend growing its own surface.
+*** Opencode's gate uses the shared menu
+- GIVEN an opencode session that asks for a permission decision
+- WHEN the decision is raised
+- THEN it appears in the same menu buffer, and answering it replies to
+  opencode

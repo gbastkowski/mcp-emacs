@@ -193,3 +193,12 @@ confirmation, even when that session is mid-turn.
 - *GIVEN* a row's session has exited
 - *WHEN* the human tries to interrupt it
 - *THEN* the overview reports that there is nothing to interrupt rather than signalling an unhandled error
+* One permission UI serves every backend
+The permission menu SHALL live on ~agent-backend~ so that a backend with
+its own permission gate answers through the same buffer as the Claude hook,
+rather than each backend growing its own surface.
+** Opencode's gate uses the shared menu
+- GIVEN an opencode session that asks for a permission decision
+- WHEN the decision is raised
+- THEN it appears in the same menu buffer, and answering it replies to
+  opencode

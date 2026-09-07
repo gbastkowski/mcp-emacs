@@ -119,31 +119,43 @@ byte-compiles and works where evil is absent.
 - WHEN the package is byte-compiled and loaded
 - THEN it compiles without warnings and the plain keymap still binds the
   letter keys
-* The conversation buffer distinguishes chrome from model prose
-The Claude client SHALL render its structural chrome -- the session banner,
-prompts, tool calls, tool results, notes, and the turn-end marker -- with
-dedicated faces, and SHALL fontify the assistant's own prose as markdown, so
-a human can tell at a glance what the model said from what the harness did.
-The conversation buffer MUST remain in ~claude-client-mode~ so its
-single-letter commands keep working, and markdown support MUST stay a soft
-dependency: without it prose renders as plain text rather than signalling.
-** Chrome carries its own faces
-- GIVEN a conversation with a session banner, a tool call, and a turn end
-- WHEN the buffer is rendered
-- THEN each of those carries its own face rather than the default face
-** Assistant prose is fontified as markdown
-- GIVEN an assistant text event containing markdown emphasis, a heading, and
-  a fenced code block
-- WHEN the buffer is rendered
-- THEN that prose carries markdown text properties and the code block is
-  fontified for its language
-** The mode and its keys survive
-- GIVEN a rendered conversation buffer
-- WHEN its major mode and single-letter keys are inspected
-- THEN the mode is still ~claude-client-mode~ and the keys still reach their
-  commands
-** Missing markdown degrades to plain prose
-- GIVEN an Emacs without ~markdown-mode~
-- WHEN an assistant text event is rendered
-- THEN the prose appears as plain text, the chrome faces still apply, and no
-  error is signalled
+* Tool permission decisions are answered in Emacs before the call runs
+The Claude client SHALL raise a permission decision to the human before the
+tool call runs, and SHALL carry the human's answer back to the CLI as the
+decision for that call.  The gate MUST fail closed: a decision that is not
+answered denies the call and reports why.  The tools that are gated MUST be
+configurable, and the gate MUST NOT loosen the tools that are disabled
+outright -- ~apply_diff~ remains the only write path.
+** A gated call waits for the human
+- GIVEN a session whose matcher gates the shell tool
+- WHEN the model attempts a shell call
+- THEN the human is shown the tool and the command it would run, and the
+  call does not proceed until they answer
+** Allow and deny reach the CLI
+- GIVEN a pending permission decision
+- WHEN the human allows it
+- THEN the call proceeds; and when the human denies it instead, the call is
+  blocked and the reason is delivered to the model
+** An unanswered gate denies
+- GIVEN a pending permission decision that nobody answers
+- WHEN the Emacs-side wait expires
+- THEN the call is denied and the reason says it went unanswered
+** A broken gate denies rather than opening up
+- GIVEN a hook that cannot reach the mcp-emacs server
+- WHEN a gated call is attempted
+- THEN the call is denied rather than allowed by default
+* Always-allow writes the rule the human would have had to author
+The client SHALL be able to turn a permission decision into a durable
+allowlist rule, deriving the rule from the attempted call rather than
+asking the human to write a glob.  Because the settings file is shared with
+the terminal CLI, the exact rule text MUST be shown and explicitly
+confirmed before it is written, and the write MUST NOT broaden the rule
+beyond what was shown.
+** The proposed rule matches the call it came from
+- GIVEN a denied shell call
+- WHEN a rule is proposed for it
+- THEN that rule matches that call
+** Nothing is written without confirmation
+- GIVEN a proposed allowlist rule
+- WHEN the human declines it
+- THEN the settings file is unchanged

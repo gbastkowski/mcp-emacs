@@ -34,11 +34,25 @@
 ;;
 ;; Then point an MCP client at it:
 ;;   { "type": "http", "url": "http://localhost:8765/mcp" }
+;;
+;; Two request shapes reach `mcp-emacs-server--handler':
+;;
+;; - `/mcp' -- the JSON-RPC surface.  Tools a human has to answer
+;;   (`apply_diff') hold the connection open and reply from a callback
+;;   rather than from the process filter; see there for why.
+;; - `/permission-gate' -- not JSON-RPC, and deliberately not a tool.  The
+;;   Claude CLI's `PreToolUse' hook posts a pending tool call here and
+;;   blocks on the reply, which is what lets a human allow or deny it
+;;   before it runs.  A *tool* would be worse than useless here: the model
+;;   being gated could call it and approve itself.  So it lives off the
+;;   registry, `tools/list' never mentions it, and the model has no name
+;;   for it.
 
 ;;; Code:
 
 (require 'mcp-emacs)
 (require 'mcp-emacs-report)
+(require 'agent-permission)
 (require 'web-server)
 (require 'json)
 (require 'cl-lib)
@@ -619,12 +633,85 @@ abandoning a review cost nothing."
   (when (process-live-p process)
     (delete-process process)))
 
+(defcustom mcp-emacs-server-permission-timeout 100
+  "Seconds a permission decision waits for the human before denying.
+Kept under the hook script's own `curl' deadline so the human's Emacs is
+what times out first, and the model is told a human did not answer
+rather than that the gate broke."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defun mcp-emacs-server--gate-decision (decision reason)
+  "Return the PreToolUse hook reply for DECISION with REASON.
+DECISION is `allow', `deny' or `timeout'; only `allow' allows, so an
+unrecognised value denies rather than falling open."
+  (mcp-emacs-server--obj
+   "hookSpecificOutput"
+   (mcp-emacs-server--obj
+    "hookEventName" "PreToolUse"
+    "permissionDecision" (if (eq decision 'allow) "allow" "deny")
+    "permissionDecisionReason" (or reason ""))))
+
+(defun mcp-emacs-server--permission-gate (payload process)
+  "Raise PAYLOAD as a permission decision and answer PROCESS with it.
+PAYLOAD is the parsed `PreToolUse' hook body.  Returns non-nil when the
+decision was raised and PROCESS must be held open; nil when the payload
+was unusable, which the caller answers immediately."
+  (let* ((tool (alist-get 'tool_name payload))
+         (input (alist-get 'tool_input payload))
+         (cwd (alist-get 'cwd payload))
+         ;; `tool_use_id' identifies the call the CLI is blocked on, so it
+         ;; is the natural key.  Falling back to a generated one keeps a
+         ;; payload without it answerable instead of dropping it.
+         (id (or (alist-get 'tool_use_id payload)
+                 (format "gate-%s" (random (expt 2 32)))))
+         (reply
+          (lambda (decision reason)
+            (unwind-protect
+                (when (process-live-p process)
+                  (let ((json (json-encode
+                               (mcp-emacs-server--gate-decision
+                                decision reason))))
+                    (ws-response-header
+                     process 200 '("Content-Type" . "application/json"))
+                    (process-send-string process json)))
+              (mcp-emacs-server--release-connection process)))))
+    (when tool
+      (condition-case err
+          (progn
+            (agent-permission-request
+             id tool input
+             :cwd cwd
+             :timeout mcp-emacs-server-permission-timeout
+             :resolve reply)
+            t)
+        ;; A gate that cannot even be raised must still answer, or the CLI
+        ;; waits out its own timeout with no explanation.
+        (error
+         (funcall reply 'deny
+                  (format "Permission gate could not be raised in Emacs: %s"
+                          (error-message-string err)))
+         t)))))
+
 (defun mcp-emacs-server--handler (request)
   "Top-level `web-server' handler for an MCP REQUEST."
   (with-slots (process headers) request
     (let* ((is-post (assoc :POST headers))
+           (path (cdr is-post))
            (rpc (ignore-errors (mcp-emacs-server--parse-body request))))
       (cond
+       ;; The permission gate: not JSON-RPC, and not a tool -- the model
+       ;; being gated must not be able to call it.  Held open like an async
+       ;; tool, because a human answers it.
+       ((and is-post (equal path "/permission-gate"))
+        (if (and rpc (mcp-emacs-server--permission-gate rpc process))
+            (throw 'close-connection :keep-alive)
+          (let ((json (json-encode
+                       (mcp-emacs-server--gate-decision
+                        'deny "Permission gate received an unusable payload."))))
+            (ws-response-header process 200
+                                '("Content-Type" . "application/json"))
+            (process-send-string process json))))
        ;; POST with a JSON-RPC body: the normal MCP request path.
        ((and is-post rpc)
         ;; Async tools (human-answered reviews) must not block the filter:

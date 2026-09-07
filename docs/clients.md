@@ -137,11 +137,52 @@ delivered as the next one (`claude-client-note-interrupts`, on by default); with
 it off, notes queue instead. `claude-client-max-pending-notes` (default 20)
 bounds the queue, dropping oldest first.
 
+**Permission gate.** A tool call the session is not allowed to make is a
+question rather than a dead end: it raises a small buffer naming the tool and
+the exact command, and the call waits for the answer. `a` allows it once, `d`
+denies it (`q` too — there is no dismissing a buffer something is blocked on),
+and `A` allows it and writes a rule so the same call stops asking.
+
+The mechanism is a `PreToolUse` hook, installed into the session's settings and
+pointed at `bin/permission-gate.sh`. The CLI blocks on that hook, which is what
+makes a real gate possible: `can_use_tool` is never emitted in headless mode,
+and `permission_denials` in the result is a post-hoc audit record — and an
+unreliable one, recording some refusals and not others. The hook posts the
+pending call to the mcp-emacs server (on the port this Emacs is serving, passed
+in its environment) and prints back whatever the human decided.
+
+It fails closed, everywhere: no Emacs, no server, a malformed reply, or nobody
+at the keyboard for `mcp-emacs-server-permission-timeout` seconds (100) all
+deny, and the reason says which. A gate that opened up when it broke would not
+be one.
+
+`A` writes to the project's `.claude/settings.local.json` — the same file the
+terminal CLI reads — so it shows the exact rule and asks before writing. It
+offers two forms, and the *exact command* is the default for a reason:
+
+```
+Bash(bin/test-emacs.sh --quiet)   matches that command, and nothing else
+Bash(bin/test-emacs.sh *)         matches any arguments...
+                                  ...including `... && rm -rf something`
+```
+
+The `*` runs past `&&` into a second command, so "allow all X commands" grants
+more than it reads. (Relatedly, a rule with no `*` at all — `Bash(foo)` —
+matches only `foo` exactly and silently misses `foo --bar`, which is the usual
+reason a hand-written allowlist entry never fires.)
+
+`claude-client-gate-tools` chooses what is gated, `'("Bash")` by default. Not
+`*`: the mutating built-ins are already disabled outright, so gating them would
+ask about calls that cannot happen, and gating reads would ask on nearly every
+call. Set it to nil to turn the gate off entirely. opencode reaches the same
+buffer through its own `permission.asked` events, so both backends ask the same
+way.
+
 Key options: `claude-client-executable`, `-model`, `-mcp-config`,
 `-disallowed-tools`, `-allowed-mcp-tools`, `-system-prompt`,
 `-window-direction` (default `right`), `-window-width` / `-height`,
 `-focus-on-show`, `-restore-window-after-review`,
-`-tool-result-lines` (default 6).
+`-tool-result-lines` (default 6), `-gate-tools`, `-gate-script`..
 
 ## opencode client
 
@@ -325,9 +366,13 @@ and a rendering error cannot stall an edit.
 
 Tool **approval** is not part of this surface: native Edit/Write flow through the
 IDE surface's ediff review (above), which is the per-call gate. This is why the
-session runs interactively rather than headless — `claude -p` cannot route
-per-call approval to Emacs (the `--permission-prompt-tool` flag was removed in
-Claude Code 2.1.212). Because the IDE socket carries structured tool calls but
+session runs interactively rather than headless — `claude -p` has no
+`--permission-prompt-tool` (removed in Claude Code 2.1.212) and never emits
+`can_use_tool`, so neither can route a per-call approval back here. The
+terminal-free client answers the same question a different way, with a
+`PreToolUse` hook that the CLI blocks on (see [Claude client](#claude-client-terminal-free));
+that gate is available to headless sessions and this one is not built on it.
+Because the IDE socket carries structured tool calls but
 not assistant prose, the transcript records tool activity only in this version; a
 full-prose transcript is a tracked follow-up (see
 [#23](https://github.com/gbastkowski/mcp-emacs/issues/23)).
