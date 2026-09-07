@@ -101,9 +101,11 @@ export MCP_EMACS_TEST_PORT="${MCP_EMACS_TEST_PORT:-$default_port}"
 # failure is the one you stop at, so the two want to differ at a glance rather
 # than by a word that is four characters long either way.
 #
-# These are emoji on purpose, including in CI, whose logs render UTF-8 fine.
-# They are double-width, so they go before the description rather than inside
-# the aligned count columns, where they would shift the layout.
+# These are UTF-8 on purpose, including in CI, whose logs render it fine.  A
+# pass is the common line, so it gets the quiet single-width check rather than
+# an emoji; failures and group headings keep theirs, where being loud is the
+# point.  Glyphs go before the description rather than inside the aligned count
+# columns -- the double-width ones would shift the layout there.
 #
 # NO_COLOR is the closest thing to a standard opt-out for terminal decoration,
 # and MCP_EMACS_TEST_ASCII is the explicit one; either falls back to the words.
@@ -117,11 +119,11 @@ if [ -n "${MCP_EMACS_TEST_ASCII:-}" ] || [ -n "${NO_COLOR:-}" ]; then
   GLYPH_TOTAL_OK="--"
   GLYPH_TOTAL_BAD="--"
 else
-  GLYPH_PASS="✅"
+  GLYPH_PASS="✓"
   GLYPH_FAIL="❌"
   GLYPH_GROUP="📋"
-  GLYPH_OK="✅"
-  GLYPH_TOTAL_OK="✅"
+  GLYPH_OK="✓"
+  GLYPH_TOTAL_OK="✓"
   GLYPH_TOTAL_BAD="❌"
 fi
 
