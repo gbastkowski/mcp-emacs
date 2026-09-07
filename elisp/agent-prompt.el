@@ -28,6 +28,10 @@
 ;; `read-string' and the send moves into the callback.  The non-interactive
 ;; cores stay directly callable, so MCP tools and tests are unaffected.
 ;;
+;; An active region in the buffer the prompt was invoked from seeds the
+;; composition buffer, so quoting the code you are looking at is not a
+;; copy-switch-paste round trip -- see `agent-prompt-region-seed'.
+;;
 ;; Placement follows the conversation, not the frame: the prompt window is
 ;; a split of the agent's own output window, so several conversations can
 ;; each have their own prompt.  Split below by default; split right only
@@ -104,6 +108,135 @@ Nil while the buffer still holds text the human typed.")
         (cons text (delete text agent-prompt-history)))
   (when (> (length agent-prompt-history) agent-prompt-history-limit)
     (setcdr (nthcdr (1- agent-prompt-history-limit) agent-prompt-history) nil)))
+
+;;;; Region
+
+;; The region is the strongest signal available about what a prompt is
+;; about, and it was being dropped: `s' opened an empty buffer, so quoting
+;; the lines in front of you meant copy, switch, paste (issue #78).
+;;
+;; What gets seeded depends on size, because the two useful shapes trade
+;; off against each other.  A short selection goes in as a fenced block:
+;; the text is right there in the prompt, visible while you write about
+;; it.  A long one goes in as an `@path:start-end' pointer instead -- the
+;; agent can read the file itself, the reference stays right if the lines
+;; move on, and a 400-line paste would bury the prompt in its own window.
+
+(defcustom agent-prompt-region-seed 'auto
+  "What an active region contributes to the composition buffer.
+`auto' fences a selection small enough to read in the prompt window and
+falls back to a path reference for anything bigger -- see
+`agent-prompt-region-fence-max-lines'.  `fenced' and `reference' force
+one shape regardless of size.  Nil ignores the region, restoring the
+behaviour from before the region was ever consulted."
+  :type '(choice (const :tag "By size" auto)
+                 (const :tag "Always the text, fenced" fenced)
+                 (const :tag "Always a path reference" reference)
+                 (const :tag "Ignore the region" nil))
+  :group 'agent-prompt)
+
+(defcustom agent-prompt-region-fence-max-lines 12
+  "Longest region `auto' still seeds as a fenced block.
+Sized to the prompt window (`agent-prompt-window-height'): a fence you
+have to scroll to read is no longer serving the purpose of putting the
+code in front of you."
+  :type 'integer
+  :group 'agent-prompt)
+
+(defcustom agent-prompt-region-fence-max-chars 800
+  "Longest region, in characters, that `auto' still seeds as a fence.
+The line count is the measure that matters, but a handful of very long
+lines -- minified source, a wide table -- is just as unreadable wrapped
+into a ten-line window, and this catches it."
+  :type 'integer
+  :group 'agent-prompt)
+
+(declare-function agent-backend-selection-reference "agent-backend" ())
+
+(defun agent-prompt--region-bounds ()
+  "Return the active region as (BEG END START-LINE END-LINE), or nil.
+END-LINE excludes a trailing newline: a region ending at column 0 was
+selected up to the end of the previous line, and reporting the line the
+point happens to sit on would overstate it by one."
+  (when (use-region-p)
+    (let* ((beg (region-beginning))
+           (end (region-end))
+           (last (if (and (> end beg)
+                          (save-excursion (goto-char end) (bolp)))
+                     (1- end)
+                   end)))
+      (list beg end
+            (line-number-at-pos beg)
+            (line-number-at-pos last)))))
+
+(defun agent-prompt--fence-language ()
+  "Return a fence language tag for the current buffer's major mode, or nil.
+Derived from the mode name rather than a table: `python-mode' and
+`python-ts-mode' both want `python', and a mode this does not know about
+gets a plain fence rather than a wrong tag."
+  (when (symbolp major-mode)
+    (let ((name (replace-regexp-in-string
+                 "\\(-ts\\)?-mode\\'" "" (symbol-name major-mode))))
+      (unless (member name '("fundamental" "text" "special"))
+        name))))
+
+(defun agent-prompt--region-label (start-line end-line)
+  "Return a human-readable location for lines START-LINE to END-LINE.
+The project-relative path when the buffer visits a file, its name when
+it does not, so a fence is always attributable to something."
+  (let* ((file (buffer-file-name))
+         (where (if file
+                    (if (and (featurep 'agent-backend)
+                             (fboundp 'agent-backend--current-project-root))
+                        (file-relative-name
+                         file (agent-backend--current-project-root))
+                      (file-name-nondirectory file))
+                  (buffer-name))))
+    (if (= start-line end-line)
+        (format "%s:%d" where start-line)
+      (format "%s:%d-%d" where start-line end-line))))
+
+(defun agent-prompt--region-fence (beg end start-line end-line)
+  "Return the text between BEG and END as a labelled fenced block.
+START-LINE and END-LINE name where it came from, so the agent can find
+the lines again instead of searching for the snippet."
+  (format "%s\n```%s\n%s\n```"
+          (agent-prompt--region-label start-line end-line)
+          (or (agent-prompt--fence-language) "")
+          (string-trim-right
+           (buffer-substring-no-properties beg end))))
+
+(defun agent-prompt--region-reference (start-line end-line)
+  "Return an at-mention pointing at lines START-LINE to END-LINE.
+Delegates to `agent-backend-selection-reference' when the shared core is
+loaded, so the two spellings of \"the lines I am looking at\" cannot
+drift.  Falls back to building the same shape here, since this file must
+not require the backend layer."
+  (if (and (featurep 'agent-backend)
+           (fboundp 'agent-backend-selection-reference))
+      (agent-backend-selection-reference)
+    (format "@%s" (agent-prompt--region-label start-line end-line))))
+
+(defun agent-prompt-region-seed (&optional buffer)
+  "Return seed text for the active region in BUFFER, or nil when there is none.
+BUFFER defaults to the current one.  The shape follows
+`agent-prompt-region-seed': a fenced block for a selection small enough
+to read in the prompt window, an `@path:lines' reference otherwise.
+
+Called before the composition buffer takes a window, because selecting
+another window is one of the things that can deactivate the region."
+  (when agent-prompt-region-seed
+    (with-current-buffer (or buffer (current-buffer))
+      (when-let* ((bounds (agent-prompt--region-bounds)))
+        (pcase-let ((`(,beg ,end ,start-line ,end-line) bounds))
+          (if (pcase agent-prompt-region-seed
+                ('fenced t)
+                ('reference nil)
+                (_ (and (<= (1+ (- end-line start-line))
+                            agent-prompt-region-fence-max-lines)
+                        (<= (- end beg) agent-prompt-region-fence-max-chars))))
+              (agent-prompt--region-fence beg end start-line end-line)
+            (agent-prompt--region-reference start-line end-line)))))))
 
 ;;;; Windows
 
@@ -257,7 +390,7 @@ gains the send and abort bindings."
            "\\[agent-prompt-abort] abort  "
            "\\[agent-prompt-history-prev]/\\[agent-prompt-history-next] history")))
 
-(defun agent-prompt-read (callback &optional initial label output-window)
+(defun agent-prompt-read (callback &optional initial label output-window source)
   "Collect a prompt in a buffer and pass it to CALLBACK.
 CALLBACK receives the text as its only argument, from a timer once the
 composition buffer is gone, so it is free to spawn processes and
@@ -267,31 +400,45 @@ INITIAL seeds the buffer.  LABEL names it, so concurrent conversations
 get distinguishable prompt buffers.  OUTPUT-WINDOW is the conversation
 window to split, defaulting to the selected one.
 
+SOURCE is the buffer the command was invoked from; an active region
+there seeds the prompt (see `agent-prompt-region-seed') when INITIAL
+does not.  Point lands after the seed and a blank line, so typing starts
+on the prompt rather than inside the quote.
+
 With `agent-prompt-use-minibuffer' this falls back to `read-string' and
 calls CALLBACK synchronously; callers must not rely on either timing."
-  (if agent-prompt-use-minibuffer
-      (let ((text (string-trim (read-string "Prompt: " initial))))
-        (if (string-empty-p text)
-            (user-error "Empty prompt")
-          (agent-prompt--remember text)
-          (funcall callback text)))
-    (let ((buffer (get-buffer-create (agent-prompt--buffer-name label)))
-          (window (or output-window (selected-window))))
-      (with-current-buffer buffer
-        (erase-buffer)
-        (funcall (agent-prompt--base-mode))
-        (agent-prompt-mode 1)
-        (when initial (insert initial))
-        (goto-char (point-max))
-        (setq agent-prompt--callback callback
-              agent-prompt--history-index nil
-              agent-prompt--history-stash nil)
-        (setq-local header-line-format (agent-prompt--header label))
-        ;; A prompt is not a file, and evil's `:w' would otherwise look for
-        ;; one; keep the buffer unmistakably scratch.
-        (setq buffer-file-name nil))
-      (agent-prompt--display buffer window)
-      buffer)))
+  (let* ((seed (and (not initial) source (agent-prompt-region-seed source)))
+         ;; The seed is context, not the prompt: the human still has to say
+         ;; what to do with it, and a minibuffer cannot show a fenced block
+         ;; anyway, so the escape hatch stays a bare `read-string'.
+         (initial (or initial (and (not agent-prompt-use-minibuffer) seed))))
+    (if agent-prompt-use-minibuffer
+        (let ((text (string-trim (read-string "Prompt: " initial))))
+          (if (string-empty-p text)
+              (user-error "Empty prompt")
+            (agent-prompt--remember text)
+            (funcall callback text)))
+      (let ((buffer (get-buffer-create (agent-prompt--buffer-name label)))
+            (window (or output-window (selected-window))))
+        (with-current-buffer buffer
+          (erase-buffer)
+          (funcall (agent-prompt--base-mode))
+          (agent-prompt-mode 1)
+          (when initial
+            (insert initial)
+            ;; A seed the human did not type needs somewhere to type after
+            ;; it; text a caller supplied as INITIAL is the draft itself.
+            (when (eq initial seed) (insert "\n\n")))
+          (goto-char (point-max))
+          (setq agent-prompt--callback callback
+                agent-prompt--history-index nil
+                agent-prompt--history-stash nil)
+          (setq-local header-line-format (agent-prompt--header label))
+          ;; A prompt is not a file, and evil's `:w' would otherwise look for
+          ;; one; keep the buffer unmistakably scratch.
+          (setq buffer-file-name nil))
+        (agent-prompt--display buffer window)
+        buffer))))
 
 (provide 'agent-prompt)
 ;;; agent-prompt.el ends here

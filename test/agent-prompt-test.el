@@ -247,6 +247,113 @@ direction a split takes and whether the lines come back."
   (it "binds M-n to the next prompt"
     (check (lookup-key agent-prompt-mode-map (kbd "M-n")) 'agent-prompt-history-next)))
 
+;;;; Seeding from the region
+
+(defmacro agent-prompt-test--with-source (text &rest body)
+  "Run BODY in a fixture buffer holding TEXT with the whole of it selected.
+The buffer visits a file under the project root, because what gets
+seeded depends on having a path to name."
+  (declare (indent 1))
+  `(let ((source (get-buffer-create "*prompt-source-fixture*")))
+     (unwind-protect
+         (with-current-buffer source
+           (emacs-lisp-mode)
+           (setq buffer-file-name (expand-file-name "elisp/seeded.el"))
+           (insert ,text)
+           (set-mark (point-min))
+           (goto-char (point-max))
+           (activate-mark)
+           ,@body)
+       (let ((kill-buffer-query-functions nil))
+         (when (buffer-live-p source)
+           (with-current-buffer source (setq buffer-file-name nil))
+           (kill-buffer source))))))
+
+(describe "agent-prompt-region-seed on a short region"
+  (agent-prompt-test--with-source "(defun small ())"
+    (let ((seed (agent-prompt-region-seed)))
+      (it "puts the selected text in the prompt, since it is short enough to read"
+        (check-that (string-match-p "(defun small ())" seed)))
+      (it "fences it, so the agent can tell code from the prose around it"
+        (check-that (string-match-p "^```" (nth 1 (split-string seed "\n")))))
+      (it "tags the fence with the language of the buffer it came from"
+        (check-that (string-match-p "```emacs-lisp" seed)))
+      (it "labels it with the path and line, so the lines can be found again"
+        (check-that (string-prefix-p "seeded.el:1" seed))))))
+
+(describe "agent-prompt-region-seed on a long region"
+  (agent-prompt-test--with-source (mapconcat (lambda (n) (format "line %d" n))
+                                             (number-sequence 1 40) "\n")
+    (let ((seed (agent-prompt-region-seed)))
+      (it "points at the lines instead of pasting them, so the prompt stays readable"
+        (check seed "@seeded.el:1-40"))
+      (it "leaves the text out entirely"
+        (check (string-match-p "line 20" seed) nil)))))
+
+(describe "agent-prompt-region-fence-max-chars"
+  ;; Three lines, so the line count alone would fence it; the width is what
+  ;; makes it unreadable in a ten-line window.
+  (agent-prompt-test--with-source (mapconcat #'identity
+                                             (make-list 3 (make-string 400 ?x))
+                                             "\n")
+    (it "falls back to a reference for a few very long lines"
+      (check (agent-prompt-region-seed) "@seeded.el:1-3"))))
+
+(describe "agent-prompt-region-seed forced to one shape"
+  (agent-prompt-test--with-source (mapconcat (lambda (n) (format "line %d" n))
+                                             (number-sequence 1 40) "\n")
+    (let ((agent-prompt-region-seed 'fenced))
+      (it "fences a long region when told to, overriding the size cutoff"
+        (check-that (string-match-p "line 40" (agent-prompt-region-seed))))))
+  (agent-prompt-test--with-source "(defun small ())"
+    (let ((agent-prompt-region-seed 'reference))
+      (it "references a short region when told to"
+        (check (agent-prompt-region-seed) "@seeded.el:1")))
+    (let ((agent-prompt-region-seed nil))
+      (it "ignores the region entirely when seeding is switched off"
+        (check (agent-prompt-region-seed) nil)))))
+
+(describe "agent-prompt-region-seed with no region"
+  (let ((source (get-buffer-create "*prompt-source-fixture*")))
+    (unwind-protect
+        (with-current-buffer source
+          (insert "text")
+          (deactivate-mark)
+          (it "returns nothing, so an unselected buffer seeds nothing"
+            (check (agent-prompt-region-seed) nil)))
+      (let ((kill-buffer-query-functions nil)) (kill-buffer source)))))
+
+(describe "agent-prompt-read with a region in the source buffer"
+  (agent-prompt-test--with-source "(defun small ())"
+    (agent-prompt-test--with-window
+      (let ((buffer (agent-prompt-read #'ignore nil "conv" (selected-window)
+                                       source)))
+        (it "seeds the composition buffer from the region"
+          (check-that (string-match-p "(defun small ())"
+                                      (with-current-buffer buffer
+                                        (agent-prompt--text)))))
+        (it "leaves point past the quote, so typing starts on the prompt"
+          (check (with-current-buffer buffer (point))
+                 (with-current-buffer buffer (point-max))))
+        (it "keeps the seed out of the history until something is sent"
+          (check agent-prompt-history nil))
+        (with-current-buffer buffer (agent-prompt-abort)))))
+  ;; A caller that supplies its own INITIAL means it, region or not.
+  (agent-prompt-test--with-source "(defun small ())"
+    (agent-prompt-test--with-window
+      (let ((buffer (agent-prompt-read #'ignore "caller text" "conv"
+                                       (selected-window) source)))
+        (it "prefers the text a caller passed over the region"
+          (check (with-current-buffer buffer (agent-prompt--text)) "caller text"))
+        (with-current-buffer buffer (agent-prompt-abort))))))
+
+(describe "agent-prompt-read with no source buffer"
+  (agent-prompt-test--with-window
+    (let ((buffer (agent-prompt-read #'ignore nil "conv" (selected-window))))
+      (it "opens empty, as it did before the region was ever consulted"
+        (check (with-current-buffer buffer (agent-prompt--text)) ""))
+      (with-current-buffer buffer (agent-prompt-abort)))))
+
 (test-helper-summary)
 
 ;;; agent-prompt-test.el ends here

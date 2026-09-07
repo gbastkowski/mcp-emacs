@@ -1103,22 +1103,60 @@ instead when the point is to redirect rather than to stop."
   (claude-client--push-event (current-buffer) (list :kind 'interrupted))
   (claude-client--send-interrupt claude-client--process))
 
+(defun claude-client--recent-conversation ()
+  "Return the conversation a prompt typed from here most likely means.
+This project's conversations first, another project's only when it has
+none: a single conversation left open in a different repo should not
+quietly capture a prompt about the file in front of you.  Within a tier
+the most recently used wins, since `claude-client--buffers' filters
+`buffer-list', whose order is recency -- the conversation last looked at
+is the one meant.  Nil when there is no conversation at all, so callers
+can decide to start one."
+  (car (or (claude-client--project-buffers (claude-client--project-root))
+           (claude-client--buffers))))
+
 ;;;###autoload
-(defun claude-client-send-prompt ()
-  "Compose the next turn of this conversation and send it.
-The `s' binding.  Text is written in a composition buffer split from
-this conversation's window; `C-c C-c' there sends it."
-  (interactive)
-  (unless (derived-mode-p 'claude-client-mode)
-    (user-error "Not in a Claude conversation buffer"))
-  (when claude-client--turn-active
-    (user-error "A turn is already running; add a note with `n' instead"))
-  (let ((conversation (current-buffer)))
-    (agent-prompt-read
-     (lambda (text)
-       (when (buffer-live-p conversation)
-         (with-current-buffer conversation (claude-client-send text))))
-     nil (buffer-name conversation) (selected-window))))
+(defun claude-client-send-prompt (&optional pick)
+  "Compose the next turn of a Claude conversation and send it.
+The `s' binding inside a conversation, and worth binding globally: run
+from any buffer, this sends to the conversation
+`claude-client--recent-conversation' resolves, because when you have
+something to say you are usually looking at the code rather than at the
+log (issue #79).  With PICK -- \\[universal-argument] -- choose from the
+live conversations instead.  With no conversation anywhere it starts
+one rather than refusing.
+
+Text is written in a composition buffer split from the conversation's
+own window; `C-c C-c' there sends it.  An active region in the buffer
+this was called from seeds that buffer -- see
+`agent-prompt-region-seed'."
+  (interactive "P")
+  (let* ((source (current-buffer))
+         (conversation
+          (cond
+           (pick (claude-client--pick (claude-client--buffers)
+                                      "Send to conversation: "))
+           ((derived-mode-p 'claude-client-mode) (current-buffer))
+           (t (claude-client--recent-conversation)))))
+    (if (null conversation)
+        ;; Nothing to continue: composing a first turn is what was meant,
+        ;; the same fallback `claude-client-toggle' makes.
+        (call-interactively #'claude-client-open)
+      (with-current-buffer conversation
+        (when claude-client--turn-active
+          (user-error "A turn is already running in %s; add a note with `n' instead"
+                      (buffer-name conversation))))
+      ;; The prompt splits the conversation's own window, not the code
+      ;; window it was called from, so the draft sits under the log it
+      ;; belongs to -- and a hidden conversation is shown first, since
+      ;; there is otherwise no window to split.
+      (let ((window (or (get-buffer-window conversation t)
+                        (claude-client--display conversation))))
+        (agent-prompt-read
+         (lambda (text)
+           (when (buffer-live-p conversation)
+             (with-current-buffer conversation (claude-client-send text))))
+         nil (buffer-name conversation) window source)))))
 
 ;;;###autoload
 (defun claude-client-send (prompt)
@@ -1165,7 +1203,8 @@ Called from inside a conversation buffer -- the `g' binding -- this
 restarts that conversation in place, exactly as `claude-client-start'
 does, so the composed prompt replaces the existing log."
   (interactive)
-  (let* ((buffer (if (derived-mode-p 'claude-client-mode)
+  (let* ((source (current-buffer))
+         (buffer (if (derived-mode-p 'claude-client-mode)
                      (current-buffer)
                    (claude-client--new-buffer)))
          (window (claude-client--display buffer)))
@@ -1173,7 +1212,7 @@ does, so the composed prompt replaces the existing log."
      (lambda (text)
        (when (buffer-live-p buffer)
          (with-current-buffer buffer (claude-client-start text))))
-     nil (buffer-name buffer) window)))
+     nil (buffer-name buffer) window source)))
 
 ;;;###autoload
 (defun claude-client-start (prompt &optional resume-id)

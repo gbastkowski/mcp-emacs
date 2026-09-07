@@ -1870,6 +1870,144 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
       (kill-buffer buf)
       (delete-other-windows))))
 
+;; `s' used to refuse anywhere but a conversation buffer, which is the one
+;; place you are usually not when you have something to say (issue #79).
+(describe "claude-client--recent-conversation"
+  (let ((here (get-buffer-create "*claude-client:here:1*"))
+        (elsewhere (get-buffer-create "*claude-client:elsewhere:1*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer elsewhere
+            (claude-client-mode)
+            (setq default-directory "/tmp/elsewhere/"))
+          (with-current-buffer here
+            (claude-client-mode)
+            (setq default-directory "/tmp/here/"))
+          (let ((default-directory "/tmp/here/"))
+            (it "picks this project's conversation over another project's"
+              (check (claude-client--recent-conversation) here)))
+          ;; With nothing in this project, any conversation beats refusing --
+          ;; but only as the fallback tier.
+          (let ((default-directory "/tmp/nowhere/"))
+            (it "falls back to any live conversation when the project has none"
+              (check-that (memq (claude-client--recent-conversation)
+                                (list here elsewhere)))))
+          ;; Recency, not creation order: `claude-client--buffers' filters
+          ;; `buffer-list', so touching one moves it to the front.
+          (let ((default-directory "/tmp/here/"))
+            (with-current-buffer (get-buffer-create "*claude-client:here:2*")
+              (claude-client-mode)
+              (setq default-directory "/tmp/here/"))
+            (switch-to-buffer here)
+            (it "prefers the conversation last looked at"
+              (check (claude-client--recent-conversation) here))))
+      (let ((kill-buffer-query-functions nil))
+        (dolist (name '("*claude-client:here:1*" "*claude-client:here:2*"
+                        "*claude-client:elsewhere:1*"))
+          (when-let* ((b (get-buffer name))) (kill-buffer b)))))))
+
+(describe "claude-client--recent-conversation with nothing open"
+  (it "answers nil, so a caller can start a conversation instead"
+    (check (claude-client--recent-conversation) nil)))
+
+(describe "claude-client-send-prompt from a code buffer"
+  (let ((conversation (get-buffer-create "*claude-client:proj:1*"))
+        (code (get-buffer-create "*claude-send-prompt-code*"))
+        (asked nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer conversation
+            (claude-client-mode)
+            (setq default-directory "/tmp/proj/"
+                  claude-client--turn-active nil))
+          (cl-letf (((symbol-function 'agent-prompt-read)
+                     (lambda (_cb &optional _initial label _window source)
+                       (setq asked (list :label label :source source))
+                       nil))
+                    ;; Displaying would fight the batch frame; the point here
+                    ;; is which conversation was resolved, not the window.
+                    ((symbol-function 'claude-client--display)
+                     (lambda (buffer) (get-buffer-window buffer t))))
+            (with-current-buffer code
+              (setq default-directory "/tmp/proj/")
+              (claude-client-send-prompt)))
+          (it "composes against the project's conversation rather than refusing"
+            (check (plist-get asked :label) "*claude-client:proj:1*"))
+          (it "passes the code buffer along, so its region can seed the prompt"
+            (check (plist-get asked :source) code)))
+      (let ((kill-buffer-query-functions nil))
+        (dolist (b (list conversation code))
+          (when (buffer-live-p b) (kill-buffer b)))))))
+
+(describe "claude-client-send-prompt with a turn already running"
+  (let ((conversation (get-buffer-create "*claude-client:proj:1*"))
+        (code (get-buffer-create "*claude-send-prompt-code*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer conversation
+            (claude-client-mode)
+            (setq default-directory "/tmp/proj/"
+                  claude-client--turn-active t))
+          (with-current-buffer code
+            (setq default-directory "/tmp/proj/")
+            (it "refuses, naming the conversation that is busy"
+              (check (condition-case err
+                         (progn (claude-client-send-prompt) nil)
+                       (user-error (and (string-match-p "proj:1"
+                                                        (error-message-string err))
+                                        t)))
+                     t))))
+      (let ((kill-buffer-query-functions nil))
+        (dolist (b (list conversation code))
+          (when (buffer-live-p b) (kill-buffer b)))))))
+
+(describe "claude-client-send-prompt with no conversation anywhere"
+  (let ((code (get-buffer-create "*claude-send-prompt-code*"))
+        (opened nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'claude-client-open)
+                   (lambda () (interactive) (setq opened t))))
+          (with-current-buffer code (claude-client-send-prompt))
+          (it "starts one rather than erroring, the fallback `claude-client-toggle' makes"
+            (check opened t)))
+      (let ((kill-buffer-query-functions nil))
+        (when (buffer-live-p code) (kill-buffer code))))))
+
+(describe "claude-client-send-prompt with a prefix argument"
+  (let ((a (get-buffer-create "*claude-client:proj:1*"))
+        (b (get-buffer-create "*claude-client:proj:2*"))
+        (code (get-buffer-create "*claude-send-prompt-code*"))
+        (asked nil)
+        (offered nil))
+    (unwind-protect
+        (progn
+          (dolist (buf (list a b))
+            (with-current-buffer buf
+              (claude-client-mode)
+              (setq default-directory "/tmp/proj/"
+                    claude-client--turn-active nil)))
+          (cl-letf (((symbol-function 'agent-prompt-read)
+                     (lambda (_cb &optional _initial label _window _source)
+                       (setq asked label) nil))
+                    ((symbol-function 'claude-client--display)
+                     (lambda (buffer) (get-buffer-window buffer t)))
+                    ;; The picker is offered every live conversation, so a
+                    ;; prefix can reach one in another project too.
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt alist &rest _)
+                       (setq offered (length alist))
+                       (car (car alist)))))
+            (with-current-buffer code
+              (setq default-directory "/tmp/proj/")
+              (claude-client-send-prompt t)))
+          (it "asks which conversation to send to"
+            (check offered 2))
+          (it "composes against the one chosen"
+            (check-that (and asked (string-prefix-p "*claude-client:proj:" asked)))))
+      (let ((kill-buffer-query-functions nil))
+        (dolist (buf (list a b code))
+          (when (buffer-live-p buf) (kill-buffer buf)))))))
+
 (test-helper-summary)
 
 ;;; claude-client-test.el ends here

@@ -93,6 +93,10 @@ and its context carry across turns.
   either runner continues in the other. Only the model's context comes back —
   the rendered log lives in the buffer, not on disk.
 - `M-x claude-client-list` / `-switch` / `-toggle` / `-quit` — manage conversations.
+- `M-x claude-client-send-prompt` — compose the next turn. Worth binding
+  globally: run from any buffer it sends to this project's most recently used
+  conversation, falling back to any live one, and starts a conversation when
+  there is none. With `C-u`, pick from the live conversations.
 
 In the conversation buffer: `s` send, `i` interrupt, `n` add note, `r` resume,
 `g` start, `k` quit, `TAB` expand the tool result under point.
@@ -108,6 +112,18 @@ conversations can each have their own: below by default, or to the right when
 the conversation window is shorter than
 `agent-prompt-split-height-threshold` (20 lines) and cannot spare the rows.
 Set `agent-prompt-use-minibuffer` to restore the old `read-string` prompt.
+
+**Seeding from the region.** An active region in the buffer you invoked from
+lands in the composition buffer, so quoting the code you are looking at is not
+a copy-switch-paste round trip. What goes in depends on size: a short selection
+is inserted as a fenced block labelled with its path and line range, so the
+text is in front of you while you write about it; a longer one becomes an
+`@path:start-end` reference instead, which the agent can read for itself and
+which stays right if the lines move on. The cutoff is
+`agent-prompt-region-fence-max-lines` (12) with
+`agent-prompt-region-fence-max-chars` (800) catching a few very wide lines.
+Set `agent-prompt-region-seed` to `fenced`, `reference`, or nil to force one
+shape or switch the seeding off.
 
 **Appearance.** The buffer separates what the harness did from what the model
 said. Structural chrome — the session banner, prompts, tool calls and their
