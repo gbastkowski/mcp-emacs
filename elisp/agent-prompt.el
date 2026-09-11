@@ -76,6 +76,14 @@ otherwise."
   :type '(choice (const :tag "Automatic" nil) function)
   :group 'agent-prompt)
 
+(defcustom agent-prompt-start-in-insert-state t
+  "When non-nil, an evil prompt buffer opens in insert state.
+The buffer exists because someone is about to type into it, so normal
+state costs an `i' every time.  Nil leaves the state to evil's own
+rules, for hands that would rather start in normal state."
+  :type 'boolean
+  :group 'agent-prompt)
+
 (defcustom agent-prompt-history-limit 50
   "How many past prompts `M-p' can walk back through."
   :type 'integer
@@ -364,6 +372,7 @@ gains the send and abort bindings."
 
 (declare-function evil-define-key* "evil-core")
 (declare-function evil-set-initial-state "evil-core")
+(declare-function evil-insert-state "evil-states")
 
 (with-eval-after-load 'evil
   ;; `ZZ' and `ZQ' are what vim hands already do to finish an editor
@@ -373,8 +382,24 @@ gains the send and abort bindings."
   (evil-define-key* 'normal agent-prompt-mode-map
                     (kbd "ZZ") #'agent-prompt-send
                     (kbd "ZQ") #'agent-prompt-abort)
-  ;; The buffer exists because someone is about to type into it.
+  ;; The buffer exists because someone is about to type into it.  This
+  ;; registration is not enough on its own: evil resolves the initial
+  ;; state while the major mode is being set, which is before
+  ;; `agent-prompt-mode' is on, so the lookup that would find this entry
+  ;; has nothing to find yet.  `agent-prompt--enter-insert-state' does the
+  ;; actual switch; this stays for anything else that consults the table.
   (evil-set-initial-state 'agent-prompt-mode 'insert))
+
+(defun agent-prompt--enter-insert-state ()
+  "Put the current prompt buffer into evil insert state.
+Called once both modes are in place and the buffer has its window, for
+the reason spelled out where `evil-set-initial-state' is called: that
+registration cannot take effect by itself here.  A no-op without evil,
+and when `agent-prompt-start-in-insert-state' is nil."
+  (when (and agent-prompt-start-in-insert-state
+             (bound-and-true-p evil-local-mode)
+             (fboundp 'evil-insert-state))
+    (evil-insert-state)))
 
 ;;;; Entry point
 
@@ -404,6 +429,10 @@ SOURCE is the buffer the command was invoked from; an active region
 there seeds the prompt (see `agent-prompt-region-seed') when INITIAL
 does not.  Point lands after the seed and a blank line, so typing starts
 on the prompt rather than inside the quote.
+
+Under evil the buffer opens in insert state
+\(`agent-prompt-start-in-insert-state'), since it exists to be typed
+into.
 
 With `agent-prompt-use-minibuffer' this falls back to `read-string' and
 calls CALLBACK synchronously; callers must not rely on either timing."
@@ -438,6 +467,11 @@ calls CALLBACK synchronously; callers must not rely on either timing."
           ;; one; keep the buffer unmistakably scratch.
           (setq buffer-file-name nil))
         (agent-prompt--display buffer window)
+        ;; After the window exists: the state is a buffer-local property,
+        ;; but the cursor shape that tells the human they can type only
+        ;; follows once the buffer is the one selected.
+        (with-current-buffer buffer
+          (agent-prompt--enter-insert-state))
         buffer))))
 
 (provide 'agent-prompt)
