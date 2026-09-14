@@ -328,6 +328,28 @@ and `control' is the fake control buffer."
     (it "still answers on its own so the request cannot hang"
       (check (length calls) 1))))
 
+;; The synchronous variant must refuse to run under a process filter.  A
+;; filter has no command loop to deliver the human's keypress to ediff, and
+;; Emacs binds `inhibit-quit' to t there, so the old behaviour was: review
+;; displayed, keys dead, `C-g' ignored, Emacs frozen until the timeout --
+;; and because the awaited keypress is what `sleep-for' stops being read,
+;; the wait could only ever end in "Status: timeout".  Observed live: 11
+;; such timeouts against 86 applied on the async path.
+;;
+;; Failing fast is what makes that a bug report instead of a hung editor.
+(describe "mcp-emacs-apply-diff under a process filter"
+  (let ((file (mcp--async-fixture)))
+    (unwind-protect
+        (let ((err (let ((inhibit-quit t))
+                     (condition-case e
+                         (progn (mcp-emacs-apply-diff file "new\n" 60) nil)
+                       (error e)))))
+          (it "signals rather than hanging with a review nobody can answer"
+            (check-that (and err t)))
+          (it "names the async variant so the caller knows the way out"
+            (check-that (string-match-p "async" (format "%S" err)))))
+      (delete-file file))))
+
 ;;;; Org-task domain events (issue #39)
 ;;
 ;; The Org file is the aggregate; these events observe that it changed.  The

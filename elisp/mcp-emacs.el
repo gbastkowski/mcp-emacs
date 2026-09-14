@@ -918,7 +918,19 @@ enclosing poll loop then spins at 100% CPU for its whole timeout.
 other tool calls all keep running.  It also returns immediately when
 input is pending, which would bring the spin back, so fall through to
 `sleep-for' in that case: the wait is what matters here, not staying
-responsive to a keystroke we are not going to read."
+responsive to a keystroke we are not going to read.
+
+A warning for anyone waiting on a *human* through this tick: do not.
+`sleep-for' blocks without consuming input, so a pending event stays
+pending and every later tick takes the same branch.  Under a process
+filter, where Emacs binds `inhibit-quit' to t, that is an
+uninterruptible hang -- and if the thing being waited for is a keypress
+(an ediff review), it is a deadlock, because the keystroke that would
+end the wait is what stops it being read.  Draining the input here does
+not help: requeueing it for the command loop restores the very condition
+`sit-for' declines on.  Human-answered tools must use `:async-handler'
+instead -- return to the event loop and answer from a callback, as
+`mcp-emacs-apply-diff-async' does."
   (unless (sit-for seconds)
     (sleep-for seconds)))
 
@@ -1222,7 +1234,16 @@ content changed from its entry state the outcome is applied (the final
 content is returned; saving is left to the human); otherwise rejected.
 On timeout the ediff session is abandoned and Buffer A left untouched.
 TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
-`mcp-emacs-apply-diff-default-timeout'."
+`mcp-emacs-apply-diff-default-timeout'.
+
+Refuses to run under a process filter.  The wait needs a command loop to
+deliver the human's keypress to ediff, and a filter has none -- Emacs
+binds `inhibit-quit' to t there, so the review would display with dead
+keys, ignore `C-g', and freeze Emacs until the timeout expired.  Callers
+reaching this from a filter want `mcp-emacs-apply-diff-async'."
+  (when inhibit-quit
+    (error (concat "apply_diff cannot run synchronously here: no command "
+                   "loop to answer the review (use mcp-emacs-apply-diff-async)")))
   (condition-case err
       (let* ((file (expand-file-name path))
              (buffer-a (find-file-noselect file))
