@@ -386,7 +386,12 @@ case "${1:-}" in
     # under test.  `--compile --strict' opts in when cleaning those up.
     strict=()
     [ "${1:-}" = "--strict" ] && strict=(--eval '(setq byte-compile-error-on-warn t)')
-    emacs_batch "${strict[@]}" -f batch-byte-compile elisp/*.el
+    # `${strict[@]+"${strict[@]}"}' rather than a plain `"${strict[@]}"':
+    # bash 3.2 -- still what `/bin/bash' is on macOS -- treats expanding an
+    # empty array under `set -u' as an unbound variable, so the default
+    # non-strict path died before reaching Emacs.  Bash 4.4+ allows the plain
+    # form, which is why this only ever failed on the old system shell.
+    emacs_batch ${strict[@]+"${strict[@]}"} -f batch-byte-compile elisp/*.el
     ;;
   --daemon)
     start_daemon
