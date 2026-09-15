@@ -2056,6 +2056,37 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
             (check (agent-backend-note-policy agent-backend--instance) :queue)))
       (kill-buffer buf))))
 
+;; `claude-client-open-another' is the parallel conversation (issue #85):
+;; `claude-client-open' from inside a conversation (`g') restarts that
+;; buffer in place -- fine as a restart, wrong for "start another next to
+;; the one working".  The new command must always build a fresh buffer,
+;; even when invoked from inside a conversation.
+(describe "claude-client-open-another versus claude-client-open"
+  (let ((made nil) (displayed nil))
+    (cl-letf (((symbol-function 'claude-client--new-buffer)
+               (lambda () (let ((b (claude-test--buffer)))
+                            (push b made)
+                            b)))
+              ((symbol-function 'claude-client--display)
+               (lambda (b) (setq displayed b) nil))
+              ;; The prompt reader would prompt in batch.
+              ((symbol-function 'agent-prompt-read)
+               (lambda (&rest _) nil)))
+      (let ((buf (claude-test--buffer)))
+        (with-current-buffer buf (claude-client-open))
+        (it "reuses the current conversation buffer from inside one, as `g' does"
+          (check displayed buf))
+        (it "creates no fresh buffer when it reuses"
+          (check made nil)))
+      (let ((buf (claude-test--buffer)))
+        (with-current-buffer buf (claude-client-open-another))
+        (it "selects a fresh conversation buffer even from inside one"
+          (check (not (eq displayed buf)) t))
+        (it "composes against the fresh buffer, not the one invoked from"
+          (check displayed (car made)))
+        (it "never restarts the conversation it was invoked from"
+          (check (memq buf made) nil))))))
+
 (test-helper-summary)
 
 ;;; claude-client-test.el ends here

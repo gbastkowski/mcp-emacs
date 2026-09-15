@@ -1,0 +1,96 @@
+#+TITLE: issue-85
+
+* Intent
+~agent-backend-start~ (~SPC A a~) dispatches to ~claude-client-open~ or
+~opencode-client-create-session~ according to ~agent-backend-preference~.
+Under Claude, ~claude-client-open~ (in ~elisp/claude-client.el~) branches on
+the buffer point is in: outside a conversation it opens a new one, but inside
+one it *reuses* that buffer, and ~claude-client-start~ then erases the log,
+kills the process and resets the session. So ~SPC A a~ means "start an agent,
+unless you happen to be looking at one, in which case restart that one", and
+there is no key for the thing you actually want when an agent is already
+working: a second, parallel conversation (~SPC A a~ should restart when you
+are *in* the conversation; parallel is a separate intent, ~SPC A A~).
+
+Parallel agents are the premise of ~agent-session-overview~, so starting
+another one should be its own command, additive on top of ~agent-backend-start~,
+not a side effect of buffer position. opencode already creates a fresh session
+unconditionally, so only the Claude path needs a variant that skips the reuse
+branch.
+
+* Scope
+In scope:
+- Add ~agent-backend-start-another~ in ~elisp/agent-backend.el~: same backend
+  dispatch as ~agent-backend-start~, but always opens a fresh conversation,
+  never reusing the current buffer. For opencode that is
+  ~opencode-client-create-session~ unchanged; for Claude a new
+  ~claude-client-open-another~ that always builds a new conversation buffer.
+- Split ~claude-client-open~ into a thin public entry plus a shared internal
+  core that takes an explicit "always new" argument, so ~claude-client-open~
+  (the ~g~ binding) keeps its reuse/restart behaviour exactly and
+  ~claude-client-open-another~ shares the same composition-and-send path.
+- Expose ~agent-backend-start-another~ in ~claude-client-mode-map~ and
+  ~agent-session-overview-mode-map~.
+- Tests in ~test/agent-backend-test.el~ covering the dispatch semantics.
+
+Out of scope:
+- Changing ~agent-backend-start~ (~SPC A a~) or the ~g~ restart behaviour.
+- The Doom/Evil ~SPC A A~ binding itself (it lives in a separate dotfiles repo
+  and is noted in the issue; this change ships the command and the keymaps it
+  is exposed in, not the leader binding).
+- Naming or limits on concurrent conversations.
+
+* Approach
+- ~claude-client.el~: extract the body of ~claude-client-open~ into
+  ~claude-client--open (force-new)~, with ~(if (and (not force-new)
+  (derived-mode-p 'claude-client-mode)) (current-buffer)
+  (claude-client--new-buffer))~ for the buffer selection and the rest
+  unchanged (composition buffer, window, send). ~claude-client-open~ becomes
+  ~(claude-client--open nil)~; add ~claude-client-open-another~ =
+  ~(claude-client--open t)~. Keep the existing docstring semantics: ~g~
+  restarts the conversation it is invoked from; the new command never reuses.
+- ~agent-backend.el~: declare ~claude-client-open-another~, and add
+  ~agent-backend-start-another~ mirroring ~agent-backend-start~ but dispatching
+  to ~opencode-client-create-session~ or ~claude-client-open-another~.
+- ~claude-client-mode-map~: bind ~A~ to ~agent-backend-start-another~;
+  ~agent-session-overview-mode-map~: bind a new key (e.g. ~n~, "new") to it, so
+  the overview can start a conversation it does not yet list.
+- Tests: stub the client entry points as ~test/agent-backend-test.el~ already
+  does and assert (a) ~agent-backend-start-another~ under opencode calls
+  ~opencode-client-create-session~; (b) under Claude it calls
+  ~claude-client-open-another~; (c) ~agent-backend-start-another~ is bound in
+  both keymaps; (d) ~claude-client-open-another~ selects ~claude-client--new-buffer~
+  even from inside a ~claude-client-mode~ buffer (stub the buffer constructor),
+  while ~claude-client-open~ from such a buffer reuses it.
+- Verify with the repository's own entry point on a separate Emacs:
+  ~bin/test-emacs.sh --compile --strict~ and the full suite, in the work tree
+  (see AGENTS.md).
+
+* Tasks
+- [ ] Add ~claude-client--open~ internal core with a ~force-new~ argument in ~elisp/claude-client.el~ (~claude-client-open~ keeps reuse/restart behaviour)
+- [ ] Add ~claude-client-open-another~ that always creates a fresh conversation buffer
+- [ ] Add ~agent-backend-start-another~ with the same preference dispatch, Claude path -> ~claude-client-open-another~
+- [ ] Bind ~A~ (~agent-backend-start-another~) in ~claude-client-mode-map~ and a start key in ~agent-session-overview-mode-map~
+- [ ] Tests: dispatch under opencode and Claude, both keymap bindings, and the force-new/reuse buffer selection
+- [ ] ~bin/test-emacs.sh --compile~ clean (no new warnings) and full suite green in a separate Emacs
+- [ ] orgspec change validated and the fold archived into ~specs/agent-backend.org~ when green
+
+* Delta
+** Start another, parallel agent conversation                  :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+The agent-backend module SHALL provide a command ~agent-backend-start-another~
+that starts a fresh conversation with the preferred backend
+(according to ~agent-backend-preference~), resolving the backend exactly as
+~agent-backend-start~ does, and SHALL never reuse or reset the conversation
+buffer it is invoked from — a running conversation is joined, not restarted.
+*** Opens a fresh conversation under opencode
+- WHEN the preferred backend is opencode and ~agent-backend-start-another~ is invoked
+- THEN a new session is created via ~opencode-client-create-session~
+*** Opens a fresh conversation under Claude
+- WHEN the preferred backend is Claude and ~agent-backend-start-another~ is invoked from inside a Claude conversation buffer
+- THEN a new conversation buffer is created (not the current one restarted) and its first prompt is composed
+*** Exposed in the conversation and overview keymaps
+- WHEN a ~claude-client-mode~ or ~agent-session-overview-mode~ buffer is focused
+- THEN ~agent-backend-start-another~ is bound in that mode's keymap

@@ -10,6 +10,12 @@
 (require 'test-helper)
 (require 'cl-lib)
 (require 'agent-backend)
+;; The mode maps `agent-backend-start-another' is exposed in live in the
+;; client files; require them so the binding assertions below see the
+;; real maps (opencode-client stays the stub feature provided further
+;; down, since its real file probes the server).
+(require 'claude-client)
+(require 'agent-session-overview)
 
 (describe "agent-backend-prefer-opencode-p with an explicit preference"
   (cl-letf (((symbol-function 'opencode-client--health) (lambda () t)))
@@ -291,6 +297,46 @@
   (it "keeps the interrupt key, which is now the only way to stop a turn"
     (check (lookup-key agent-backend-mode-map (kbd "C-c C-i"))
            'agent-backend-interrupt-command)))
+
+;; `agent-backend-start-another' shares the preference dispatch with
+;; `agent-backend-start', but issue #85's point is that it must never
+;; reuse the conversation it is invoked from: opencode already opens a
+;; fresh session unconditionally, and the Claude path is the new
+;; `claude-client-open-another'.
+(describe "agent-backend-start-another dispatch"
+  (let (opencode-called claude-called)
+    ;; The entry points may be unbound in this suite -- opencode-client is
+    ;; provided as a stub feature above, and claude-client loads on demand
+    ;; -- so seed stub definitions before cl-letf saves them.
+    (unless (fboundp 'opencode-client-create-session)
+      (fset 'opencode-client-create-session #'ignore))
+    (unless (fboundp 'claude-client-open-another)
+      (fset 'claude-client-open-another #'ignore))
+    (cl-letf (((symbol-function 'opencode-client-create-session)
+               (lambda () (setq opencode-called t)))
+              ((symbol-function 'claude-client-open-another)
+               (lambda () (setq claude-called t))))
+      (let ((agent-backend-preference 'opencode))
+        (agent-backend-start-another)
+        (it "creates a fresh session under an explicit opencode preference"
+          (check opencode-called t))
+        (it "does not reach the Claude path under opencode"
+          (check claude-called nil)))
+      (let ((agent-backend-preference 'claude))
+        (setq opencode-called nil claude-called nil)
+        (agent-backend-start-another)
+        (it "opens a fresh conversation under a claude preference"
+          (check claude-called t))
+        (it "does not reach the opencode path under claude"
+          (check opencode-called nil))))))
+
+(describe "agent-backend-start-another keymap exposure"
+  (it "binds A in `claude-client-mode-map'"
+    (check (lookup-key claude-client-mode-map (kbd "A"))
+           'agent-backend-start-another))
+  (it "binds n in `agent-session-overview-mode-map'"
+    (check (lookup-key agent-session-overview-mode-map (kbd "n"))
+           'agent-backend-start-another)))
 
 (test-helper-summary)
 

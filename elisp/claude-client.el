@@ -1177,6 +1177,31 @@ with the one being answered."
 
 ;;;; Entry point
 
+(defun claude-client--open (force-new)
+  "Open a Claude conversation and compose its first prompt.
+The conversation buffer is created and displayed first, with no process
+yet, so the prompt can be composed in a split of the window it will
+answer in.  Sending starts the CLI; aborting leaves an empty
+conversation buffer, which `g' will reuse.
+
+When FORCE-NEW is non-nil a fresh conversation buffer is always built,
+so a running conversation is joined rather than restarted -- the
+`claude-client-open-another' path.  Without it, called from inside a
+conversation buffer (the `g' binding), that buffer is restarted in
+place, exactly as `claude-client-start' does, so the composed prompt
+replaces the existing log."
+  (let* ((source (current-buffer))
+         (buffer (if (and (not force-new)
+                          (derived-mode-p 'claude-client-mode))
+                     (current-buffer)
+                   (claude-client--new-buffer)))
+         (window (claude-client--display buffer)))
+    (agent-prompt-read
+     (lambda (text)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer (claude-client-start text))))
+     nil (buffer-name buffer) window source)))
+
 ;;;###autoload
 (defun claude-client-open ()
   "Open a Claude conversation and compose its first prompt.
@@ -1189,16 +1214,18 @@ Called from inside a conversation buffer -- the `g' binding -- this
 restarts that conversation in place, exactly as `claude-client-start'
 does, so the composed prompt replaces the existing log."
   (interactive)
-  (let* ((source (current-buffer))
-         (buffer (if (derived-mode-p 'claude-client-mode)
-                     (current-buffer)
-                   (claude-client--new-buffer)))
-         (window (claude-client--display buffer)))
-    (agent-prompt-read
-     (lambda (text)
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer (claude-client-start text))))
-     nil (buffer-name buffer) window source)))
+  (claude-client--open nil))
+
+;;;###autoload
+(defun claude-client-open-another ()
+  "Open a second, parallel Claude conversation and compose its first prompt.
+Always builds a fresh conversation buffer, never reusing or restarting
+the one it is invoked from: a running conversation is joined, not
+restarted.  `g' (`claude-client-open') is the restart; this is the
+conversation `agent-backend-start-another' dispatches to under Claude,
+so a working agent is left alone while another starts next to it."
+  (interactive)
+  (claude-client--open t))
 
 ;;;###autoload
 (defun claude-client-start (prompt &optional resume-id)
@@ -1607,6 +1634,7 @@ window behind to clean up by hand."
     (define-key map (kbd "s") #'claude-client-send-prompt)
     (define-key map (kbd "r") #'claude-client-resume)
     (define-key map (kbd "i") #'claude-client-interrupt)
+    (define-key map (kbd "A") #'agent-backend-start-another)
     (define-key map (kbd "?") #'claude-client-help)
     (define-key map (kbd "TAB") #'claude-client-toggle-tool-result)
     map)

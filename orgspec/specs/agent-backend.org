@@ -206,3 +206,18 @@ rather than each backend growing its own surface.
 - WHEN the decision is raised
 - THEN it appears in the same menu buffer, and answering it replies to
   opencode
+* Start another, parallel agent conversation
+The agent-backend module SHALL provide a command ~agent-backend-start-another~
+that starts a fresh conversation with the preferred backend
+(according to ~agent-backend-preference~), resolving the backend exactly as
+~agent-backend-start~ does, and SHALL never reuse or reset the conversation
+buffer it is invoked from — a running conversation is joined, not restarted.
+** Opens a fresh conversation under opencode
+- WHEN the preferred backend is opencode and ~agent-backend-start-another~ is invoked
+- THEN a new session is created via ~opencode-client-create-session~
+** Opens a fresh conversation under Claude
+- WHEN the preferred backend is Claude and ~agent-backend-start-another~ is invoked from inside a Claude conversation buffer
+- THEN a new conversation buffer is created (not the current one restarted) and its first prompt is composed
+** Exposed in the conversation and overview keymaps
+- WHEN a ~claude-client-mode~ or ~agent-session-overview-mode~ buffer is focused
+- THEN ~agent-backend-start-another~ is bound in that mode's keymap

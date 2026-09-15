@@ -50,6 +50,7 @@
 (declare-function claude-client-interrupt "claude-client" ())
 (declare-function claude-client-quit "claude-client" ())
 (declare-function mcp-emacs-run-quit "mcp-emacs-run" (&optional buffer))
+(declare-function agent-backend-start-another "agent-backend" ())
 
 (defvar claude-client--process)
 (defvar claude-client--turn-active)
@@ -282,6 +283,7 @@ keeps the binding where the muscle memory expects it."
   '(("RET" "visit the session")
     ("k"   "quit it (asks first)")
     ("i"   "interrupt its turn")
+    ("n"   "start another session")
     ("g"   "refresh")
     ("?"   "toggle this help")
     ("q"   "bury the overview"))
@@ -371,6 +373,7 @@ needs arranging."
     (define-key map (kbd "RET") #'agent-session-overview-visit)
     (define-key map (kbd "k") #'agent-session-overview-quit-session)
     (define-key map (kbd "i") #'agent-session-overview-interrupt-session)
+    (define-key map (kbd "n") #'agent-backend-start-another)
     (define-key map (kbd "?") #'agent-session-overview-help)
     map)
   "Keymap for `agent-session-overview-mode'.

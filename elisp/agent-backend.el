@@ -536,6 +536,7 @@ The backend instance lives in the buffer-local `agent-backend--instance'."
 (declare-function opencode-client-create-session "opencode-client" (&optional title))
 (declare-function claude-client-start "claude-client" (prompt &optional resume-id))
 (declare-function claude-client-open "claude-client" ())
+(declare-function claude-client-open-another "claude-client" ())
 
 ;;;; Backend selection
 
@@ -574,6 +575,26 @@ opencode is not reachable under `auto'."
   (if (agent-backend-prefer-opencode-p)
       (opencode-client-create-session)
     (claude-client-open)))
+
+;;;###autoload
+(defun agent-backend-start-another ()
+  "Start a fresh conversation with the preferred backend, in parallel.
+Dispatches on `agent-backend-preference' exactly like
+`agent-backend-start', but never reuses or resets the conversation it is
+invoked from: opencode creates a fresh session, and Claude goes to
+`claude-client-open-another', which always builds a new conversation
+buffer.  A running agent is joined, not restarted -- restarting is what
+`agent-backend-start' (`g') does from inside a conversation.  Bound to
+`A' in `claude-client-mode-map' and to `n' in
+`agent-session-overview-mode-map', so another agent can start while one
+is working (issue #85)."
+  (interactive)
+  (if (agent-backend-prefer-opencode-p)
+      (require 'opencode-client nil t)
+    (require 'claude-client nil t))
+  (if (agent-backend-prefer-opencode-p)
+      (opencode-client-create-session)
+    (claude-client-open-another)))
 
 (provide 'agent-backend)
 ;;; agent-backend.el ends here
