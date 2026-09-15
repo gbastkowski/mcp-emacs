@@ -134,6 +134,91 @@
         (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
       (delete-file file))))
 
+;;;; The timer-driven wait
+
+;; The async wait answers the deferred request from a timer instead of
+;; looping under the process filter.  These cases drive real timers and let
+;; the event loop run with `sit-for', so they pin the delivery contract the
+;; async handler relies on rather than restating its callback, which would
+;; pass against a version that never delivers at all.
+
+(describe "mcp-emacs-org-task-wait-for-change-async on timeout"
+  (let* ((file (make-temp-file "mcp-wait-async-" nil ".org"
+                               "* TODO Task\n:PROPERTIES:\n:SESSION: s1\n:END:\n"))
+         (deliveries '()))
+    (unwind-protect
+        (let* ((buffer (find-file-noselect file))
+               (baseline (with-current-buffer buffer
+                           (mcp-emacs-org-task--token))))
+          (it "returns to the event loop instead of waiting out its timeout"
+            (check-that
+             (< (mcp--elapsed
+                 (lambda ()
+                   (mcp-emacs-org-task-wait-for-change-async
+                    file baseline 0.4
+                    (lambda (text) (push text deliveries)))))
+                0.3)))
+          (it "has not delivered a result before the timeout elapses"
+            (check (length deliveries) 0))
+          ;; Let the bounded timer fire, then give it room to fire again if
+          ;; the single-delivery guard were missing.
+          (sit-for 0.8)
+          (it "delivers exactly once when the timeout elapses"
+            (check (length deliveries) 1))
+          (it "carries the no-change flag and the session view"
+            (check-that (string-prefix-p "Changed: no" (car deliveries))))
+          (sit-for 0.4)
+          (it "does not deliver a second time after the timeout"
+            (check (length deliveries) 1)))
+      (let ((b (find-buffer-visiting file)))
+        (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+      (delete-file file))))
+
+(describe "mcp-emacs-org-task-wait-for-change-async on a change"
+  (let* ((file (make-temp-file "mcp-wait-async-" nil ".org"
+                               "* TODO Task\n:PROPERTIES:\n:SESSION: s1\n:END:\n"))
+         (deliveries '()))
+    (unwind-protect
+        (let* ((buffer (find-file-noselect file))
+               (baseline (with-current-buffer buffer
+                           (mcp-emacs-org-task--token))))
+          (mcp-emacs-org-task-wait-for-change-async
+           file baseline 30 (lambda (text) (push text deliveries)))
+          (it "does not deliver before the file changes"
+            (check (length deliveries) 0))
+          ;; Advance the token past the baseline; the poll timer is what
+          ;; notices.
+          (with-current-buffer buffer
+            (goto-char (point-max))
+            (insert "\n* Later\n"))
+          (sit-for 0.6)
+          (it "delivers exactly once when the change is observed"
+            (check (length deliveries) 1))
+          (it "carries the change flag and the session view"
+            (check-that (string-prefix-p "Changed: yes" (car deliveries))))
+          (sit-for 0.4)
+          (it "does not deliver a second time on a later poll"
+            (check (length deliveries) 1)))
+      (let ((b (find-buffer-visiting file)))
+        (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+      (delete-file file))))
+
+(describe "mcp-emacs-org-task-wait-for-change-async on a non-Org file"
+  (let* ((file (make-temp-file "mcp-wait-async-" nil ".txt"
+                               "not an org file\n"))
+         (deliveries '()))
+    (unwind-protect
+        (progn
+          (mcp-emacs-org-task-wait-for-change-async
+           file nil 30 (lambda (text) (push text deliveries)))
+          (it "delivers the friendly not-org error exactly once"
+            (check (length deliveries) 1))
+          (it "names the file that is not an Org file"
+            (check-that (string-prefix-p "Not an Org file:" (car deliveries)))))
+      (let ((b (find-buffer-visiting file)))
+        (when b (with-current-buffer b (set-buffer-modified-p nil)) (kill-buffer b)))
+      (delete-file file))))
+
 (test-helper-summary)
 
 ;;; mcp-emacs-wait-tick-test.el ends here
