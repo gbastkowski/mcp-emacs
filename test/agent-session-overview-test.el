@@ -12,6 +12,11 @@
 (require 'test-helper)
 (require 'cl-lib)
 (require 'agent-session-overview)
+;; `n' is bound to `agent-backend-start-another' (issue #85), so the command
+;; must be defined for the "every documented key is bound" assertions below to
+;; mean anything.  A real session gets it from the autoload cookie; batch
+;; loading has to require it.
+(require 'agent-backend)
 
 (defmacro with-session-buffers (names &rest body)
   "Create buffers NAMES, run BODY, then kill them."
