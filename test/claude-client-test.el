@@ -1793,6 +1793,27 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
                    (sort (mapcar (lambda (c) (format "%s=%s" (car c) (cdr c)))
                                  claude-client--evil-keys)
                          #'string<)))
+          ;; ...and the other direction, which the check above cannot see: it
+          ;; iterates `claude-client--evil-keys', so a key added to the keymap
+          ;; and forgotten in the table passes it silently.  That is not
+          ;; hypothetical -- `A' shipped that way (issue #85), and under evil
+          ;; `A' is `evil-append-line', so the new command was simply dead in
+          ;; a Doom config.
+          ;;
+          ;; The keys are listed rather than discovered by `map-keymap':
+          ;; walking picks up whatever the mode inherits, which is not this
+          ;; module's to re-register, so the list has to be maintained
+          ;; alongside the keymap.  A new single-letter binding means a line
+          ;; here too -- which is the point, since forgetting one is the bug.
+          (it "re-registers every letter key in the keymap, or exempts it on purpose"
+            (let ((exempt '("k" "g"))   ; left to evil on purpose, pinned below
+                  missing)
+              (dolist (key '("s" "r" "i" "A" "g" "k"))
+                (when (and (commandp (lookup-key claude-client-mode-map (kbd key)))
+                           (not (member key exempt))
+                           (not (assoc key claude-client--evil-keys)))
+                  (push key missing)))
+              (check (sort missing #'string<) nil)))
           ;; `k' and `g' are left to evil on purpose: both are motions
           ;; (`evil-previous-line', the `gg' prefix) and both sit in front of a
           ;; destructive command here, so re-registering them made moving the

@@ -1564,6 +1564,7 @@ turn is now only ever `claude-client-interrupt' (issue #69)."
   '(("s"       "say something: sends, or carries into the next turn")
     ("i"       "interrupt the turn, keeping the session")
     ("r"       "resume a past session here")
+    ("A"       "start another conversation, leaving this one working")
     ("TAB"     "expand or collapse the tool result at point")
     ("?"       "toggle this help")
     ("C-c C-q" "kill the CLI process for this buffer")
@@ -1648,6 +1649,7 @@ re-registers them.  The evil-safe `C-c'-prefixed vocabulary lives in
   '(("s" . claude-client-send-prompt)
     ("r" . claude-client-resume)
     ("i" . claude-client-interrupt)
+    ("A" . agent-backend-start-another)
     ("?" . claude-client-help)
     ;; Not single-letter, but evil's motion state does claim TAB
     ;; (`evil-jump-forward'), so it needs re-registering the same way.
