@@ -415,6 +415,16 @@ rather than `null' (an empty alist would)."
                                 "token" (mcp-emacs-server--prop "integer" "Baseline change token from a prior read; omit to return immediately")
                                 "timeout" (mcp-emacs-server--prop "integer" "Timeout in seconds (default 30, capped at 300)"))
                   "required" (vector "path"))
+         ;; Async: a wait can occupy the process filter for up to its
+         ;; 300-second cap, so the request is deferred and answered from a
+         ;; timer instead.  `:handler' stays as the synchronous fallback for
+         ;; callers that dispatch directly.
+         :async-handler (lambda (args done)
+                          (mcp-emacs-org-task-wait-for-change-async
+                           (alist-get 'path args)
+                           (alist-get 'token args)
+                           (alist-get 'timeout args)
+                           done))
          :handler (lambda (args)
                     (mcp-emacs-org-task-wait-for-change
                      (alist-get 'path args)

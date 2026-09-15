@@ -347,3 +347,22 @@ path, tags, TODO state objects, outline path, or marker position.
 - WHEN the response is read
 - THEN it contains only plain text for the task at point or the fallback
   message
+* A session file change wait is served without blocking the process filter
+The ~org_task_wait_for_change~ tool SHALL be registered with an
+~:async-handler~ alongside its synchronous ~:handler~, shaped like
+~apply_diff~'s: over HTTP the wait SHALL start and return to the Emacs event
+loop immediately rather than occupy the process filter, and the deferred
+request SHALL be answered from a timer callback.
+** Returns without occupying the filter over HTTP
+- WHEN ~org_task_wait_for_change~ is called over HTTP for a session file that has not changed past its baseline
+- THEN the handler returns to the event loop immediately and the response is written later, once the change is observed or the timeout elapses
+** Single delivery when the change is observed
+- GIVEN an async wait in progress with a baseline token
+- WHEN the session buffer is edited past that token before the timeout
+- THEN the deferred response carries the change flag and current session view exactly once
+** Single delivery when the timeout elapses
+- GIVEN an async wait in progress with a baseline token
+- WHEN no edit occurs before the bounded timeout
+- THEN the deferred response carries the no-change flag and current session view exactly once
+** The synchronous fallback stays
+- THEN ~org_task_wait_for_change~ SHALL keep its ~:handler~ so callers that dispatch directly (outside HTTP) are served synchronously, exactly as ~apply_diff~ does

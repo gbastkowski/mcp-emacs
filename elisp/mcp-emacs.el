@@ -934,6 +934,15 @@ instead -- return to the event loop and answer from a callback, as
   (unless (sit-for seconds)
     (sleep-for seconds)))
 
+(defun mcp-emacs--org-task-wait-result (changed path)
+  "Format the wait result for PATH, saying whether it CHANGED.
+CHANGED non-nil renders as \"Changed: yes\", nil as \"Changed: no\"; either
+way the current session view follows.  Shared by the synchronous and the
+timer-driven waits so the two cannot drift in output format."
+  (format "Changed: %s\n%s"
+          (if changed "yes" "no")
+          (mcp-emacs-org-task-read path)))
+
 (defun mcp-emacs-org-task-wait-for-change (path token timeout)
   "Wait until the session file at PATH changes past TOKEN, or TIMEOUT elapses.
 TOKEN is a baseline change token from a prior read; when nil or already
@@ -964,10 +973,80 @@ a change indication, the new token, and the current session view."
             (mcp-emacs--wait-tick mcp-emacs-org-task-wait-poll-interval))
           (let ((changed (or (null baseline)
                              (/= (mcp-emacs-org-task--token) baseline))))
-            (format "Changed: %s\n%s"
-                    (if changed "yes" "no")
-                    (mcp-emacs-org-task-read path)))))
+            (mcp-emacs--org-task-wait-result changed path))))
     (user-error (error-message-string err))))
+
+(defun mcp-emacs-org-task-wait-for-change-async (path token timeout on-done)
+  "Wait for the session file at PATH to change past TOKEN, without blocking.
+Like `mcp-emacs-org-task-wait-for-change', but returns to the Emacs event
+loop immediately and calls ON-DONE with the result text exactly once --
+the same \"Changed: yes/no\" indication and session view the synchronous
+function returns -- either when a poll timer observes the change or when
+TIMEOUT elapses.  ON-DONE is called with one argument, the result string.
+
+This exists because the synchronous wait runs inline in the web server's
+process filter and can hold it for up to its cap.  A wait on a file-change
+token needs no command loop, so a poll timer and a bounding timer can
+answer the deferred request from the event loop instead.
+
+TOKEN is a baseline change token from a prior read; a nil or already stale
+token is answered at once.  TIMEOUT is in seconds, defaulting to
+`mcp-emacs-org-task-wait-default-timeout' and capped at
+`mcp-emacs-org-task-wait-max-timeout'.  Returns nil."
+  (condition-case err
+      (with-current-buffer (mcp-emacs-org-task--buffer-for-path path)
+        (unless (derived-mode-p 'org-mode)
+          (user-error "Not an Org file: %s" path))
+        (let* ((buffer (current-buffer))
+               (baseline (cond
+                          ((integerp token) token)
+                          ((and (stringp token) (not (string-empty-p token)))
+                           (string-to-number token))
+                          (t nil)))
+               (secs (min mcp-emacs-org-task-wait-max-timeout
+                          (if (and (numberp timeout) (> timeout 0))
+                              timeout
+                            mcp-emacs-org-task-wait-default-timeout)))
+               ;; Guards single delivery: the poll timer and the bounding
+               ;; timer race, and whichever arrives first must be the only
+               ;; answer.
+               (done (list nil))
+               poll-timer timeout-timer)
+          (let ((finish
+                 (lambda (changed)
+                   (unless (car done)
+                     (setcar done t)
+                     (when poll-timer (cancel-timer poll-timer))
+                     (when timeout-timer (cancel-timer timeout-timer))
+                     (funcall on-done
+                              (mcp-emacs--org-task-wait-result changed path))))))
+            (if (or (null baseline)
+                    (/= (with-current-buffer buffer
+                          (mcp-emacs-org-task--token))
+                        baseline))
+                ;; Nothing to wait for: no baseline, or already advanced.
+                (funcall finish t)
+              ;; Poll without looping: the callback re-checks the token and
+              ;; resolves the wait when it moves past the baseline.
+              (setq poll-timer
+                    (run-with-timer
+                     mcp-emacs-org-task-wait-poll-interval
+                     mcp-emacs-org-task-wait-poll-interval
+                     (lambda ()
+                       (when (and (buffer-live-p buffer)
+                                  (/= (with-current-buffer buffer
+                                        (mcp-emacs-org-task--token))
+                                      baseline))
+                         (funcall finish t)))))
+              ;; Bounding timer: if no change arrives, answer no-change and
+              ;; cancel the poller.
+              (setq timeout-timer
+                    (run-with-timer
+                     secs nil
+                     (lambda ()
+                       (funcall finish nil))))))
+          nil))
+    (error (funcall on-done (error-message-string err)) nil)))
 
 ;;; Editor-state tools
 
