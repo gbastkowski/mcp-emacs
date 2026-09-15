@@ -45,6 +45,10 @@ jobs:
             exit 0
           fi
 
+          # A runner has no commit identity; git tag would fail without one.
+          git config user.name "mcp-emacs loop (rangunbot)"
+          git config user.email "rangunbot@users.noreply.github.com"
+
           git tag -a "$ver" -m "Release $ver"
           git push origin "$ver"
 
