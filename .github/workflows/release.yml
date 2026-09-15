@@ -1,0 +1,65 @@
+name: Release
+
+# Every merge to main yields a new release. The loop never merges (that is the
+# human's gate), so the trigger is the push itself, however it happened.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with history and tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine next version and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          # Latest semver tag (v1.12.0); default to v0.0.0 if none yet.
+          latest=$(git tag --sort=-v:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -n1 || true)
+          latest=${latest:-v0.0.0}
+
+          # Bump the patch number on every merge. Minor/major bumps stay a
+          # deliberate, manual tag (git tag v2.0.0 && git push --tags).
+          base=${latest#v}
+          IFS=. read -r maj min pat <<< "$base"
+          ver="v$maj.$min.$((10#$pat + 1))"
+
+          # If the tag already exists, nothing new to release on this push.
+          if git rev-parse -q --verify "refs/tags/$ver" >/dev/null; then
+            echo "Tag $ver already exists; nothing to release on this push."
+            exit 0
+          fi
+
+          git tag -a "$ver" -m "Release $ver"
+          git push origin "$ver"
+
+          # Release body: merged PRs since the previous tag.
+          if [ "$latest" = "v0.0.0" ]; then
+            notes=$(gh pr list --state merged --limit 50 \
+              --json number,title --jq '.[] | "- #\(.number) \(.title)"' || true)
+          else
+            since=$(git log -1 --format=%cI "$latest" 2>/dev/null || echo 1970-01-01)
+            notes=$(gh pr list --state merged --search "merged:>=$since" \
+              --limit 50 --json number,title --jq '.[] | "- #\(.number) \(.title)"' || true)
+          fi
+          printf '## What changed\n\n%s\n\n_Generated from the merge to main._\n' \
+            "$notes" > /tmp/release-notes.md
+
+          gh release create "$ver" \
+            --title "Release $ver" \
+            --notes-file /tmp/release-notes.md
