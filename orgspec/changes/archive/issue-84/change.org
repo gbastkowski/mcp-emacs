@@ -1,0 +1,95 @@
+#+TITLE: issue-84
+
+* Intent
+~claude-client--display~ (in ~elisp/claude-client.el~) can leave two live
+windows showing the same ~*claude-client:<project>:N*~ buffer, siblings in a
+horizontal split; the older window is squeezed to a 2-column sliver with
+~window-body-width~ 0. It looks like a window-divider artifact but is a real
+duplicate window.
+
+Observed live: two windows both on the conversation buffer, each freshly
+created by ~display-buffer~ for that buffer rather than reused (both windows'
+~quit-restore~ read ~(window window <prev> *claude-client:...*)~).
+
+Cause: ~claude-client--display~ passes the action
+~((display-buffer-in-direction) (direction . right) (window-width . 0.4))~
+with no ~display-buffer-reuse-window~ and never marks the window dedicated.
+~display-buffer-in-direction~ creates a new window even when another window
+already shows the buffer, so a second display of the same buffer splits
+instead of reusing.
+
+Trigger: ~claude-client--reshow-after-review~. Its
+~(not (get-buffer-window buffer t))~ guard runs while the ediff
+window-configuration restore is still pending, sees "not displayed",
+re-displays (creating a new window), and the pending restore then reinstates
+the original window too -- the same winconf race as the known ediff/winconf
+issue, different symptom.
+
+~mcp-emacs-run--display~ (~elisp/mcp-emacs-run.el~) already avoids this by
+~set-window-dedicated-p~ on the window it creates, and its spec
+(~orgspec/specs/claude-runner.org~) pins the weakly-dedicated window.
+
+The fix is to ask ~display-buffer~ to reuse an existing window first: add
+~display-buffer-reuse-window~ to the action list, so a second display of a
+buffer that is already shown reuses that window instead of splitting.
+
+* Scope
+In scope:
+- Add ~display-buffer-reuse-window~ to the front of the action list in
+  ~claude-client--display~ for the directed (~left~/~right~/~above~/~below~)
+  case, so a re-display reuses the window already showing the buffer.
+- Keep the window an ordinary, splittable, non-dedicated window (no change to
+  ~set-window-dedicated-p~) -- reuse, not dedication, is the fix here.
+- Keep the existing placement/sizing/focus behaviour exactly.
+
+Out of scope:
+- The opencode client's display (separate path).
+- Strong/weak window dedication for the conversation window.
+- The underlying ediff/winconf race in ~mcp-emacs--ediff-review~ itself; this
+  change makes the re-show idempotent so the race can no longer leave a
+  duplicate window behind.
+
+* Approach
+In ~claude-client--display~, prepend ~(display-buffer-reuse-window)~ to the
+action list for the directed case:
+
+~((display-buffer-reuse-window) (display-buffer-in-direction) (direction . …)
+  (window-width . …))~
+
+~display-buffer~ runs its action functions in order, so the reuse function
+gets first refusal: if some window already shows the buffer it is reused (and,
+for a directed action, that window stays put), and only if the buffer is not
+already displayed does ~display-buffer-in-direction~ create a fresh window.
+The ~get-buffer-window~ guard in
+~claude-client--reshow-after-review~ stays as-is; the race can still call
+~claude-client--display~ once the restore has hidden the buffer, but that is
+now the only path that creates a window, so the duplicate can no longer
+appear.
+
+* Tasks
+- [ ] Add ~(display-buffer-reuse-window)~ to the directed action in
+  ~claude-client--display~ (~elisp/claude-client.el~)
+- [ ] Update the docstring of ~claude-client--display~ so it no longer claims
+  a fresh window is always created
+- [ ] Add a test asserting the directed action list starts with
+  ~display-buffer-reuse-window~ (~test/claude-client-test.el~)
+- [ ] Byte-compile / load ~elisp/claude-client.el~ clean (no new warnings)
+- [ ] Run the suite green on akiko (~bin/test-emacs.sh --compile --quiet~)
+
+* Delta
+** Conversation re-display reuses its window                    :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+When the Claude conversation buffer is displayed again while it already has a
+window, the system SHALL reuse that existing window and MUST NOT create a
+second, duplicate window for the buffer.
+*** Buffer already displayed
+- WHEN ~claude-client--display~ is asked to display a conversation buffer
+  that some window already shows
+- THEN that existing window is reused and no additional window for the buffer
+  is created
+*** Reshow after a review leaves one window
+- WHEN ~claude-client--reshow-after-review~ re-displays a conversation whose
+  window was restored away by an ediff review
+- THEN after the re-show at most one window shows the conversation buffer

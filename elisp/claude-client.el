@@ -491,9 +491,10 @@ buffer it was started from."
 
 (defun claude-client--display (buffer)
   "Display BUFFER in the conversation window and return that window.
-Placed with `display-buffer-in-direction' so it stays an ordinary,
-splittable window rather than a dedicated side window -- the same shape
-`mcp-emacs-run--display' gives the eat runner."
+Reuses an existing window already showing BUFFER; only when it is not
+displayed is one placed with `display-buffer-in-direction', so it stays
+an ordinary, splittable window rather than a dedicated side window --
+the same shape `mcp-emacs-run--display' gives the eat runner."
   (let* ((window
           (if (null claude-client-window-direction)
               (display-buffer buffer)
@@ -502,7 +503,7 @@ splittable window rather than a dedicated side window -- the same shape
                           `(window-height . ,claude-client-window-height))))
               (display-buffer
                buffer
-               `((display-buffer-in-direction)
+               `((display-buffer-reuse-window display-buffer-in-direction)
                  (direction . ,claude-client-window-direction)
                  ,size))))))
     (when (and window claude-client-focus-on-show)
