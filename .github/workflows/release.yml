@@ -1,11 +1,14 @@
 name: Release
 
-# Every merge to main yields a new release. The loop never merges (that is the
-# human's gate), so the trigger is the push itself, however it happened.
+# A release is cut once per *batch*, not per merge: the loop works through all
+# doable agent-loop issues, the human reviews and merges them, and only when
+# every batch PR is merged to main and no eligible issue remains does the loop
+# fire this workflow (via `gh workflow run release.yml`). The trigger is
+# therefore explicit (workflow_dispatch), decided by the loop's release.py
+# batch gate -- never an automatic per-merge push. See the mcp-emacs-issue-loop
+# skill for how release.py decides "batch is ready".
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -61,7 +64,7 @@ jobs:
             notes=$(gh pr list --state merged --search "merged:>=$since" \
               --limit 50 --json number,title --jq '.[] | "- #\(.number) \(.title)"' || true)
           fi
-          printf '## What changed\n\n%s\n\n_Generated from the merge to main._\n' \
+          printf '## What changed\n\n%s\n\n_Generated on batch completion._\n' \
             "$notes" > /tmp/release-notes.md
 
           gh release create "$ver" \
