@@ -48,13 +48,14 @@ the proposal, and lets the human review, edit, accept, or reject it
 interactively before the tool returns.
 The outcome SHALL be determined by an explicit human accept or reject action
 during the session, not by whether the buffer content changed; accepting SHALL
-apply the proposal (or the human's edited version of it) to the file's buffer,
-rejecting SHALL leave the buffer unchanged, and quitting without an explicit
-accept SHALL be treated as a rejection.
+apply the proposal (or the human's edited version of it) to the file and SHALL
+write it to disk, so a returned status of ~applied~ means the file on disk
+holds that content; rejecting SHALL leave the file unchanged, and quitting
+without an explicit accept SHALL be treated as a rejection.
 ** An accepted proposal is applied
 - GIVEN a diff call with a path and new content
 - WHEN the human accepts the proposal without editing it
-- THEN the proposed content is applied to the buffer and a status of
+- THEN the proposed content is written to the file on disk and a status of
   ~applied~ is returned with the final content
 ** A rejected proposal changes nothing
 - GIVEN a diff review in progress
@@ -64,14 +65,13 @@ accept SHALL be treated as a rejection.
 ** A human edit wins over the proposal
 - GIVEN a diff review in progress
 - WHEN the human edits the proposed content and then accepts
-- THEN a status of ~applied~ is returned with the human-edited content, not
-  the original proposal
+- THEN the file on disk holds the human-edited content, not the original
+  proposal, and a status of ~applied~ is returned
 ** Quitting without accepting is a rejection
 - GIVEN a diff review in progress
 - WHEN the human quits the ediff session without explicitly accepting
 - THEN the file's buffer is left unchanged and a status of ~rejected~ is
   returned
-
 * Diff/apply waiting does not block the Emacs event loop
 While waiting for the human's decision, the diff tool SHALL yield to the Emacs
 event loop so that human edits, timers, and other MCP tool calls continue to
@@ -83,17 +83,21 @@ be processed.
 
 * The diff/apply wait is bounded by a timeout
 The diff tool SHALL apply a default timeout when none is given and MUST cap
-the timeout at a defined maximum, so the call cannot hang indefinitely.
+the timeout at a defined maximum, so the call cannot hang indefinitely. When
+the timeout elapses the tool SHALL report a status of ~timeout~ -- distinct
+from ~rejected~ -- and MUST leave the file on disk unchanged.
 ** An unanswered review times out
-- GIVEN a diff review the human neither accepts nor rejects
-- WHEN the timeout elapses
-- THEN the ediff session is abandoned, the buffer is left unchanged, and a
-  status of ~timeout~ is returned
+- WHEN the timeout elapses for a review the human neither accepts nor rejects
+- THEN the ediff session is abandoned, the file on disk is left unchanged,
+  and a status of ~timeout~ is returned
 ** An excessive timeout is capped
 - GIVEN a requested timeout above the maximum
 - WHEN the diff tool runs
 - THEN it waits no longer than the maximum
-
+** A timeout is not reported as a rejection
+- GIVEN a review the human did not answer and a timeout that elapses
+- WHEN the ediff session is force-quit to end the wait
+- THEN the reported status is ~timeout~, not ~rejected~
 * Open editors can be listed
 The system SHALL expose an MCP tool that returns the live file-visiting
 buffers, each with its file path, buffer name, and modified (dirty) flag.
