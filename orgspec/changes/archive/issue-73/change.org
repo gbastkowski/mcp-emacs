@@ -1,4 +1,4 @@
-#+TITLE: issue-73
+#+TITLE: show-effective-permission-allowlist
 
 * Intent
 Permission prompts are a steady source of dead ends in a Claude session, and
