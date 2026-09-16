@@ -36,15 +36,15 @@ jobs:
             | head -n1 || true)
           latest=${latest:-v0.0.0}
 
-          # Bump the patch number on every merge. Minor/major bumps stay a
-          # deliberate, manual tag (git tag v2.0.0 && git push --tags).
+          # Bump the patch number on every batch release. Minor/major bumps stay
+          # a deliberate, manual tag (git tag v2.0.0 && git push --tags).
           base=${latest#v}
           IFS=. read -r maj min pat <<< "$base"
           ver="v$maj.$min.$((10#$pat + 1))"
 
-          # If the tag already exists, nothing new to release on this push.
+          # If the tag already exists, nothing new to release on this run.
           if git rev-parse -q --verify "refs/tags/$ver" >/dev/null; then
-            echo "Tag $ver already exists; nothing to release on this push."
+            echo "Tag $ver already exists; nothing to release on this run."
             exit 0
           fi
 
