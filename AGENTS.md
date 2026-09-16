@@ -41,7 +41,10 @@ deliberately in a separate pass, so don't hand-edit it alongside code changes.
   `mcp-emacs-server--` prefix for internal helpers, docstrings on every defun.
 - Git commits follow the tbaggery guidelines: short imperative subject
   (~50 chars), body wrapped at ~72 chars explaining *why*, brief unless detail
-  is essential.
+  is essential. No `Co-Authored-By` or generated-by trailers.
+- Branch names get no type prefix — no `feat/`, `fix/`, `agent-loop/`. A plain
+  descriptive name (`in-emacs-http-server`, `report-issue-commands`) is what
+  every branch here looks like.
 
 ## Adding a Tool or Resource
 
@@ -114,6 +117,10 @@ vocabulary is `test/test-helper.el` — require it, don't write another local
 - `describe`/`it` splice their body in place, so they go *inside* `let`,
   `cl-letf` and `with-temp-buffer` fixtures — they group, they don't scope.
 - An error inside `it` fails that expectation instead of killing the suite.
+- Stub a lazily-required function only after its feature is loaded: a
+  `cl-letf` on a symbol that is still void binds nothing, and the real
+  function runs when the code under test requires it. `require` the feature at
+  the top of the suite.
 - End with `(test-helper-summary)`.
 - Report lines come from those `PASS`/`FAIL`/`DESCRIBE` prints, so a suite that
   bypasses `check` isn't listed or counted. Keep printing the words: the report

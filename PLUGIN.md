@@ -42,6 +42,8 @@ claude --plugin-dir /path/to/mcp-emacs
   - `review-diagnostics` — fix code problems the checker reports.
   - `diagnose-emacs` — troubleshoot the Emacs/tooling setup itself.
   - `report-issue` — file a bug or feature request about mcp-emacs itself.
+    From Emacs, `M-x mcp-emacs-report-bug` and `M-x mcp-emacs-report-feature`
+    do the same without an assistant in the loop.
 
 ## opencode
 
