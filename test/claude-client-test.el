@@ -2108,6 +2108,145 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
         (it "never restarts the conversation it was invoked from"
           (check (memq buf made) nil))))))
 
+;;;; Turn-state generics (issue #76)
+
+;; The generic vocabulary reads the buffer's stream-derived flags and
+;; process, never the process alone: `claude --print' stays alive after
+;; `result', so a live process is idle, not working.
+(describe "agent-backend-turn-state under claude"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--process nil claude-client--turn-active nil)
+          (it "reports finished for a conversation with no process and no turn"
+            (check (agent-backend-turn-state agent-backend--instance) 'finished))
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t)))
+            (setq claude-client--process 'fake claude-client--turn-active nil)
+            (it "reports idle for a live process with no turn in flight"
+              (check (agent-backend-turn-state agent-backend--instance) 'idle))
+            (setq claude-client--turn-active t)
+            (it "reports working while a turn is in flight"
+              (check (agent-backend-turn-state agent-backend--instance) 'working))))
+      (kill-buffer buf))))
+
+;; Elapsed time tracks only a working turn: nothing to report for a
+;; settled or idle conversation, so the mode line never shows a stale count.
+(describe "agent-backend-turn-elapsed under claude"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--process nil
+                claude-client--turn-active nil
+                claude-client--turn-started nil)
+          (it "is nil when the conversation is finished"
+            (check (agent-backend-turn-elapsed agent-backend--instance) nil))
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t)))
+            (setq claude-client--process 'fake
+                  claude-client--turn-active nil
+                  claude-client--turn-started nil)
+            (it "is nil when idle, since only a working turn counts"
+              (check (agent-backend-turn-elapsed agent-backend--instance) nil))
+            (setq claude-client--turn-started (- (float-time) 42)
+                  claude-client--turn-active t)
+            (it "is the seconds since the turn began while working"
+              (let ((elapsed (agent-backend-turn-elapsed agent-backend--instance)))
+                (check (and (numberp elapsed)
+                            (>= elapsed 41) (< elapsed 120))
+                       t)))))
+      (kill-buffer buf))))
+
+;; The timestamp rides along with the in-flight flag: set when a turn
+;; begins, cleared when it ends, so the mode line's elapsed time is real
+;; rather than counting a turn that has already settled.
+(describe "claude-client--turn-started tracks the in-flight flag"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--process 'fake
+                claude-client--turn-active t
+                claude-client--turn-started (float-time))
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) nil)))
+            (claude-client--sentinel buf 'fake "exited"))
+          (it "clears the timestamp when the process dies, along with the flag"
+            (check claude-client--turn-started nil))
+          (it "clears the in-flight flag when the process dies"
+            (check claude-client--turn-active nil)))
+      (kill-buffer buf))))
+
+(describe "claude-client--turn-started is cleared on `result'"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--turn-active t
+                claude-client--turn-started (float-time))
+          (claude-test--feed buf (concat claude-test--result "\n"))
+          (it "clears the timestamp when `result' ends the turn"
+            (check claude-client--turn-started nil))
+          (it "clears the in-flight flag when `result' ends the turn"
+            (check claude-client--turn-active nil)))
+      (kill-buffer buf))))
+
+(describe "claude-client-start stamps the turn it begins"
+  (let ((buf nil))
+    (unwind-protect
+        (claude-test--with-stubs
+            (cons (cons 'process-live-p (lambda (_p) nil))
+                  (claude-test--start-stubs (lambda () "/tmp/proj-a/")))
+          (setq buf (claude-client-start "first"))
+          (with-current-buffer buf
+            (it "stamps the turn alongside the in-flight flag"
+              (check-that claude-client--turn-started))
+            (it "marks the turn in flight"
+              (check claude-client--turn-active t))))
+      (let ((kill-buffer-query-functions nil))
+        (when (and buf (buffer-live-p buf)) (kill-buffer buf))))))
+
+(describe "claude-client--drain-notes stamps the follow-up turn"
+  (let ((buf (claude-test--buffer))
+        (sent nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                    ((symbol-function 'process-send-string)
+                     (lambda (_p s) (setq sent s))))
+            (setq claude-client--process 'fake
+                  claude-client--turn-active t
+                  claude-client--turn-started (float-time))
+            (claude-client-add-note "carry this")
+            (claude-test--feed buf (concat claude-test--result "\n"))
+            (it "begins the follow-up turn with a fresh timestamp"
+              (check-that claude-client--turn-started))
+            (it "keeps the follow-up turn in flight"
+              (check claude-client--turn-active t))
+            (it "delivers the drained note to the model"
+              (check-that (and sent (string-match-p "carry this" sent))))))
+      (kill-buffer buf))))
+
+;; The mode box here is the point of the issue: the `:eval' slot inherited
+;; from `agent-backend-mode' reports the buffer's own state, and while
+;; working it shows the elapsed time.
+(describe "the mode-line turn indicator under claude"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((element (assq :eval mode-line-format)))
+            (it "inherits the (:eval ...) indicator from agent-backend-mode"
+              (check-that element))
+            (setq claude-client--process nil
+                  claude-client--turn-active nil
+                  claude-client--turn-started nil)
+            (it "renders finished when the conversation has settled"
+              (check (eval (cadr element)) "finished"))
+            (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t)))
+              (setq claude-client--process 'fake claude-client--turn-active nil)
+              (it "renders idle for a live process with no turn"
+                (check (eval (cadr element)) "idle"))
+              (setq claude-client--turn-started (- (float-time) 8)
+                    claude-client--turn-active t)
+              (it "renders working with the elapsed time while a turn runs"
+                (check (eval (cadr element)) "working 0:08")))))
+      (kill-buffer buf))))
+
 (test-helper-summary)
 
 ;;; claude-client-test.el ends here

@@ -221,3 +221,31 @@ buffer it is invoked from — a running conversation is joined, not restarted.
 ** Exposed in the conversation and overview keymaps
 - WHEN a ~claude-client-mode~ or ~agent-session-overview-mode~ buffer is focused
 - THEN ~agent-backend-start-another~ is bound in that mode's keymap
+* Standing turn-state indicator on a conversation buffer
+The agent-backend module SHALL expose a conversation's turn state through a
+generic ~agent-backend-turn-state~ returning one of ~working~, ~idle~, or
+~finished~, and its current-turn elapsed time through ~agent-backend-turn-elapsed~
+(seconds, or nil when no turn is working). The default MUST NOT over-claim: a
+backend that tracks no turn state reads ~finished~ and elapsed nil.
+** Reports a mid-turn conversation as working
+- WHEN ~agent-backend-turn-state~ is called on a conversation whose model is working on a turn
+- THEN it returns ~working~
+** Reports a live-but-idle conversation as idle
+- WHEN ~agent-backend-turn-state~ is called on a conversation whose process is alive but no turn is in flight
+- THEN it returns ~idle~
+** Reports a settled conversation as finished
+- WHEN ~agent-backend-turn-state~ is called on a conversation whose process has exited or which never started
+- THEN it returns ~finished~
+** Elapsed time tracks only a working turn
+- WHEN ~agent-backend-turn-elapsed~ is called on a working conversation
+- THEN it returns the seconds since that turn started; when no turn is working it returns nil
+* The conversation mode line shows the state
+Every ~agent-backend-mode~ conversation buffer SHALL carry a standing
+mode-line indicator of its turn state, updated from the transitions that change
+the state, and SHALL show the elapsed time while working.
+** Mode line reflects the turn state
+- WHEN a conversation buffer derived from ~agent-backend-mode~ is displayed and its turn state changes
+- THEN its mode line shows the new state (working / idle / finished)
+** Mode line shows elapsed time while working
+- WHEN a ~working~ conversation's mode line is rendered
+- THEN it includes the seconds the current turn has been running

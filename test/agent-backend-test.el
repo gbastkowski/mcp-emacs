@@ -338,6 +338,54 @@
     (check (lookup-key agent-session-overview-mode-map (kbd "n"))
            'agent-backend-start-another)))
 
+;;;; Turn state and the standing mode-line indicator (issue #76)
+
+;; The generic vocabulary must never over-claim: a backend that tracks no
+;; turn state reads `finished' with no elapsed time, so the shared mode
+;; line cannot show a conversation as working when nothing says it is.
+(describe "agent-backend-turn-state"
+  (let ((b (make-instance 'agent-backend)))
+    (it "defaults to finished, never over-claiming about a turn it cannot see"
+      (check (agent-backend-turn-state b) 'finished))
+    (it "defaults to nil elapsed, since no turn can be working under the default"
+      (check (agent-backend-turn-elapsed b) nil))))
+
+(describe "agent-backend--turn-mode-line"
+  (it "reports finished for a buffer with no instance, never over-claiming"
+    (check (agent-backend--turn-mode-line nil) "finished"))
+  (cl-letf (((symbol-function 'agent-backend-turn-state) (lambda (_b) 'idle)))
+    (it "shows idle"
+      (check (agent-backend--turn-mode-line (make-instance 'agent-backend))
+             "idle")))
+  (cl-letf (((symbol-function 'agent-backend-turn-state) (lambda (_b) 'finished)))
+    (it "shows finished"
+      (check (agent-backend--turn-mode-line (make-instance 'agent-backend))
+             "finished")))
+  (cl-letf (((symbol-function 'agent-backend-turn-state) (lambda (_b) 'working))
+            ((symbol-function 'agent-backend-turn-elapsed) (lambda (_b) 42)))
+    (it "shows working with the elapsed time"
+      (check (agent-backend--turn-mode-line (make-instance 'agent-backend))
+             "working 0:42")))
+  (cl-letf (((symbol-function 'agent-backend-turn-state) (lambda (_b) 'working))
+            ((symbol-function 'agent-backend-turn-elapsed) (lambda (_b) (* 8 60))))
+    (it "renders eight minutes of elapsed time differently from eight seconds"
+      (check (agent-backend--turn-mode-line (make-instance 'agent-backend))
+             "working 8:00"))))
+
+;; The indicator is installed in the mode, not per backend: every buffer
+;; derived from `agent-backend-mode' carries the same `:eval' slot.
+(describe "the mode-line turn indicator in agent-backend-mode"
+  (let ((buf (get-buffer-create "*agent-backend-mode-line*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (agent-backend-mode)
+          (let ((element (assq :eval mode-line-format)))
+            (it "appends a (:eval ...) slot reading the buffer's own turn state"
+              (check-that element))
+            (it "renders finished for a buffer with no instance"
+              (check (eval (cadr element)) "finished"))))
+      (kill-buffer buf))))
+
 (test-helper-summary)
 
 ;;; agent-backend-test.el ends here
