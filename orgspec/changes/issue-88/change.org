@@ -1,0 +1,79 @@
+#+TITLE: Dispatch async tools through :async-handler outside HTTP
+#+STARTUP: content
+
+* Intent
+
+`mcp-emacs-server--tools-call` funcalls the registered `:handler`
+unconditionally.  A tool that also declares an `:async-handler` (the
+human-answered reviews like apply_diff) therefore gets the synchronous,
+blocking handler on every non-HTTP dispatch path: the direct dispatch in
+`mcp-emacs-server--dispatch` and `orgspec-mcp-call`.  Since 7cf33f9 the
+synchronous path signals "cannot review without a human" instead of hanging,
+which made the failure loud — but the tool is simply unavailable there.
+
+Goal: honour `:async-handler` on every dispatch path, not only the HTTP
+websocket path.  The non-HTTP callers get a completion-callback contract:
+when the named tool declares an async handler, the caller supplies a
+callback and the dispatch returns "deferred" instead of a blocking result.
+
+* Scope
+
+- elisp/mcp-emacs-server.el: `mcp-emacs-server--tools-call` gets the
+  completion-callback contract; `mcp-emacs-server--dispatch` honours it.
+  The HTTP websocket path (`mcp-emacs-server--tools-call-async`) already
+  implements the async contract; unify the two so a single rule decides
+  sync vs async dispatch.
+- elisp/orgspec-mcp.el: `orgspec-mcp-call` routes by `:async-handler` too,
+  with the same callback contract.
+- Tests: cover sync tools unchanged, async tools deferred through the
+  direct dispatch, and orgspec-mcp-call with an async tool.
+- Out of scope: changing tool semantics, the IDE protocol surface
+  (mcp-emacs-ide.el has its own dispatch), or any tool's handler itself.
+
+* Approach
+
+Add an optional completion callback parameter to the dispatch entry points.
+When the resolved tool has `:async-handler`, call it with the args and a
+thunk that feeds the text result into the caller's completion callback;
+return the symbol `deferred`.  When the tool is synchronous (no
+`:async-handler`), keep today's behaviour: funcall `:handler` and return
+the text result.  Callers that cannot defer (they need a value now) check
+for `deferred` and refuse loudly rather than blocking.
+
+* Tasks
+
+- [ ] Change `mcp-emacs-server--tools-call` to accept an optional
+      completion callback and defer tools that declare `:async-handler`
+- [ ] Update `mcp-emacs-server--dispatch` (the direct path) for the new
+      contract; keep the HTTP path behaviour identical
+- [ ] Update `orgspec-mcp-call` to honour `:async-handler` with the same
+      callback contract
+- [ ] Add tests: sync tool still returns a value; async tool defers
+      through the direct dispatch; orgspec async tool defers through
+      `orgspec-mcp-call`
+- [ ] Update the Change file so the spec folds cleanly
+
+* Delta
+
+** :ADDED: Non-HTTP dispatch honours async tools
+   :PROPERTIES:
+   :AREA: mcp-tools
+   :END:
+
+The server SHALL route a tools/call that names a tool declaring
+`:async-handler` through that handler on every dispatch path, including
+the non-HTTP direct dispatch and `orgspec-mcp-call`; the result SHALL be
+delivered via the caller-supplied completion callback.
+
+*** WHEN a tool declares an :async-handler and is called outside HTTP
+    THEN the tool is dispatched through :async-handler
+    AND the caller receives the completion via its callback
+    AND the dispatch returns a deferred marker instead of a blocking result
+
+*** WHEN a tool declares no :async-handler
+    THEN the existing synchronous dispatch is unchanged
+    AND the text result is returned as before
+
+*** WHEN a caller cannot defer and the tool declares :async-handler
+    THEN the dispatch refuses loudly with an error
+    AND no blocking wait is started
