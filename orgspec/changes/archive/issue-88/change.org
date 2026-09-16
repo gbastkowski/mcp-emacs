@@ -55,7 +55,7 @@ for `deferred` and refuse loudly rather than blocking.
 
 * Delta
 
-** :ADDED: Non-HTTP dispatch honours async tools
+** Non-HTTP dispatch honours async tools :ADDED:
    :PROPERTIES:
    :AREA: mcp-tools
    :END:
