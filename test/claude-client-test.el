@@ -1179,6 +1179,8 @@ stays alive after `result', so process liveness cannot stand in for it."
       (let ((claude-client-window-direction 'right)
             (claude-client-window-width 0.4))
         (claude-client--display (current-buffer))
+        (it "reuses an existing window before placing the conversation"
+          (check (caar captured) 'display-buffer-reuse-window))
         (it "places the conversation with `display-buffer-in-direction'"
           (check-that (memq 'display-buffer-in-direction (car captured))))
         (it "honours `claude-client-window-direction'"

@@ -159,3 +159,16 @@ beyond what was shown.
 - GIVEN a proposed allowlist rule
 - WHEN the human declines it
 - THEN the settings file is unchanged
+* Conversation re-display reuses its window
+When the Claude conversation buffer is displayed again while it already has a
+window, the system SHALL reuse that existing window and MUST NOT create a
+second, duplicate window for the buffer.
+** Buffer already displayed
+- WHEN ~claude-client--display~ is asked to display a conversation buffer
+  that some window already shows
+- THEN that existing window is reused and no additional window for the buffer
+  is created
+** Reshow after a review leaves one window
+- WHEN ~claude-client--reshow-after-review~ re-displays a conversation whose
+  window was restored away by an ediff review
+- THEN after the re-show at most one window shows the conversation buffer
