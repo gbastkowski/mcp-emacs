@@ -1109,13 +1109,17 @@ layout — including side windows such as Treemacs — comes back."
   "Record an accept decision for an apply-diff session.
 Apply the proposal in BUFFER-B to BUFFER-A when BUFFER-A is still at
 ENTRY-CONTENT (an untouched review); otherwise keep BUFFER-A's
-hand-edited content.  Set the RESULT cell's car to `applied'."
+hand-edited content.  Save BUFFER-A when it visits a file and is
+modified, so `applied' means the file on disk holds that content.  Set
+the RESULT cell's car to `applied'."
   (when (buffer-live-p buffer-a)
     (with-current-buffer buffer-a
       (when (string= (buffer-substring-no-properties (point-min) (point-max))
                      entry-content)
         (erase-buffer)
-        (insert-buffer-substring buffer-b))))
+        (insert-buffer-substring buffer-b))
+      (when (and buffer-file-name (buffer-modified-p))
+        (save-buffer))))
   (setcar result 'applied))
 
 (defun mcp-emacs--apply-diff-reject (result)
@@ -1294,12 +1298,17 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
                 (run-at-time
                  secs nil
                  (lambda ()
+                   ;; Claim the outcome before forcing the quit: the
+                   ;; force-quit runs the ediff quit hook, which would
+                   ;; otherwise record an implicit `rejected' and answer
+                   ;; first.  Delivering the timeout here makes that hook's
+                   ;; finish the no-op, so `timeout' is what the caller sees.
+                   (funcall finish "Status: timeout")
                    (when (and control (buffer-live-p control))
                      (with-current-buffer control
                        (if (fboundp 'ediff-really-quit)
                            (ignore-errors (ediff-really-quit nil))
-                         (kill-buffer control))))
-                   (funcall finish "Status: timeout")))))
+                         (kill-buffer control))))))))
         nil)
     (error (funcall on-done (error-message-string err)) nil)))
 
@@ -1308,10 +1317,11 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
 Open an `ediff-buffers' session comparing the file's current content
 against NEW-CONTENT, block cooperatively until the human resolves it or
 TIMEOUT elapses, then return the outcome.  The buffer visiting PATH is
-Buffer A; the proposal is a temporary Buffer B.  On quit, if Buffer A's
-content changed from its entry state the outcome is applied (the final
-content is returned; saving is left to the human); otherwise rejected.
-On timeout the ediff session is abandoned and Buffer A left untouched.
+Buffer A; the proposal is a temporary Buffer B.  On accept the proposal
+(or the human's edited version) is applied to Buffer A and written to
+disk, and the final content is returned; a reject (or a bare quit)
+leaves the file unchanged.  On timeout the ediff session is abandoned
+and the file left untouched.
 TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
 `mcp-emacs-apply-diff-default-timeout'.
 
