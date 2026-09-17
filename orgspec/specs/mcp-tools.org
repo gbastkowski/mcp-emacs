@@ -390,3 +390,47 @@ request SHALL be answered from a timer callback.
 - THEN the deferred response carries the no-change flag and current session view exactly once
 ** The synchronous fallback stays
 - THEN ~org_task_wait_for_change~ SHALL keep its ~:handler~ so callers that dispatch directly (outside HTTP) are served synchronously, exactly as ~apply_diff~ does
+* Small diff reviews render inline in the conversation buffer
+The ~apply_diff~ review SHALL render a small diff inline in the conversation
+buffer (~*claude-client*~ for the Claude client) instead of opening ediff,
+and SHALL open ediff for a diff larger than the inline limit. A diff is small
+when its unified-diff line count is at or below
+= mcp-emacs-apply-diff-inline-limit =. Ediff SHALL remain reachable from the
+inline view with one keypress.
+** A small diff appears inline
+- GIVEN an ~apply_diff~ whose diff fits the inline limit
+- WHEN the review starts
+- THEN it renders as text in the conversation buffer rather than opening ediff
+** A large diff stays in ediff
+- GIVEN an ~apply_diff~ whose diff exceeds the inline limit
+- WHEN the review starts
+- THEN it opens ediff as before
+** Ediff is reachable from the inline view
+- GIVEN an inline diff review is on screen
+- WHEN the human presses the jump key
+- THEN a real ediff session against the same buffers opens
+* Inline accept and reject record the same outcome
+Accepting an inline review SHALL apply the proposal to the file and report
+the same outcome format the ediff accept returns (~~Status: applied~~ plus
+the final content); rejecting SHALL leave the file unchanged and report
+~~Status: rejected~~. A hand-edit made to the file's buffer before accepting
+SHALL be kept, exactly as with the ediff accept path. Whichever surface the
+human resolves first — inline or the jumped-to ediff — SHALL be the only
+outcome delivered.
+** Inline accept applies the change
+- GIVEN an inline diff review whose proposal is untouched beyond the diff
+- WHEN the human accepts it
+- THEN the proposal replaces the file content and the outcome reads
+  ~~Status: applied~~
+** Inline reject leaves the file alone
+- GIVEN an inline diff review
+- WHEN the human rejects it
+- THEN the file is unchanged and the outcome reads ~~Status: rejected~~
+** A hand edit survives an inline accept
+- GIVEN the file's buffer was edited away from the original before accept
+- WHEN the human accepts the inline review
+- THEN the file keeps the hand-edit, matching the ediff accept rule
+** One surface answers once
+- GIVEN an inline review that the human jump-starts into ediff
+- WHEN the human resolves it in ediff
+- THEN the inline view does not deliver a second, competing outcome
