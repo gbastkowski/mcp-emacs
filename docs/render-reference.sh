@@ -54,56 +54,80 @@ echo "stamped: $stamp"
 
 [ "${1:-}" = "--no-render" ] && exit 0
 
-# Render here rather than telling a human which preset to pass.  The settings
-# used to live only in whoever last invoked the tool, and the preset was duly
-# lost on the next render -- the document came back as a plain report.
+# Render with pandoc directly, rather than through mcp-latex's
+# render_markdown_to_pdf, for one reason: the title page.  That tool composes
+# its LaTeX header from its own partials (common + type + layout) and passes
+# the result as --include-in-header, which displaces a document's own
+# `header-includes' -- so there is no way to append to the preamble from
+# reference.md, and no caller hook that would let one.
 #
-# mcp-latex ships as an MCP server with no CLI, so this speaks the protocol to
-# it over stdio.  That also pins the version: the plugin cache can hold several,
-# and an older server silently ignores `preset` instead of rejecting it, which
-# is a slow thing to notice.
-preset="classic-komabook"
+# So the partials are read here and docs/reference-titlepage.tex is appended
+# after them.  Styling still comes from mcp-latex; only the title block is
+# this repository's own.  The trade-off is that the pandoc flags below
+# duplicate what the server would have passed, and can drift from it -- hence
+# the version pin and the list kept in one place.
+preset_layout="classic"
+preset_type="komabook"
 pdf="$root/docs/reference.pdf"
+titlepage="$root/docs/reference-titlepage.tex"
 
 cache="$HOME/.claude/plugins/cache/mcp-latex/mcp-latex"
-server="$(ls -d "$cache"/*/mcp/dist/index.js 2>/dev/null \
-            | sort -t/ -k9 -V | tail -1)"
+assets="$(ls -d "$cache"/*/mcp/assets 2>/dev/null | sort -t/ -k9 -V | tail -1)"
 
-if [ -z "$server" ]; then
-  echo "mcp-latex not found under $cache; stamped only" >&2
+if [ -z "$assets" ]; then
+  echo "mcp-latex assets not found under $cache; stamped only" >&2
   exit 0
 fi
-echo "using $(echo "$server" | sed -E 's|.*/mcp-latex/([^/]+)/.*|mcp-latex \1|')"
+echo "using $(echo "$assets" | sed -E 's|.*/mcp-latex/([^/]+)/.*|mcp-latex \1|') partials"
 
-node - "$server" "$md" "$pdf" "$preset" <<'JS'
-const { spawn } = require("node:child_process");
-const readline = require("node:readline");
-const [server, md, pdf, preset] = process.argv.slice(2);
+for f in "$assets/common.tex.tmpl" \
+         "$assets/types/$preset_type.tex.tmpl" \
+         "$assets/layouts/$preset_layout.tex.tmpl" \
+         "$titlepage"; do
+  [ -r "$f" ] || { echo "missing header part: $f" >&2; exit 1; }
+done
 
-const p = spawn("node", [server], { stdio: ["pipe", "pipe", "inherit"] });
-const send = (o) => p.stdin.write(JSON.stringify(o) + "\n");
+# The partials carry placeholders the server would have substituted.  Only the
+# ones this document actually uses are filled; the rest are emptied, since a
+# literal __TITLE__ would otherwise print on every page.
+header="$(mktemp -t reference-header.XXXXXX)"
+trap 'rm -f "$header"' EXIT
+cat "$assets/common.tex.tmpl" \
+    "$assets/types/$preset_type.tex.tmpl" \
+    "$assets/layouts/$preset_layout.tex.tmpl" \
+    "$titlepage" \
+  | sed -e "s|__TITLE__|mcp-emacs — Source Reference|g" \
+        -e "s|__DOC_STAMP__|$(date +%Y-%m-%d)|g" \
+        -e "s|__HEADER_RIGHT__||g" \
+        -e "s|__DOC_VERSION_SUFFIX__||g" \
+        -e "s|__LOGO_PATH__||g" \
+        -e "s|__LINK_COLOR__|1F4E79|g" \
+  > "$header"
 
-readline.createInterface({ input: p.stdout }).on("line", (line) => {
-  let m; try { m = JSON.parse(line); } catch { return; }
-  if (m.id === 1) {
-    send({ jsonrpc: "2.0", method: "notifications/initialized" });
-    send({ jsonrpc: "2.0", id: 2, method: "tools/call",
-           params: { name: "render_markdown_to_pdf",
-                     arguments: { markdown_path: md, output_path: pdf,
-                                  preset } } });
-  }
-  if (m.id === 2) {
-    const text = m.result?.content?.[0]?.text ?? JSON.stringify(m.error);
-    console.log(text);
-    // The server echoes the preset it actually used.  A server too old to
-    // know about presets renders a default-styled PDF and says nothing, so
-    // treat a missing echo as a failure rather than a success.
-    p.kill();
-    process.exit(text.includes(`preset: ${preset}`) ? 0 : 1);
-  }
-});
+# Flags mirror what mcp-latex passes for classic-komabook: scrreprt, oneside,
+# chapters as the top-level division, a three-level TOC.
+# Image paths in the document are relative to docs/, not to wherever this was
+# invoked from, so the resource path is explicit.  Without it every diagram is
+# silently replaced by its alt text.
+pandoc "$md" -o "$pdf" \
+  --standalone \
+  --from markdown \
+  --resource-path="$root/docs" \
+  --pdf-engine=xelatex \
+  --include-in-header="$header" \
+  --top-level-division=chapter \
+  --toc --toc-depth=3 \
+  --number-sections \
+  -V documentclass=scrreprt \
+  -V classoption=oneside \
+  -V papersize=a4 \
+  -V fontsize=11pt \
+  -V geometry:margin=2.5cm \
+  -V mainfont=Palatino \
+  -V monofont=Menlo \
+  -V colorlinks=true \
+  -V linkcolor=Blue \
+  -V urlcolor=Blue \
+  -V toccolor=black
 
-send({ jsonrpc: "2.0", id: 1, method: "initialize",
-       params: { protocolVersion: "2024-11-05", capabilities: {},
-                 clientInfo: { name: "render-reference", version: "1" } } });
-JS
+echo "Rendered PDF: $pdf (classic-komabook partials + local title page)"

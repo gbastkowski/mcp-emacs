@@ -2,7 +2,7 @@
 title: "mcp-emacs — Source Reference"
 subtitle: "A guided tour of the code, its structure, and the Emacs Lisp it leans on"
 author: "Gunnar Bastkowski"
-date: "v1.11.0+4"
+date: "v1.12.4+38"
 ---
 
 # About This Document {-}
@@ -22,20 +22,24 @@ The document is organised as follows.
 
 - Chapters 1–3 set the stage: what the project is, how the repository is laid
   out, and the architectural decisions that everything else follows from.
-- Chapters 4–7 cover the core: the helper layer, the MCP server, the
-  interactive diff review, and the Org task-session protocol.
-- Chapter 8 covers the shared agent layer — the backend base class, the
-  prompt composition buffer, and the permission gate — which both chat
-  clients are built on and where a third backend would plug in.
+- Chapters 4–7 cover the core: the helper layer, the MCP server, the two
+  human-answered tools (the diff review and the commit dialog), and the Org
+  task-session protocol.
+- Chapter 8 covers the shared agent layer — the backend base class, the turn
+  and background-agent tracking, the prompt composition buffer, and the
+  permission gate — which both chat clients are built on and where a third
+  backend would plug in.
 - Chapters 9–14 cover the agent-facing surfaces: the Claude Code IDE
   integration, the terminal runner, the terminal-free runner, the opencode
   client, the cross-backend session overview, and the remote/resume modules.
-- Chapters 15–19 cover `orgspec`, the org-native spec workflow, which is
+- Chapter 15 covers the surfaces aimed at the human rather than the agent:
+  the tutor, the release notes, and filing an issue from inside Emacs.
+- Chapters 16–20 cover `orgspec`, the org-native spec workflow, which is
   effectively a second project sharing the same host.
-- Chapters 20–23 cover the test suite and its runner, how to modify the code
+- Chapters 21–24 cover the test suite and its runner, how to modify the code
   safely, the packaging and release process, and a set of cross-cutting
   idioms worth learning from here.
-- Chapters 24–25 cover the Claude Code CLI surface the project depends on,
+- Chapters 25–26 cover the Claude Code CLI surface the project depends on,
   and the event model the human/AI workflow is built on.
 
 Diagrams are rendered from the PlantUML sources in `docs/`; each is named in
@@ -51,9 +55,18 @@ of writing; treat them as signposts rather than as guarantees.
 
 ## The one-sentence version
 
-`mcp-emacs` runs a Model Context Protocol server *inside a live Emacs session*,
-so that an AI coding agent can see and manipulate the same buffers, windows,
-Org state, and diagnostics that the human is looking at.
+`mcp-emacs` turns a live Emacs session into a workspace the human and an AI
+agent share: the agent talks to a Model Context Protocol server running
+*inside Emacs*, so it sees the same buffers, windows, Org state, and
+diagnostics the human is looking at — and every change it proposes is one the
+human accepts or rejects in the editor.
+
+That sentence has grown. "An MCP server in Emacs" was the whole of it once,
+and it is now the mechanism rather than the point: the project has since
+become somewhere agents are *run* as well as served — two chat backends, a
+terminal-free runner, a cross-backend session view — and every one of those
+surfaces exists to keep the human in the loop rather than to get them out of
+it.
 
 ## What that actually means
 
@@ -86,7 +99,10 @@ to matter a great deal — see Chapter 3 and Chapter 6.
 
 The README and `docs/VISION.md` frame this as a step away from the chatbot
 request/response loop and toward an environment in which the human and the AI
-work the same live artifacts concurrently. Several design choices only make
+work the same live artifacts concurrently. The shared workspace of §1.1 is
+the part of that which exists today; what is still ahead is the
+*concurrency* — the two of you working without taking turns, which the event
+model in Chapter 26 is the groundwork for. Several design choices only make
 sense in that light:
 
 - The Org task-session tools (Chapter 7) let the human and the agent edit the
@@ -96,6 +112,9 @@ sense in that light:
 - The permission gate (Chapter 8) does the same for tool calls: a shell
   command the agent is not allowed to run becomes a question in a buffer
   rather than a refusal it reports afterwards.
+- The commit dialog (Chapter 6) hands an agent-drafted commit message to
+  magit's own dialog, so the agent proposes and the human commits — in the UI
+  they already use for commits they wrote themselves.
 - The event-log design in `claude-client.el` (Chapter 11) publishes an
   append-only stream of what the agent is doing, so multiple consumers can
   subscribe — the beginning of "one log, many readers". The session overview
@@ -108,15 +127,15 @@ codebase keeps choosing "human stays in the loop, in the editor" over
 
 ## Scale and shape
 
-At the time of writing the project is roughly 9,600 lines of Emacs Lisp across
-23 files in `elisp/`, plus about 6,600 lines of tests across 24 files in
-`test/`, and some 630 lines of shell in `bin/`. Every file is
+At the time of writing the project is roughly 11,700 lines of Emacs Lisp
+across 25 files in `elisp/`, plus about 8,800 lines of tests across 26 files
+in `test/`, and some 640 lines of shell in `bin/`. Every file is
 `lexical-binding: t`, every public function has a docstring, and CI
 byte-compiles everything and runs the full suite on Emacs 29.4 — currently
-22 suites and 833 assertions.
+25 suites and 1,076 assertions, all passing.
 
 The test suites are not `ert` suites, despite what the file names suggest;
-they are batch scripts with a shared `check` vocabulary. Chapter 20 explains
+they are batch scripts with a shared `check` vocabulary. Chapter 21 explains
 why, and what runs them.
 
 It is not a large codebase. It *is* a fairly dense one: several files spend
@@ -132,8 +151,8 @@ document leans on those comments heavily.
 
 ```
 mcp-emacs/
-├── elisp/                  the entire implementation (23 .el files)
-├── test/                   the suites (23 files) + test/init/ (isolated init)
+├── elisp/                  the entire implementation (25 .el files)
+├── test/                   the suites (26 files) + test/init/ (isolated init)
 ├── bin/                    test runner, release script, permission-gate hook
 ├── skills/                 Claude Code "skill" definitions (Markdown)
 ├── commands/               a slash-command definition
@@ -154,7 +173,7 @@ scripts are load-bearing rather than convenience:
 
 | Script | Lines | Role |
 |---|---:|---|
-| `bin/test-emacs.sh` | 434 | Runs the suites in an Emacs of their own. The single entry point, shared with CI. |
+| `bin/test-emacs.sh` | 439 | Runs the suites in an Emacs of their own. The single entry point, shared with CI. |
 | `bin/release.sh` | 139 | Stamps the version in every place it is declared, tags, publishes. |
 | `bin/permission-gate.sh` | 60 | The `PreToolUse` hook: asks Emacs to approve a tool call, fails closed. |
 
@@ -167,9 +186,9 @@ the order one file requires another.
 
 | File | Lines | Role |
 |---|---:|---|
-| `mcp-emacs.el` | 1365 | Every helper that touches editor state. No HTTP, no protocol. |
-| `mcp-emacs-report.el` | 144 | Files GitHub issues about the tooling itself, via `gh`. |
-| `mcp-emacs-server.el` | 810 | The HTTP server, tool/resource registries, JSON-RPC dispatch, the permission gate route. |
+| `mcp-emacs.el` | 1683 | Every helper that touches editor state. No HTTP, no protocol. |
+| `mcp-emacs-report.el` | 327 | Files GitHub issues about the tooling itself, via `gh`, from a tool call or from a composition buffer. |
+| `mcp-emacs-server.el` | 864 | The HTTP server, tool/resource registries, JSON-RPC dispatch, the permission gate route. |
 
 **Group 2 — the shared agent layer.**
 
@@ -179,9 +198,9 @@ a third backend would plug in.
 
 | File | Lines | Role |
 |---|---:|---|
-| `agent-backend.el` | 540 | An EIEIO base class naming what every backend can do, the shared event vocabulary, and the shared keymap. |
-| `agent-prompt.el` | 297 | A composition buffer for prompts — the git-commit shape, not the minibuffer. |
-| `agent-permission.el` | 451 | A buffer that asks the human to allow or deny one tool call. |
+| `agent-backend.el` | 1016 | An EIEIO base class naming what every backend can do, the shared event vocabulary, the shared keymap, the turn-state indicator, and the background-agent registry. |
+| `agent-prompt.el` | 472 | A composition buffer for prompts — the git-commit shape, not the minibuffer. |
+| `agent-permission.el` | 500 | A buffer that asks the human to allow or deny one tool call, plus the session-scoped blanket allow. |
 
 **Group 3 — agent-facing surfaces.**
 
@@ -191,24 +210,34 @@ a third backend would plug in.
 | `mcp-emacs-run.el` | 680 | Launches the Claude CLI in an `eat` terminal buffer; window management. |
 | `mcp-emacs-run-resume.el` | 172 | A native picker over past Claude sessions on disk. |
 | `mcp-emacs-remote.el` | 371 | Sends prompts to a running session; records activity as an Org transcript. |
-| `claude-client.el` | 1648 | A terminal-free runner: subprocess + NDJSON stream + rendered buffer. |
-| `opencode-client.el` | 915 | An HTTP + SSE client for the opencode agent server. |
-| `agent-session-overview.el` | 441 | One live `tabulated-list` view of every session, across all backends. |
+| `claude-client.el` | 1999 | A terminal-free runner: subprocess + NDJSON stream + rendered buffer. |
+| `opencode-client.el` | 951 | An HTTP + SSE client for the opencode agent server. |
+| `agent-session-overview.el` | 444 | One live `tabulated-list` view of every session, across all backends. |
 
 **Group 4 — orgspec, the org-native spec workflow.**
 
 | File | Lines | Role |
 |---|---:|---|
-| `orgspec.el` | 95 | The marker table: op tags, property names, regexes, TODO roles. |
-| `orgspec-model.el` | 61 | Three `cl-defstruct`s: scenario, requirement, change. |
-| `orgspec-parse.el` | 129 | `org-element` extraction of the model from buffers. |
+| `orgspec.el` | 106 | The marker table: op tags, property names, regexes, TODO roles. |
+| `orgspec-model.el` | 65 | Three `cl-defstruct`s: scenario, requirement, change. |
+| `orgspec-parse.el` | 152 | `org-element` extraction of the model from buffers. |
 | `orgspec-fold.el` | 173 | The delta fold — the load-bearing algorithm. |
 | `orgspec-validate.el` | 112 | The hard-gate validator. |
-| `orgspec-commands.el` | 273 | The verbs: `new`, `status`, `archive`. |
+| `orgspec-commands.el` | 275 | The verbs: `new`, `status`, `archive`. |
 | `orgspec-lifecycle.el` | 81 | Moving a delta requirement through TODO states. |
 | `orgspec-agenda.el` | 60 | One `org-agenda` custom command as an in-flight dashboard. |
 | `orgspec-review.el` | 93 | Ediff the fold before it writes. |
-| `orgspec-mcp.el` | 230 | Typed MCP tools over the orgspec verbs. |
+| `orgspec-mcp.el` | 272 | Typed MCP tools over the orgspec verbs. |
+
+**Group 5 — the onboarding surfaces.**
+
+Two files that teach the rest of the project rather than implementing any of
+it. Neither is required by anything else, and nothing requires them.
+
+| File | Lines | Role |
+|---|---:|---|
+| `mcp-emacs-tutor.el` | 171 | A ten-minute guided tour in a side window, one lesson at a time. |
+| `mcp-emacs-whats-new.el` | 202 | Release notes since the version this Emacs last saw. |
 
 ## What is deliberately *not* here
 
@@ -348,15 +377,42 @@ The fix is a two-handler tool descriptor. A tool may declare both:
 - `:async-handler` — a function of `(args done)` that starts the work, returns
   immediately, and later calls `done` with the result string.
 
-The HTTP handler checks for `:async-handler` first
-(`mcp-emacs-server.el:601`) and, when present, holds the TCP connection open,
-returns control to the event loop, and writes the response from the
-completion callback. The mechanism for holding the connection is a
+The choice between the two lives in exactly one place:
+`mcp-emacs-server--tools-call` (`mcp-emacs-server.el:535`) takes an optional
+completion callback, and
+
+- with an `:async-handler` **and** a callback, it starts the work and returns
+  the symbol `deferred`;
+- with an `:async-handler` and **no** callback, it signals rather than falling
+  back to the blocking handler (`mcp-emacs-server.el:553`);
+- otherwise it calls `:handler` and returns the text.
+
+That refusal is the load-bearing half. Silently running the synchronous
+handler for a caller that cannot answer a callback is how a human-answered
+tool ends up blocking a filter again, one indirection further away from the
+code that documents why it must not. `mcp-emacs-server--tools-call-async`
+(`mcp-emacs-server.el:561`) is now a thin wrapper that supplies a callback
+which frames the text as the JSON-RPC response, and
+`mcp-emacs-server--dispatch` forwards a callback it is given. The practical
+gain is that async dispatch is no longer reachable only through HTTP: the
+tests drive it directly, and so can any in-Emacs caller.
+
+`orgspec-mcp-call` (`orgspec-mcp.el:237`) mirrors the same three-way contract
+for the tools orgspec registers, so an extra-tool provider cannot quietly
+invent a fourth convention.
+
+When an async tool is dispatched over HTTP, the handler holds the TCP
+connection open, returns control to the event loop, and writes the response
+from the completion callback. The mechanism for holding the connection is a
 `web-server`-specific `throw`:
 
 ```commonlisp
 (throw 'close-connection :keep-alive)
 ```
+
+Three tools use the async path today: `apply_diff` and `git_commit`, both of
+which wait on a human, and `org_task_wait_for_change`, which waits on a file
+and can legitimately occupy the filter for its full 300-second cap.
 
 Chapter 5 walks through the code; Chapter 6 walks through the review itself.
 
@@ -497,10 +553,15 @@ descriptor with `or`:
 
 # `mcp-emacs.el` — The Helper Layer
 
-This is the largest file in the project (1318 lines) and the least surprising
+This is the largest file in the project (1683 lines) and the least surprising
 one. It contains the functions that actually touch Emacs state. No HTTP, no
 JSON, no protocol — just Elisp that reads and writes buffers, and returns
 strings.
+
+Two clusters in it are covered elsewhere rather than here, because they are
+about waiting rather than about editor state: the diff review, the commit
+dialog, and the org-task wait all live in this file and are the subject of
+Chapter 6.
 
 ## The foundational abstraction: "the current buffer"
 
@@ -815,7 +876,7 @@ This exists because the single most common class of "the AI can't help me"
 problem is an Emacs environment problem — a GUI Emacs launched from Finder
 with a `PATH` that lacks `~/.local/bin`, so no LSP starts, so no diagnostics
 exist, so every tool returns "nothing found". The `diagnose-emacs` skill
-(Chapter 19) exists to route that class of problem here rather than into a
+(Chapter 20) exists to route that class of problem here rather than into a
 fruitless code hunt.
 
 The LSP workspace collector is worth a look for its de-duplication idiom:
@@ -876,7 +937,7 @@ behaviour match the tool's name.
 \newpage
 # `mcp-emacs-server.el` — The MCP Server
 
-686 lines, of which roughly 350 are the tool registry — a flat list of
+864 lines, of which roughly 350 are the tool registry — a flat list of 40
 descriptors. The interesting machinery is the other half.
 
 ## Schema construction
@@ -937,6 +998,13 @@ Boolean arguments are extracted with `(eq (alist-get 'save args) t)` rather
 than a truthiness test. That is because `json-read-from-string` decodes JSON
 `false` as the symbol `:json-false` by default, which is *truthy* in Elisp.
 Comparing to `t` explicitly avoids the trap.
+
+Three descriptors carry a second handler under `:async-handler` —
+`apply_diff`, `git_commit`, and `org_task_wait_for_change`. The sync handler
+stays on all three as the fallback for direct callers; §3.4 covers which is
+chosen and why the choice refuses rather than guesses. The descriptor is the
+only place that distinction is recorded, which is what keeps the dispatch code
+free of tool names.
 
 The `eval` tool is the one place where a handler is doing real work:
 
@@ -1196,7 +1264,7 @@ must still answer:
 
 The `permissionDecisionReason` string reaches the model verbatim, which is why
 every one of them is written for the model rather than for a log: they say
-what happened and whether retrying will help. Chapter 24 covers the hook side,
+what happened and whether retrying will help. Chapter 25 covers the hook side,
 including the fail-closed shell script.
 
 ## Body parsing and the JSON decode configuration
@@ -1240,7 +1308,7 @@ through to the health-response branch.
 
 \newpage
 
-# The Interactive Diff Review
+# Human-Answered Tools: The Diff Review and the Commit Dialog
 
 This is the most intricate piece of the codebase, and the one that best
 rewards close reading. Everything in this chapter lives in `mcp-emacs.el`,
@@ -1410,7 +1478,9 @@ The accept binding is the interesting one, because it does not blindly copy:
       (when (string= (buffer-substring-no-properties (point-min) (point-max))
                      entry-content)
         (erase-buffer)
-        (insert-buffer-substring buffer-b))))
+        (insert-buffer-substring buffer-b))
+      (when (and buffer-file-name (buffer-modified-p))
+        (save-buffer))))
   (setcar result 'applied))
 ```
 
@@ -1421,6 +1491,14 @@ a real editor), their edits are preserved and the proposal is discarded. The
 outcome is still `applied`, and the caller returns buffer A's *actual* final
 content. "Accept" means "accept what is now in buffer A", not "accept what the
 agent proposed".
+
+The `save-buffer` is the newer half, and it changes what the word `applied`
+promises. Saving used to be left to the human, which meant an agent could be
+told `applied` while the file on disk still held the old content — and the
+agent's very next step is usually to run the tests. Writing on accept makes
+the status mean what a caller reads it to mean: the file on disk holds that
+content. The guard matters in tests, where buffer A need not visit a file at
+all.
 
 ## Single-path resolution
 
@@ -1483,8 +1561,22 @@ original error rather than wrapping it in a new one.
 
 ## The synchronous caller
 
-`mcp-emacs-apply-diff` (line 1168) is the version used when the tool is
-dispatched directly rather than over HTTP. It polls:
+`mcp-emacs-apply-diff` (`mcp-emacs.el:1329`) is the version used when the tool
+is dispatched directly rather than over HTTP. It opens with a refusal:
+
+```commonlisp
+(when inhibit-quit
+  (error "Cannot review synchronously under a process filter; \
+use mcp-emacs-apply-diff-async"))
+```
+
+`inhibit-quit` is `t` in a process filter and nowhere else that matters, so
+this one test distinguishes the two contexts without the caller having to
+declare which it is. The point is to fail with the sentence that names the fix
+rather than to display a diff whose keys are dead. `mcp-emacs-git-commit`
+carries the same guard.
+
+Then it polls:
 
 ```commonlisp
 (let ((deadline (+ (float-time) secs)))
@@ -1526,7 +1618,7 @@ every exit path.
 
 ## The asynchronous caller
 
-`mcp-emacs-apply-diff-async` (line 1095) has the same setup but no polling
+`mcp-emacs-apply-diff-async` (`mcp-emacs.el:1275`) has the same setup but no polling
 loop. Its docstring is the clearest statement of the problem in the whole
 codebase:
 
@@ -1556,14 +1648,26 @@ The structure is a `finish` closure guarded by a `done` cell:
   (setq timer
         (run-at-time secs nil
                      (lambda ()
-                       ...force-quit ediff...
-                       (funcall finish "Status: timeout")))))
+                       ;; Claim the outcome before forcing the quit.
+                       (funcall finish "Status: timeout")
+                       ...force-quit ediff...))))
 ```
 
 Two racers — the quit hook and the timer — both call `finish`; the `done`
 cell ensures only the first one is delivered. Note also the ordering comment:
 the timer is armed *after* `mcp-emacs--ediff-review` returns successfully, so
 a failed setup cannot leave a timer pointing at a session that never existed.
+
+The order *inside* the timer is equally deliberate, and it was wrong once.
+Force-quitting first looks natural — clean up, then report — but the forced
+quit runs the ediff quit hook, and that hook records an implicit `rejected`
+and calls `finish` itself. Being first, it won the `done` cell, so a timeout
+was reported to the caller as `Status: rejected`: a lie about what happened,
+and one that reads to the agent as a human decision it should respect.
+Claiming the outcome first makes the hook's later `finish` the no-op
+(`mcp-emacs.el:1316`). The general rule, worth carrying to any latch of this
+shape: *the racer that knows the truth answers before it triggers the racer
+that would guess.*
 
 > **Elisp Feature: timers**
 >
@@ -1580,6 +1684,116 @@ a failed setup cannot leave a timer pointing at a session that never existed.
 > callback.
 >
 > `run-at-time` returns a timer object; hold onto it if you may need to cancel.
+
+## The commit dialog: the same shape, someone else's UI
+
+`git_commit` (`mcp-emacs.el:1424`) is the second tool of this shape, and the
+commentary says so outright: *the same shape as apply_diff — a proposal the
+human answers.* The agent proposes a commit message; the human edits it,
+finishes, or aborts; the tool reports what happened. What differs is that the
+UI is not built here. magit already has one, and it is the one the human has
+muscle memory for.
+
+That turns out to be the harder problem, because the dialog is not a function
+call that returns.
+
+### Driving a dialog you do not own
+
+magit runs `git commit` as a real child process with `$GIT_EDITOR` pointed at
+an Emacs session served by the `with-editor` package. So
+`(magit-commit-create)` returns almost immediately, and the buffer to prefill
+— `.git/COMMIT_EDITMSG` — appears *later*, when git's output is processed. A
+tool that prefills after the call returns would write into nothing.
+
+The sequence the code uses (`mcp-emacs.el:1537` onwards) is therefore
+inverted: launch first, then install hooks, and let the hooks find the buffer.
+
+| Step | Mechanism |
+|---|---|
+| Record the starting point | `(magit-rev-parse "HEAD")` before launching |
+| Launch | `(magit-commit-create)` |
+| Catch the buffer | `with-editor-filter-visit-hook`, matching on `(magit-commit-message-buffer)` |
+| Prefill | `erase-buffer`, `insert message`, point to `point-min` |
+| Detect confirm | buffer-local `with-editor-post-finish-hook` |
+| Detect abort | buffer-local `with-editor-post-cancel-hook` |
+| Read the result | after 0.5s, `(magit-rev-parse "HEAD")`; a moved HEAD is the new SHA |
+
+Two of those rows carry a comment worth reading. The visit hook fires for
+*every* editor session `with-editor` spins up — including a concurrent one —
+so the handler acts only on this dialog's commit buffer and then removes
+itself; anything else would prefill a colleague's rebase. And the hook
+installation happens only after the launch succeeded, on the same reasoning
+as the ediff timer: a failed launch must not leave a live hook behind it
+waiting for a buffer that will never come.
+
+Reading the outcome from HEAD rather than from the hook is the honest
+measurement. The finish hook means "the human pressed `C-c C-c`", which is not
+the same as "a commit exists" — a failing pre-commit hook still fires it. So
+the tool compares HEAD against the value it recorded and only claims a SHA
+when HEAD actually moved.
+
+No new keys are introduced. `C-c C-c` is `with-editor-finish` and `C-c C-k` is
+`with-editor-cancel`, exactly as they are for a commit the human started
+themselves.
+
+### Failing closed, again
+
+Every failure path here refuses to commit rather than committing something
+unreviewed:
+
+| Condition | Reported | Why |
+|---|---|---|
+| magit not installed | `Status: magit unavailable` | A soft dependency; the batch test Emacs has no magit. |
+| Nothing staged | `Status: nothing staged` | Checked with `magit-git-lines "diff" "--cached" "--name-only"` before any UI appears. |
+| Human aborted | `Status: aborted` | `with-editor-cancel` has already aborted git's pending commit. |
+| Timeout | `Status: timeout` | The dialog is cancelled — magit's own cancel, which is an abort, never a commit. |
+| Confirmed | `Status: committed` plus the SHA when HEAD moved | |
+
+The comment on the abort path states the rule plainly: *report it, never
+commit behind the human's back.* A tool that guessed "they probably meant
+yes" would be writing history under someone else's name.
+
+Timeouts come from the same pair of defcustoms the diff review uses, with the
+same numbers:
+
+| Variable | Default |
+|---|---:|
+| `mcp-emacs-git-commit-default-timeout` | 120 |
+| `mcp-emacs-git-commit-max-timeout` | 600 |
+
+The synchronous wrapper (`mcp-emacs.el:1563`) drives the async one and polls
+to `(+ (float-time) secs 1)` — one second past the async timeout on purpose,
+so that when both are racing, the async helper's honest `Status: timeout`
+arrives before the poll gives up and invents its own.
+
+## The one that waits on a file, not a human
+
+`org_task_wait_for_change` is the third async tool, and it is the exception
+that clarifies the rule. It waits, and it can hold the filter for its full
+300-second cap, but nothing it waits for needs a command loop: it is watching
+a change token move (Chapter 7). So the async version
+(`mcp-emacs.el:994`) needs no UI at all — a repeating poll timer at
+`mcp-emacs-org-task-wait-poll-interval` (0.2s) and a one-shot bounding timer,
+with the same `done`-cell latch to guarantee single delivery. Sync and async
+share one formatter (`mcp-emacs--org-task-wait-result`,
+`mcp-emacs.el:952`) so the two answers cannot drift apart.
+
+The warning that came out of building it is attached to
+`mcp-emacs--wait-tick` (`mcp-emacs.el:936`) and is the best short statement in
+the codebase of why this whole chapter exists:
+
+> A warning for anyone waiting on a *human* through this tick: do not.
+> `sleep-for` blocks without consuming input, so a pending event stays pending
+> and every later tick takes the same branch. Under a process filter, where
+> Emacs binds `inhibit-quit` to `t`, that is an uninterruptible hang — and if
+> the thing being waited for is a keypress (an ediff review), it is a
+> deadlock, because the keystroke that would end the wait is what stops it
+> being read. Draining the input here does not help: requeueing it for the
+> command loop restores the very condition `sit-for` declines on.
+> Human-answered tools must use `:async-handler` instead.
+
+The last sentence is the whole design, and it is now written next to the
+function someone would reach for to break it.
 
 
 \newpage
@@ -1892,6 +2106,9 @@ The defaults are worth reading as documentation of intent
 | `render` | no-op | A backend may render by other means. |
 | `mention` | delegates to `add-note` | See below. |
 | `query` | `user-error` naming the backend | |
+| `turn-state` | `finished` | A backend that tracks no turn state must not over-claim one. |
+| `turn-elapsed` | `nil` | Likewise: no clock beats a fabricated one. |
+| `kill-agent` | `user-error` naming the backend | Refusing is honest; see "Background agents". |
 
 Two of those are more than bookkeeping.
 
@@ -1916,7 +2133,13 @@ do neither says so rather than pretending.
 for every backend event. `EVENT` is a plist whose `:kind` is one of
 `started`, `prompt`, `text`, `tool-use`, `tool-result`, `finished`,
 `interrupted`, `note`, `notes-delivered`, `note-dropped`, `resumed`,
-`permission-request`, `question-request`, or `error`.
+`permission-request`, `question-request`, `error`, or — added with the
+background-agent work — `agent-started`, `agent-update`, `agent-finished`,
+`agent-killed`.
+
+Those four arrived without touching either client, which is the contract
+paying off: the tracker that publishes them is itself a subscriber to the
+kinds that already existed.
 
 The contract in the docstring is the load-bearing part:
 
@@ -1932,12 +2155,168 @@ Publishing goes through one function, and it is careful to do nothing else:
 
 ```commonlisp
 (defun agent-backend--publish (buffer event)
-  (run-hook-with-args 'agent-backend-event-functions buffer event))
+  (run-hook-with-args 'agent-backend-event-functions buffer event)
+  (force-mode-line-update t))
 ```
 
 Rendering is *not* triggered here. A backend renders when it decides to;
-publishing only notifies. Chapter 23 lists this under "publish events, do not
+publishing only notifies. Chapter 24 lists this under "publish events, do not
 advise".
+
+The `force-mode-line-update` is the one exception, and it is defensible on
+narrow grounds: every event *is* a turn-state transition, so refreshing the
+indicator here is the same information the hook is already carrying, not a
+second concern. The `t` argument means *all* windows, because a publish can
+arrive on a request or process path from any buffer while the conversation is
+displayed in another window entirely.
+
+## The standing turn-state indicator
+
+A rendered conversation buffer used to be ambiguous in a way nobody noticed
+until it bit: with the last block of text on screen and nothing moving, there
+is no way to tell "the agent is thinking" from "the agent answered and is
+waiting for you". The transcript looks identical either way, and the answer
+decides whether you should be typing.
+
+The fix is two generics and one mode-line slot. `agent-backend-turn-state`
+returns one of three symbols:
+
+| State | Meaning |
+|---|---|
+| `working` | A turn is in flight; the agent owes you a reply. |
+| `idle` | A process is alive but no turn is running; it is your move. |
+| `finished` | Nothing is driving this buffer. |
+
+`agent-backend-turn-elapsed` returns the seconds the current turn has been
+running, or `nil`. `agent-backend-mode` appends one `:eval` slot to the
+buffer-local `mode-line-format` (`elisp/agent-backend.el:942`), so both
+clients inherit the indicator without either of them mentioning it:
+
+```commonlisp
+(defun agent-backend--turn-mode-line (backend)
+  ...)   ; "working 2:07" | "idle" | "finished"
+```
+
+Elapsed time is formatted `M:SS` rather than as bare seconds, on the stated
+grounds that *a turn that has run eight minutes reads differently from one
+that has run eight seconds* — and 487 does not read as either.
+
+Two details are the whole reason this is trustworthy rather than decorative.
+
+**The state is read from the buffer, never from the process alone.** A live
+`--print` subprocess that has already emitted its `result` message is `idle`,
+not `working`; asking only "is the process alive?" would report a conversation
+as busy for as long as it stays open. So Claude's implementation
+(`elisp/claude-client.el:1790`) tests the buffer-local `--turn-active` flag
+first and falls back to the process only to distinguish `idle` from
+`finished`.
+
+**The defaults under-claim.** `finished` and `nil` are what a backend gets for
+implementing nothing, and a `nil` instance — a conversation buffer with
+nothing driving it — also reads `finished`. Every wrong answer this design can
+give is in the direction of "not busy", which is the one that costs the human
+nothing.
+
+There is no timer behind the clock. The mode line advances when an event
+arrives, because `agent-backend--publish` forces the update; between events
+the displayed elapsed time is as stale as the last event. That is an accepted
+trade — a repeating timer per conversation buys a smoothly ticking number and
+pays for it in wakeups — but it means a long silent turn shows the time of its
+last token, not the wall clock.
+
+Opencode implements neither generic, so every opencode conversation's
+indicator reads `finished` permanently. The seam degrades exactly as designed;
+the display is simply not yet informative there.
+
+## Background agents
+
+A turn can fan out. The agent calls a spawn tool, several sub-agents work in
+parallel, and the only trace on the event seam used to be one `tool-use` by
+the main agent — so from Emacs, a conversation doing five things at once
+looked like a conversation doing one slow thing.
+
+`agent-backend.el` closes that from the subscriber side, without either client
+learning anything new. The tracker (`agent-backend--track-agent`,
+`elisp/agent-backend.el:451`) listens on `agent-backend-event-functions` and
+infers a registry from the kinds already being published:
+
+| Seen on the seam | Inferred |
+|---|---|
+| `tool-use` whose `:name` is in `agent-backend-spawn-tool-names` | a new agent, with the tool input as its task |
+| `tool-result` | the oldest still-running agent finished |
+| `agent-killed` | that agent is recorded `failed` |
+
+`agent-backend-spawn-tool-names` defaults to `("task" "delegate_task"
+"developer")` — one name per backend's own vocabulary, in a defcustom because
+the list is exactly the kind of thing that changes without asking.
+
+The registry is `agent-backend--spawned-agents`, and it is **buffer-local on
+purpose**: a conversation keeps only the agents it spawned, with no global
+store to fall out of step. That is the same no-registry stance
+`agent-backend--conversation-buffers` takes for conversations, for the same
+reason. Each entry is a plist of `:agent :name :task :status :buffer :started
+:finished :result`, and each agent gets its own `*agent:agent-N*` output
+buffer so a sub-agent's output never interleaves with the main transcript.
+
+### What the inference can and cannot know
+
+Two honest limits are worth stating, because the display reflects them.
+
+*Attribution is FIFO.* Tool results arrive on the seam in the order the tools
+were called, so a result closes the oldest running agent with a matching name,
+or failing that simply the oldest. That is exact when the sub-agents finish in
+order and a guess when they do not. The comment names it as *the honest
+attribution* rather than claiming correctness — the seam carries no
+correlation id, so no better answer is available from here.
+
+*Statuses are three.* `running`, `done`, `failed`. A killed agent is recorded
+`failed`, on the grounds that it did not complete its task. And for the Claude
+backend specifically, `tool-result` events carry no status at all, so a
+Claude-spawned agent can only ever be recorded `done`. Opencode does better:
+its `tool-result` publish (added in the same window,
+`elisp/opencode-client.el:539`) maps a terminal part state of `"error"` to
+`failed`.
+
+*Stopping one is not implemented.* `agent-backend-kill-agent` exists as a
+generic, and no backend implements it. Pressing `k` in the agent list
+therefore reaches the base class's refusal and reports
+`"<class> cannot stop a single background agent"` in the echo area. This is
+the "optional verbs degrade quietly" rule taken at its word: the intent is
+raised honestly where no backend honours it, rather than the key silently
+doing nothing.
+
+### The agent list
+
+`agent-backend-agent-list` shows the current conversation's agents in a
+`tabulated-list-mode` buffer named `*ai-agents*`, with columns `Agent`,
+`Status`, `Task`. It re-prints from a subscriber on the same hook, so it is
+live rather than a snapshot; `RET` visits an agent's output buffer, `k` asks
+to stop it, `?` toggles help, and `g`/`q` come from `tabulated-list-mode`.
+
+Two idioms recur from Chapter 13, which is the same shape of buffer:
+
+- **One list drives three surfaces.** `agent-backend--agent-list-help` is a
+  single table of key and description, consumed by the keymap, the `?` buffer,
+  and the mode-line hint — so a new action cannot be documented in one place
+  and missing from another.
+- **The subscriber swallows its own errors.** It runs inside the publishing
+  session's call stack, so a rendering failure here must not propagate into
+  the conversation that merely emitted an event.
+
+The key hint lives in the mode line rather than the header line, because only
+`tabulated-list-print` aligns the column headers with the data.
+
+## Starting a second conversation
+
+`agent-backend-start-another` (`elisp/agent-backend.el:996`) always builds a
+fresh conversation, dispatching to `opencode-client-create-session` or
+`claude-client-open-another` by backend. It is bound to `A` in
+`claude-client-mode-map` and `n` in `agent-session-overview-mode-map`.
+
+The distinction it draws is the point: `g` (`agent-backend-start`) restarts
+the conversation you are in, and *a running conversation is joined, not
+restarted*. Before this existed, the only way to get a second conversation
+while the first was working was the command that would have killed the first.
 
 ## Finding a conversation without a registry
 
@@ -2066,7 +2445,8 @@ The opening line of the commentary is the design:
 > dead end.
 
 The surface is a small read-only buffer naming the tool and the exact call,
-answered with one key: `a`/`y` allow once, `d`/`n` deny, `A` always allow.
+answered with one key: `a`/`y` allow once, `d`/`n` deny, `A` always allow,
+`z` allow everything for the rest of this Emacs session.
 It is `agent-prompt`'s shape for the same reasons, with one difference — a
 prompt collects text and a decision collects a choice, so this derives from
 `special-mode` and single keys are commands.
@@ -2181,6 +2561,36 @@ And when the rule cannot be written, the call is still allowed:
 ;; Allowing anyway is what the human just asked for.
 ```
 
+### The session scope
+
+`a` and `A` are the two ends of a range — this one call, or a durable rule in
+a settings file shared with the terminal CLI — and the gap between them is
+where the gate got tiresome. An agent working through a refactor asks thirty
+times; answering each one is not review, and writing thirty durable rules to
+avoid it is worse.
+
+`z` is the scope in between. `agent-permission-session-allow-all-mode` is a
+global minor mode with the lighter `" A-A"`, and while it is on,
+`agent-permission-request` answers `allow` immediately without opening a
+buffer.
+
+Three properties keep that from being a footgun:
+
+- **It is memory only.** The flag dies with this Emacs session and no settings
+  file is written, so the next session starts gated again. `A` is the durable
+  answer and remains the only one.
+- **It is visible.** A global minor-mode lighter is in every mode line, which
+  is the honest place for "the gate is currently open".
+- **It short-circuits before the registry.** The decision never enters
+  `agent-permission--pending`, so it cannot be answered twice; and the
+  continuation still runs from `run-at-time 0` exactly as a normal answer
+  would — which is what holds the server connection open for the reply. The
+  fast path is the same path.
+
+`z` was chosen as a letter far from `a` and `d`, on the same reasoning that
+put "always allow" on a capital `A`: the broadest answer should not sit under
+the finger already resting on the narrowest.
+
 ### The deadline
 
 `agent-permission-request` takes a `:timeout` and reports expiry as the
@@ -2196,7 +2606,7 @@ The file is backend-agnostic throughout. A pending decision is a plist and a
 continuation; *who* asked and how the answer travels back is the caller's
 business. Claude reaches this through a `PreToolUse` hook, opencode through
 its own permission API and `agent-backend-reply-permission` — and neither is
-mentioned in the file. Chapter 24 covers the hook wiring, including why the
+mentioned in the file. Chapter 25 covers the hook wiring, including why the
 gate is emphatically not an MCP tool.
 
 
@@ -2277,7 +2687,7 @@ version-fragile, so it is opt-in and isolated from the HTTP MCP server."
 >
 > Structs are used for the two places in this codebase with genuinely
 > multi-field, mutable state: the IDE session here, and the orgspec model
-> (Chapter 15). Everything smaller uses plists.
+> (Chapter 16). Everything smaller uses plists.
 
 
 Two hash tables, both keyed by tab name:
@@ -2957,7 +3367,7 @@ then the operational one: **a gate that is tedious gets switched off.**
 
 **The port travels in the hook's environment**, not by discovery. This Emacs
 knows which port it is serving on; a script left guessing would find the wrong
-instance whenever a test daemon or a worktree is also up. (Chapter 20 explains
+instance whenever a test daemon or a worktree is also up. (Chapter 21 explains
 why a second Emacs on port 8775 is routine here.)
 
 **A missing script switches the gate off rather than breaking every call.**
@@ -3336,6 +3746,78 @@ That is the kind of second-order consequence worth capturing in a comment: the
 bug is not "two processes", it is "an orphaned ediff nobody can usefully
 answer".
 
+## Rewinding to an earlier turn
+
+Reopening a session (above) continues it at its leaf. The question that
+follows immediately is the other one: continue it from *four turns ago*,
+dropping what came after — the conversation went down a wrong path and the
+context is now full of it.
+
+The CLI cannot do this. `--resume <id>` reopens at the leaf, and
+`--fork-session` copies the leaf; neither takes a turn to continue from. So
+the rewind is built on the same on-disk JSONL store the picker reads,
+by forking a truncated copy:
+
+| Step | Function |
+|---|---|
+| Find the transcript | `claude-client--transcript-file` (`<session-id>.jsonl` in the project's store) |
+| Offer the turns | `claude-client--rewind-prompts` — the text of every `prompt` event in the in-buffer log |
+| Locate the cut | `claude-client--rewind-cut` — scan for the N-th real `user` line, reusing the resume picker's own noise filter |
+| Write the fork | `claude-client--rewind-truncate` — lines 0..cut into a new file under a fresh session id |
+| Continue it | `claude-client-start` with `--resume <new-id>` |
+
+Three properties of that design are deliberate.
+
+**The original file is never modified.** The fork is a new session id beside
+it, so a rewind is additive: the discarded turns are still on disk, and a
+rewind that turns out to be the wrong call costs nothing.
+
+**The prompt sent is a marker, not a re-send.** The fork's history already
+ends at the chosen turn, so the context *is* the rewind; the CLI only needs a
+turn to answer. It gets the literal string `[rewound here]`
+(`claude-client--rewind-marker`). Re-sending the chosen prompt would duplicate
+it in the history the fork already contains.
+
+**The noise filter is shared, not reimplemented.** Deciding which `user` lines
+in the transcript are real turns rather than tool plumbing is exactly the
+problem `mcp-emacs-run-resume.el` already solved for its labels, so this
+declares those helpers and calls them. Two filters would drift, and the
+failure mode of a drifted filter here is cutting at the wrong turn.
+
+The guards in `claude-client-rewind` are worth listing, because they are the
+whole error surface: not a conversation buffer; a turn currently running
+(*wait for it to end*); no session id; no readable transcript; fewer than two
+past prompts to choose between.
+
+And the docstring states the limit plainly, because it is the thing a user
+will get wrong:
+
+> The discarded turns are gone from the model's context — but the original
+> transcript is left untouched, and file edits those turns made stay applied.
+
+A rewind rewinds the conversation, not the working tree. That is the only
+thing it *can* do from here, and saying so is cheaper than letting someone
+discover it from a git diff.
+
+## Seeing the effective allowlist
+
+The permission gate (Chapter 8) surfaces a blocked call and can write a
+durable rule for it. What neither could do was answer "what is allowed right
+now, and which file says so" — and the answer is spread across layers, since
+`--settings` is additive rather than replacing (§11.3.1).
+
+`claude-client-show-allowlist` (`C-c C-p`) reads each contributing settings
+file in precedence order and prints every `permissions.allow` entry with the
+scope it came from. Two details in the reading are the kind of thing that
+makes a viewer wrong rather than merely ugly:
+
+- A file that exists but contributes no allow entries is reported as
+  *contributing none*, so a rule you expected and cannot find reads as absent
+  rather than as a file that was skipped.
+- An empty JSON array can parse to an empty vector, which is truthy while
+  holding nothing, so the entries are normalised with `(append ... nil)`
+  before being counted.
+
 ## The `agent-backend` methods
 
 Everything above is the client's own machinery. The generic interface from
@@ -3357,6 +3839,17 @@ Three are worth reading:
 - **`agent-backend-resume`** is implemented here, where the base class default
   is a `user-error`. This backend can reopen a past session because the CLI
   writes them to disk; opencode cannot.
+- **`agent-backend-turn-state`** and **`agent-backend-turn-elapsed`** are the
+  only implementations of that pair in the project, which is why the standing
+  indicator (Chapter 8) is informative in a Claude buffer and permanently
+  `finished` in an opencode one. Both read the buffer-local flags —
+  `claude-client--turn-active` and `claude-client--turn-started`, which are
+  set and cleared in lockstep at all five sites that touch them — and consult
+  the process only to tell `idle` from `finished`. `claude-client--label`, the
+  picker's session label, computes the same three words inline from the same
+  flags rather than calling the generic; the docstring points at it as "the
+  same reading", which is an acknowledged duplication rather than an
+  oversight.
 
 ## The major mode
 
@@ -3384,6 +3877,26 @@ adds its own single-letter keys. The comment explains the split: the
 single-letter keys are only reachable in plain Emacs, because under evil they
 are shadowed by the normal-state map, while the `C-c` vocabulary works either
 way.
+
+The map as it now stands:
+
+| Key | Command |
+|---|---|
+| `g` | start or restart this conversation |
+| `A` | `agent-backend-start-another` — a *second* conversation (Chapter 8) |
+| `s` | send a prompt |
+| `r` | resume a past session |
+| `i` | interrupt the turn |
+| `k` | quit the process |
+| `TAB` | toggle a tool result open |
+| `?` | help |
+| `C-c C-w` | rewind to an earlier turn |
+| `C-c C-p` | show the effective allowlist |
+
+The two newest commands took `C-c` keys rather than letters, and the evil
+setup comment says why that needed no further work: the `C-c` vocabulary is
+not shadowed by evil's state maps, so only the single-letter keys are
+re-registered.
 
 `claude-client--setup-evil` re-registers a *deliberate subset* in evil's
 normal and motion states. `k` and `g` are left out, and the reasoning is a
@@ -3528,6 +4041,31 @@ this backend simply keeps it, because there is nothing on disk to reopen.
 That is the "optional verbs degrade quietly" rule paying off: no stub, no
 apology, one accurate error message.
 
+## Feeding the shared agent tracker
+
+One small addition is worth naming because it shows the event seam working in
+the other direction. The background-agent tracker (§8.5) needs to know when a
+spawned agent finished, and it learns that from a `tool-result` event —
+which this client did not publish, because it had no use for one itself.
+
+`opencode-client--publish-part` now emits one when a tool part reaches a
+terminal state, using two helpers that are careful about what they claim:
+`--tool-status` copes with `state` arriving either as a bare status string or
+as an alist, and `--tool-result-text` returns `nil` when the part carries no
+output, *so a publisher never invents text the part does not carry.* A
+terminal state of `"error"` becomes `:status 'failed`.
+
+That last detail makes opencode the more informative of the two backends here:
+Claude's `tool-result` events carry no status at all, so a Claude-spawned
+agent can only ever be recorded `done`. The event is built with `nconc` so the
+`:text` key is simply absent rather than present-and-nil when there is nothing
+to report.
+
+The same function also handles the awkward part of the contract: opencode
+streams one part repeatedly across its lifecycle, so the same tool-use is
+published several times. Deduplication lives in the tracker rather than here
+(§8.5.1), because the client's job is to report what the server said.
+
 ## The gap the overview has to work around
 
 Two omissions here matter downstream, and Chapter 13 has to accommodate both:
@@ -3629,7 +4167,7 @@ show — a `text` event per token would re-render the table constantly for no
 visible difference. And it guards its own errors, because this runs *inside
 the publishing session's own call stack*: a rendering failure here must not
 propagate back into the session that published the event. The Org transcript
-in Chapter 14 follows the same rule, and Chapter 23 lists it as an idiom.
+in Chapter 14 follows the same rule, and Chapter 24 lists it as an idiom.
 
 ## Two window-management traps
 
@@ -3682,13 +4220,17 @@ before, which is the same window leak from the other side.
 (defconst agent-session-overview--help
   '(("RET" "visit the session")
     ("k"   "quit it (asks first)")
+    ("n"   "start another session")
     ...))
 ```
 
 The docstring states the invariant: *one list drives the header-line hint, the
 `?` buffer, and the keymap, so a new action cannot be documented in one place
-and missing from another.* `--setup-evil` iterates the same list. This is the
-"derive state, do not store it" idiom from Chapter 23 applied to
+and missing from another.* `--setup-evil` iterates the same list. The `n`
+row is the payoff in miniature: adding `agent-backend-start-another` (§8.6) to
+this view meant one entry in this table and one `define-key`, and the help
+buffer, the mode-line hint, and the evil registration all followed. This is the
+"derive state, do not store it" idiom from Chapter 24 applied to
 documentation.
 
 The key hint lives in the mode line rather than a header row, and the comment
@@ -3937,6 +4479,154 @@ normalising sequence types before iterating.
 
 \newpage
 
+# Surfaces for the Human
+
+Every chapter so far describes something an agent talks to. These three
+modules talk to the *human*, and they exist because a tool nobody can find
+their way into is indistinguishable from one that does not work. None of them
+is required by anything else, and nothing requires them.
+
+## `mcp-emacs-tutor.el` — the ten-minute tour
+
+`M-x mcp-emacs-tutor` opens a read-only Org buffer in a right-hand side window
+with nine steps in it: start the server, confirm it is listening, attach a
+client, run an agent inside Emacs, watch it work on live buffers, see an edit
+gated by a diff, gate native edits too, share an Org task list, where to go
+next.
+
+The file is 171 lines and the interesting thing about it is what it does
+*not* contain. There is no state machine, no progress tracking, no "next
+lesson" keybinding, and no stamp file. A step is an Org section, scrolling is
+the interaction, and the buffer is rebuilt from scratch on every invocation.
+The commentary is explicit that this is the design rather than a first cut:
+*the tutor is documentation with a thin container.*
+
+Two decisions are worth borrowing.
+
+**The lesson text lives in the file as a string**, not as a separate `.org`
+under `docs/`. The reason given is that it is then *versionable and diffable
+alongside the code it teaches* — a tutorial in a data file drifts from the
+code silently, while one in the same file shows up in the same diff as the
+change that broke it.
+
+**The window is a side window on the right**, placed with an inline action
+alist rather than a `display-buffer-alist` entry:
+
+```commonlisp
+(display-buffer buffer
+                '((display-buffer-reuse-window
+                   display-buffer-in-side-window)
+                  (side . right)
+                  (slot . 0)))
+```
+
+The whole point is to read the steps *beside* your work rather than instead of
+it. Note the contrast with §10.4, where the runner deliberately avoids a side
+window because `ediff` fails outright when the selected window is one. The
+difference is that nothing is ever invoked *from* the tutor, so it can afford
+to be a side window — the constraint there was never about side windows being
+bad, it was about what must not be selected when a diff opens.
+
+Reuse is by fixed buffer name, so a second `M-x` never opens a second copy;
+`org-inhibit-startup` is bound while the mode is set, so a user's Org startup
+hooks do not fold the lesson closed or take over the window.
+
+## `mcp-emacs-whats-new.el` — release notes since your last upgrade
+
+The problem: someone upgrades the plugin and has no way to find out what
+changed short of reading the git log. `M-x mcp-emacs-whats-new` shows the
+release notes for every release newer than the last one this Emacs saw.
+
+"Newer than" needs a memory of the previous version, and the choice made here
+is a local stamp file rather than a network call:
+
+| Variable | Default |
+|---|---|
+| `mcp-emacs-whats-new--stamp-file` | `~/.emacs.d/.mcp-emacs-last-seen` |
+| `mcp-emacs-whats-new--release-notes-directory` | `~/.emacs.d/mcp-emacs-news` |
+
+The stamp holds one version string. The installed version comes from the
+`;; Version:` header of `mcp-emacs.el`, located with `locate-library` — the
+same header `bin/release.sh` stamps, so there is one source of truth for
+"what is installed" rather than a second constant to forget. Comparison is
+`version-list-<` on parsed version lists, strictly newer, so a release equal
+to the stamp is not shown twice.
+
+Three behaviours follow from wanting this to work offline and quietly:
+
+- **No stamp shows everything**, not nothing. A first run is a summary of
+  what shipped, not a silent no-op.
+- **The stamp is written unconditionally**, even when there was nothing to
+  show. The variable means "the version this Emacs has seen", and a run that
+  found nothing new has still seen it.
+- **The notes are files, not an API call.** One Org file per release under a
+  `news/` directory, discovered by the glob `release-*.org` and sorted newest
+  first; each file already carries its own `* Release <version>` headline, so
+  rendering is concatenation with a blank line between.
+
+The producer is CI. `.github/workflows/release.yml` builds the notes from the
+merged pull requests in a batch and commits `news/release-<version>.org` into
+the repository, so the notes ship with the code that they describe and need no
+service to be reachable later.
+
+> **Gap worth knowing:** no release has yet shipped through that path, so
+> `news/` does not exist in the tree at the time of writing and a live
+> `M-x mcp-emacs-whats-new` finds nothing to show. The reading half is tested
+> against temp-directory fixtures; the writing half has not run in anger.
+
+Two inconsistencies with the rest of the codebase are visible here and are
+worth naming rather than tidying in prose: both user options carry a
+double-dash *private* prefix despite being `defcustom`s, and this buffer is
+shown with `switch-to-buffer` rather than the tutor's side window — so the
+tutor reads beside your work and the release notes take over the window you
+were in.
+
+## Filing an issue without leaving Emacs
+
+`mcp-emacs-report.el` began as one MCP tool, `report_tooling_issue`, so an
+agent that hit a broken tool could file it. The commands added later give the
+human the same path:
+
+| Command | Files |
+|---|---|
+| `mcp-emacs-report-bug` | a bug report, seeded with *What happened / What you expected / How to reproduce* |
+| `mcp-emacs-report-feature` | a feature request, seeded with *What you want / Why it would help* |
+
+Both open a composition buffer rather than reading the minibuffer, and the
+reasoning is the reason the file exists at all:
+
+> An idea worth filing usually arrives mid-task, and a minibuffer that cannot
+> hold a paragraph is how it gets dropped instead.
+
+The buffer is `agent-prompt-read` (§8.9), reused rather than reimplemented —
+*a second author buffer would only drift from it.* So `C-c C-c` files, `C-c
+C-k` abandons, `ZZ`/`ZQ` do the same under evil, and a selected region seeds
+the body, all for free.
+
+One adjustment was needed: `agent-prompt-read` leaves point after the seeded
+text, which is right for a prompt and wrong here, because line 1 is the
+title.
+
+That title convention is the other decision worth reading. An issue needs two
+fields and a composition buffer collects one piece of text, so rather than ask
+twice — *a second prompt is exactly the interruption these commands exist to
+avoid* — the first line is the title and the rest is the body, which is the
+shape `git commit` already trained everyone on.
+
+The scaffold is disposable in both directions. Headings the human left empty
+are stripped before filing, because *shipping them makes the issue look
+answered when it is not*; and `mcp-emacs-report-template` turns the scaffold
+off entirely for someone who would rather just write a sentence.
+
+Two output paths, split by what the human has to do next: a successful
+`Created issue: <url>` goes to the echo area, because that is the whole story,
+while anything else — `gh` missing, not authenticated, the API refusing — gets
+a buffer, along with the text that was typed. The composed text is also kept
+in `mcp-emacs-report-last-text`, so a failed filing is recoverable rather than
+a paragraph the human has to write again.
+
+\newpage
+
 # orgspec — Concept and Data Model
 
 The remaining orgspec chapters describe what is effectively a second project
@@ -3979,7 +4669,7 @@ The system SHALL notify the user on account lockout.
 
 ## The marker table
 
-`orgspec.el` (95 lines) exists so that no downstream file hardcodes a marker:
+`orgspec.el` (106 lines) exists so that no downstream file hardcodes a marker:
 
 ```commonlisp
 (defconst orgspec-op-tags
@@ -3991,6 +4681,9 @@ The system SHALL notify the user on account lockout.
 (defconst orgspec-area-property "AREA")
 (defconst orgspec-from-property "FROM")
 (defconst orgspec-impl-drawer "IMPL")
+
+(defconst orgspec-tracker-property "TRACKER")
+(defconst orgspec-issue-property "ISSUE")
 
 (defconst orgspec-clarification-regexp "\\[NEEDS CLARIFICATION:[^]]*\\]")
 (defconst orgspec-normative-regexp "\\<\\(SHALL\\|MUST\\)\\>")
@@ -4040,6 +4733,8 @@ changes these three variables rather than patching code.
 
 (cl-defstruct (orgspec-change (:constructor orgspec-change-create))
   id
+  tracker     ; issue tracker this change came from, or nil
+  issue       ; the issue there, or nil
   (requirements nil))
 ```
 
@@ -4048,6 +4743,21 @@ The identity rules are stated in the commentary and are load-bearing:
 - **Requirement identity is its exact headline text.** Renames are handled
   explicitly through the `:FROM:` property.
 - **Scenario identity is its headline text**, used by the MODIFIED drop guard.
+
+`tracker` and `issue` are the change's back-link to the discussion it came
+out of, and they are *not* headline properties — they come from buffer-level
+`#+PROPERTY:` keywords at the top of `change.org`:
+
+```org
+#+PROPERTY: TRACKER github
+#+PROPERTY: ISSUE gbastkowski/mcp-emacs#63
+```
+
+Buffer level is the right scope because a change belongs to one issue, not one
+requirement, and either slot may be nil — a change thought up at the keyboard
+has no issue behind it. What they buy is small and constant: an agent handed a
+change id can find where the humans argued about it, which is the context a
+spec deliberately does not contain.
 
 The `source` slot deserves attention. It holds the requirement's *raw org
 subtree text*, used verbatim by the fold's `org-paste-subtree`. The parsed
@@ -4196,7 +4906,11 @@ Scenarios are simply the child headlines:
           (dolist (child (org-element-contents hl))
             (when (eq (org-element-type child) 'headline)
               (push (orgspec-parse--requirement child) requirements))))))
-    (orgspec-change-create :id id :requirements (nreverse requirements))))
+    (orgspec-change-create
+     :id id
+     :tracker (orgspec-parse--buffer-property orgspec-tracker-property)
+     :issue (orgspec-parse--buffer-property orgspec-issue-property)
+     :requirements (nreverse requirements))))
 ```
 
 Find the L1 headline literally named `Delta`; its headline children are the
@@ -4213,6 +4927,31 @@ Note that `orgspec-parse--requirement` also captures the raw source region:
 
 `:begin`/`:end` span the whole subtree including children, which is exactly
 what `org-paste-subtree` needs later.
+
+### Buffer-level properties are a different read
+
+The tracker back-link (§16.3) is not a headline property, so
+`org-element-property` cannot reach it. `#+PROPERTY: TRACKER github` is a
+`keyword` element whose `:key` is `"PROPERTY"` and whose `:value` is the rest
+of the line — the property *name* is part of the value, not the key:
+
+```commonlisp
+(defun orgspec-parse--buffer-property (keyword)
+  (org-element-map (org-element-parse-buffer) 'keyword
+    (lambda (k)
+      (let ((value (org-element-property :value k)))
+        (and (equal (org-element-property :key k) "PROPERTY")
+             (string-prefix-p (concat keyword " ") value)
+             (string-trim (substring value (length keyword))))))
+    nil t))
+```
+
+The alternative is `org-entry-get` with `INHERIT`, which does consult
+buffer-level properties — but it reads through Org's property cache, and the
+cache is not populated the same way in a batch Emacs as in a live session.
+Parsing the element tree works identically in both, which is what the
+docstring means by *no cache dependency*: the same function serves the MCP
+tool and the test suite.
 
 \newpage
 
@@ -4346,7 +5085,7 @@ spec have diverged, and that is worth stopping for.
 > ```
 >
 > Defining a type rather than calling `(error "...")` lets callers — and, as
-> Chapter 20 shows, tests — distinguish "the fold rejected this" from "something
+> Chapter 21 shows, tests — distinguish "the fold rejected this" from "something
 > else went wrong".
 
 
@@ -4402,8 +5141,8 @@ nothing."
 
 This is the whole fold: nested loops over ops and requirements, in a temp
 buffer, returning a string. No I/O. That purity is what makes the review
-feature (§19.3) possible *and* what makes the function trivially testable —
-Chapter 20 shows the tests exercising it with literal Org strings.
+feature (§20.3) possible *and* what makes the function trivially testable —
+Chapter 21 shows the tests exercising it with literal Org strings.
 
 `(let ((org-inhibit-startup t)) (org-mode))` skips Org's per-buffer startup
 work (agenda file scanning, visibility restoration, hook chains) which is
@@ -4455,7 +5194,7 @@ That is the "validate-all-then-write-all" discipline, and it is the reason
 
 # Building a Domain Model on Org
 
-Chapters 13 and 14 describe what `orgspec` does. This chapter is about *why
+Chapters 16–18 describe what `orgspec` does. This chapter is about *why
 it is shaped that way*, because the shape is not obvious and the obvious
 alternative does not work. If you ever want to build something structured on
 top of Org — a spec workflow, a task system, a knowledge base with
@@ -4575,7 +5314,7 @@ touched by a human who chose that formatting.
 Now consider what that means for `orgspec`. The fold rewrites `specs/*.org`
 on every archive. If each fold reflowed every requirement in the file — not
 just the ones the change touched — every archive would produce a diff full of
-whitespace noise, the ediff review from §19.3 would be unreadable, and
+whitespace noise, the ediff review from §20.3 would be unreadable, and
 `git blame` on a spec would point at whoever last archived anything.
 
 The fidelity loss is not a bug in Org. Interpreting an AST *has* to make
@@ -4590,7 +5329,7 @@ What `orgspec` does instead, stated as rules you can apply elsewhere.
 
 The AST is Org's vocabulary: `headline`, `section`, `paragraph`, `drawer`.
 Your domain has a different one: requirement, scenario, op, area. Build the
-latter (§15.3):
+latter (§16.3):
 
 ```commonlisp
 (cl-defstruct (orgspec-requirement (:constructor orgspec-requirement-create))
@@ -4692,13 +5431,13 @@ pattern:
 
 - **Testability.** A fold test is a literal Org string and a set of
   assertions on the returned string. No fixtures on disk, no mocks, no
-  cleanup (§20.6).
+  cleanup (§21.6).
 - **Preview.** Because the transformation produces a value rather than an
   effect, `orgspec-review-fold` can ediff the result against the on-disk file
-  and write nothing (§19.3). "See the fold, not trust the fold" is free.
+  and write nothing (§20.3). "See the fold, not trust the fold" is free.
 - **Transactionality.** All areas are built in memory and only written once
   every fold has succeeded, so a late failure leaves `specs/` untouched
-  (§17.7).
+  (§18.7).
 
 None of those are available if your fold mutates a file buffer in place.
 
@@ -4717,7 +5456,7 @@ Org files on disk are the only durable state. The model is a lens you look
 through, briefly.
 
 That is why `orgspec-status` counts checkboxes with a regexp over the file
-rather than consulting an index, and why the agenda dashboard (§19.2) is a
+rather than consulting an index, and why the agenda dashboard (§20.2) is a
 *query over the change files themselves*, not over a projection. Nothing can
 be stale because nothing is stored — the same "derive, do not store" idiom
 the runner uses for its session registry (§10.2), applied to the domain model.
@@ -4736,7 +5475,7 @@ documents a human reads; wrong for a log that only ever grows.
 
 **Cross-file invariants are awkward.** "No requirement name may repeat across
 areas" would mean parsing every spec on every validate. The current validator
-scopes itself to one change deliberately (§19.1).
+scopes itself to one change deliberately (§20.1).
 
 If you hit those limits, the escape hatch is a *cache*, not a change of model:
 keep the Org files authoritative and derive an index from them, with the
@@ -4749,7 +5488,7 @@ picks that up as a matter of course.**
 
 That property is the entire reason this project stores its specs in Org rather
 than in JSON beside the code. It is the same bet as Chapter 7's task sessions
-and Chapter 25's event log: the human's editor is the interface, and the file
+and Chapter 26's event log: the human's editor is the interface, and the file
 is the API.
 
 ## Applying this elsewhere
@@ -4758,10 +5497,10 @@ If you want a structured workflow over Org, the checklist:
 
 1. Define `cl-defstruct`s in your domain's vocabulary, not Org's.
 2. Write one parse module using `org-element`. Remember the `section` gotcha
-   (§16.2) — a headline's paragraphs and drawers hide under a `section` child.
+   (§17.2) — a headline's paragraphs and drawers hide under a `section` child.
 3. Capture `:begin`/`:end` source text for anything you will write back.
 4. Put every marker — tag names, property names, regexes, keyword mappings —
-   in one table, as `orgspec.el` does (§15.2), so nothing downstream
+   in one table, as `orgspec.el` does (§16.2), so nothing downstream
    hardcodes a string.
 5. Write transformations as pure functions over strings, in temp buffers.
 6. Mutate with `org-paste-subtree`, `org-cut-subtree`, `org-todo`,
@@ -4769,7 +5508,7 @@ If you want a structured workflow over Org, the checklist:
 7. Build everything, validate everything, then write everything.
 8. Let TODO keywords be your state machine. They are already the user's
    vocabulary, `org-agenda` already queries them, and you get a dashboard for
-   free (§19.2).
+   free (§20.2).
 
 Roughly 300 lines of `orgspec-parse.el` plus `orgspec-fold.el` implement all
 eight. It is a small pattern with a good ratio.
@@ -4943,11 +5682,37 @@ Handlers are thin adapters that format a value into text:
       "valid")))
 ```
 
+Two pieces of plumbing sit between the descriptors and those handlers.
+
+`orgspec-mcp--routed-tools` adds a `root` property to every schema and binds
+it before calling the handler, so an agent can name the project rather than
+relying on whatever `default-directory` the server happens to have. It wraps
+`:async-handler` as well as `:handler` — no orgspec tool declares one today,
+but a wrapper that covered only half the contract would be a trap set for
+whoever adds the first.
+
+`orgspec-mcp-call` then mirrors the server's own three-way dispatch rule
+(§3.4) exactly: async with a callback returns `deferred`, async without one
+signals, sync returns text. An extra-tool provider is a second implementation
+of that contract, and the failure it must avoid is inventing a fourth
+convention — an MCP client cannot tell whose dispatcher it reached.
+
+`orgspec-mcp--format-change` gained the back-link in its first line, so a
+parse reads:
+
+```
+issue-63 (from github:gbastkowski/mcp-emacs#63)
+```
+
+with `-` standing in for a missing tracker and the `:issue` half omitted when
+only `TRACKER` is set. The id used to appear only when a change had no
+requirements at all, which is the one case where nobody needed it.
+
 \newpage
 # The Test Suite
 
-23 test files, roughly 6,600 lines, run on every push and pull request — 22
-suites and 833 assertions. This chapter covers how they work, why they
+26 test files, roughly 8,800 lines, run on every push and pull request — 25
+suites and 1,076 assertions. This chapter covers how they work, why they
 are shaped the way they are, and how to write a new one — because if you are
 going to modify this code, this is the chapter that lets you do it with
 confidence.
@@ -5233,7 +5998,7 @@ Two idioms worth copying:
 - A negative assertion compares against `nil` directly, since
   `string-match-p` returns `nil` on no match.
 
-Testing the error path uses the custom error type from §17.4:
+Testing the error path uses the custom error type from §18.4:
 
 ```commonlisp
 (check "modified-drop-guard-signals"
@@ -5379,17 +6144,22 @@ The registry tests are worth noting for what they assert:
 
 ```commonlisp
 (let ((tool (mcp-emacs-server--find-tool "apply_diff")))
-  (check "apply-diff-has-async" (functionp (plist-get tool :async-handler)) t)
-  (check "apply-diff-keeps-sync" (functionp (plist-get tool :handler)) t))
+  (it "gives the human-answered apply_diff an async handler"
+    (check-that (functionp (plist-get tool :async-handler))))
+  (it "keeps apply_diff's synchronous handler as a direct-dispatch fallback"
+    (check-that (functionp (plist-get tool :handler)))))
 
 (let ((tool (mcp-emacs-server--find-tool "project_info")))
-  (check "sync-tool-has-no-async" (plist-get tool :async-handler) nil))
+  (it "leaves an ordinary tool without an async handler"
+    (check (plist-get tool :async-handler) nil)))
 ```
 
 These are *invariant* tests, not behaviour tests. They encode the design rule
 "human-answered tools are async, everything else is not" so that a future
-change violating it fails loudly. If you add an async tool, add a matching
-assertion here.
+change violating it fails loudly. `org_task_wait_for_change` has the same
+pair. If you add an async tool, add a matching assertion here — `git_commit`
+is currently the one async tool without one, which is exactly the omission
+these assertions exist to prevent.
 
 ## What is and is not covered
 
@@ -5409,6 +6179,16 @@ Covered well:
   escape hatch (`agent-prompt-test.el`).
 - The session overview's enumeration, mode-before-name matching, and
   per-backend state honesty (`agent-session-overview-test.el`).
+- The commit dialog's whole outcome set, with magit and `with-editor` stubbed
+  out entirely (`mcp-emacs-git-commit-test.el`) — including that a finish
+  which does not move HEAD is not reported as a commit.
+- The rewind fork: cut selection, truncation, and that the original transcript
+  is left byte-identical (`claude-client-test.el`).
+- The background-agent tracker's FIFO attribution and its dedup of a
+  re-streamed tool part (`agent-backend-test.el`).
+- The two onboarding modules, including the side-window placement and the
+  stamp-file round-trip (`mcp-emacs-tutor-test.el`,
+  `mcp-emacs-whats-new-test.el`).
 
 Not covered:
 
@@ -5441,6 +6221,20 @@ pass/fail contract, so there is exactly one of each. A bare `emacs --batch -l`
 still works on a suite that needs no dependencies, which is what keeps a suite
 debuggable in isolation — but it will use your own init unless you point it
 elsewhere.
+
+On a fresh clone, install the dependencies first:
+
+```bash
+bin/test-emacs.sh --deps
+```
+
+This is worth knowing before you read a failure report. Several suites load a
+soft dependency and error out at load time without it, and an errored suite
+reports as not-ok — so a dependency-less run produces a page of failures that
+say nothing about the code. CI runs `--deps`, `--compile`, and `--quiet` in
+that order (`.github/workflows/ci.yml:28–37`), all through this one script,
+because *CI and the local loop drifting apart is how a suite ends up green in
+one and broken in the other.*
 
 For an interactive poke at the code under test, run a *test* Emacs rather than
 your working one:
@@ -5609,7 +6403,7 @@ and register both:
       :handler (lambda (args) (mcp-emacs-my-thing args)))
 ```
 
-Then reproduce the three guarantees the existing async code provides:
+Then reproduce the four guarantees the existing async code provides:
 
 1. **Single delivery.** Use a `(list nil)` guard cell; the first of
    {resolution, timeout} to arrive wins and cancels the other.
@@ -5617,6 +6411,14 @@ Then reproduce the three guarantees the existing async code provides:
    default it, and arm the timer only after setup succeeded.
 3. **Cleanup on every path.** Kill temp buffers, cancel timers, restore window
    configuration.
+4. **An honest timeout.** Deliver the timeout *before* tearing down the UI.
+   Forcing an ediff quit, or cancelling a commit dialog, runs that UI's own
+   exit hook — which will resolve the cell with its own idea of what happened
+   and get there first. §6.8 is the worked example.
+
+Add the `inhibit-quit` refusal to the synchronous entry point too, so a caller
+in a process filter is told which function to use rather than being handed a
+UI whose keys are dead.
 
 Copy the structure of `mcp-emacs-apply-diff-async` (§6.8) rather than
 inventing a new shape; it has already been debugged.
@@ -5631,7 +6433,7 @@ fifth op means:
 
 1. Add it to `orgspec-op-tags`.
 2. Decide where it belongs in `orgspec-fold-order` — the order encodes
-   dependencies between ops (§17.2), so think about which ops must run before
+   dependencies between ops (§18.2), so think about which ops must run before
    yours.
 3. Write `orgspec-fold--apply-<op>`, following the existing contract: verify
    the precondition, `signal 'orgspec-fold-error` with a specific message on
@@ -5725,10 +6527,10 @@ arguments to get `{}`. (§3.5.)
 configuration afterwards. (§6.3.)
 
 **`org-element` hides a headline's content under a `section`.** Descend into
-it. (§13.2.)
+it. (§17.2.)
 
 **MODIFIED can silently drop scenarios.** The guard exists; do not remove it
-for convenience. (§17.5.)
+for convenience. (§18.5.)
 
 **`MultiEdit` bypasses the `Edit` gate.** Both must be in
 `claude-client-disallowed-tools`. (§11.3.)
@@ -5743,7 +6545,7 @@ package's own opt-out list. (`claude-client.el`, `agent-session-overview.el`,
 **Destructive commands under vim motion keys.** `k` and `g` were bound to
 "kill the process" and "erase the log"; under evil they are
 `evil-previous-line` and the `gg` prefix. Moving the cursor ended sessions.
-Either leave those keys to evil or add a confirmation. (§11.15, §13.4.)
+Either leave those keys to evil or add a confirmation. (§11.17.1, §13.4.)
 
 **`assq` on string keys never matches.** The permission registry is keyed by
 string ids, so it uses `assoc`. Presents as "the gate never fires".
@@ -5768,9 +6570,28 @@ it.** Split your own window and supply a `display-buffer` action function.
 **Advice depends on private names and arities.** If you must advise, expect it
 to break; prefer a published hook. (§14.2.)
 
+**A UI teardown races your timeout.** The hook that runs when you force-quit
+ediff, or cancel a commit dialog, resolves the outcome cell itself — so a
+timeout that cleans up first gets reported as `rejected`. Claim the outcome,
+then tear down. (§6.8.)
+
+**`applied` has to mean the disk.** An agent's next step after an accepted
+edit is usually to run the tests, so a buffer-only apply reports success
+against content nothing else can see. (§6.4.)
+
+**A generic with no implementation still needs an honest default.** The
+background-agent list offers `k` for "stop this agent" and no backend
+implements it, so the base class's `user-error` is what the human sees.
+That is the intended behaviour — but a no-op default would have made the key
+look broken instead. (§8.5.1.)
+
+**Tool results carry no correlation id.** Attributing a result to one of
+several parallel sub-agents is FIFO guesswork; say so rather than presenting
+it as exact. (§8.5.1.)
+
 **Hand-maintained file lists rot silently.** `ci.yml` listed its sources and
 tests explicitly until seven files had accumulated outside it. Glob instead.
-(§17.1, §20.4.)
+(§18.1, §21.4.)
 
 ## Style conventions to match
 
@@ -5806,7 +6627,7 @@ bin/test-emacs.sh
 ```
 
 Both go through `bin/test-emacs.sh`, which is the same entry point CI uses;
-Chapter 20 explains what it arranges and why running the suites in your
+Chapter 21 explains what it arranges and why running the suites in your
 working Emacs is a bad idea. `--compile --strict` promotes warnings to errors
 if you want the stricter gate locally.
 
@@ -5871,7 +6692,7 @@ running.
 | `review-diagnostics` | Pull live Flycheck/Flymake/LSP diagnostics and fix the underlying code. |
 | `diagnose-emacs` | The setup is broken (no checker, dead LSP, bad `exec-path`) — fix the environment, not the code. |
 | `org-task-loop` | Drive the cooperative Org session protocol from Chapter 7. |
-| `report-issue` | File a bug about the tooling itself via `report_tooling_issue`. |
+| `report-issue` | File a bug about the tooling itself via `report_tooling_issue`; the human's equivalent is §15.3. |
 
 The `review-diagnostics` / `diagnose-emacs` pair is a deliberate split, and
 each skill's description explicitly points at the other. Misrouting between
@@ -5943,6 +6764,33 @@ Two guards are worth copying:
 The tag is the part that matters to consumers: Doom's `:pin` resolves a tag,
 so a release is what makes a version installable by name rather than by SHA.
 
+### The batch trigger
+
+There is now a second path to a release:
+`.github/workflows/release.yml`, and it is deliberately *not* triggered by a
+push. It is `workflow_dispatch` only, fired by the issue loop once every pull
+request in a batch has been merged and no eligible issue remains.
+
+The reasoning is in the workflow's own header comment: a release per merge
+would cut five releases for one afternoon's work, each one a version nobody
+asked for. A release per *batch* is one version per coherent unit of change.
+
+What it does, in order: compute the next patch version from the latest semver
+tag (minor and major bumps stay a deliberate manual tag), bail out silently if
+that tag already exists, set a commit identity — *a runner has no commit
+identity; `git tag` would fail without one* — tag, push, build release notes
+from the pull requests merged since the previous tag, commit those notes as
+`news/release-<version>.org` for the What's-new screen (§15.2) to read
+offline, and create the GitHub release.
+
+Note what the two paths each own, because it is not symmetric:
+`bin/release.sh` stamps the version into the `elisp/*.el` headers and
+`plugin.json`; the workflow only tags and publishes. So the headers advance
+when a human runs the script, and the tags advance per batch — which is
+exactly the drift `docs/render-reference.sh` ran into when it took its version
+stamp from the manifest and found it claiming 1.0.0 while the tags had reached
+1.5.0. That script now asks `git describe` instead.
+
 \newpage
 
 # Cross-Cutting Idioms
@@ -5985,7 +6833,7 @@ in `mcp-emacs-ide--complete-open-diff` (`when id` plus immediate `remhash`).
 
 ## Build in memory, write once
 
-`orgspec` does this at the transaction level (§17.7), but the shape recurs:
+`orgspec` does this at the transaction level (§18.7), but the shape recurs:
 build the complete result in a temp buffer, validate it, and only then touch
 the filesystem or the user's buffers. The payoff is that a failure halfway
 through leaves nothing partially applied — and the same pure function powers
@@ -6256,7 +7104,7 @@ control request failed to provide.
 
 The script stays deliberately dumb — read, POST, print — and the decision
 logic lives in Emacs, *where it can be tested without a CLI in the loop*. That
-is why Chapter 20 can list the permission registry as well covered while the
+is why Chapter 21 can list the permission registry as well covered while the
 script itself is verified by hand.
 
 Everything else about the script is the fail-closed posture:
@@ -6336,6 +7184,14 @@ terminal CLI also reads — and that cuts both ways. It is why Chapter 8 insists
 on a confirmation showing the exact rule text: a rule added from a
 `claude-client` session changes what a hand-started session may do, in a file
 this project does not own.
+
+`z` (allow all this session) is the deliberate opposite: it is a variable in
+this Emacs process and nothing else, so it cannot reach a hand-started
+session and cannot survive a restart. When a blanket allow is wanted for an
+afternoon's work, the version that writes nothing is the one to reach for; and
+`claude-client-show-allowlist` (§11.15) is what answers the question the
+durable version leaves behind — *which file is it that allows this, and is it
+one I can still see?*
 
 ## The IDE protocol handshake
 
@@ -6456,7 +7312,7 @@ makes the design plausible rather than speculative:
 | Review | the `(list nil)` result cell | ediff tab name | accept / reject / timeout, resolved once in `ediff-quit-hook` |
 
 Every one of those is a chapter of this document. The Session aggregate is
-Chapter 7; the Spec aggregates are Chapters 15–19; the Runner is Chapters 10
+Chapter 7; the Spec aggregates are Chapters 16–20; the Runner is Chapters 10
 and 11; the Review is Chapter 6. Nothing new needs to be built to have
 aggregates — they are already here, and each already has a well-defined
 transition vocabulary.
@@ -6466,7 +7322,7 @@ already the shared state-transition vocabulary** across the Session and Spec
 contexts. `STRT`, `WAIT`, `KILL`, `DONE` mean the same thing to a checklist
 item and to a delta requirement. That is not a coincidence to be exploited
 later; it is why `orgspec-todo-active` and friends are `defcustom`s reading
-the user's own workflow (§15.2).
+the user's own workflow (§16.2).
 
 The domain events these emit, or trivially could: `NoteAdded`,
 `SessionStatusChanged`, `ItemStatusChanged`, `RequirementAdvanced`,
@@ -6490,13 +7346,22 @@ read it back. That is the piece that has since changed: the transcript is now
 a *subscriber* on `agent-backend-event-functions`, and the runner publishes to
 a log rather than writing a record directly.
 
-**And there are now two readers, not one.** `agent-session-overview`
+**And there are now several readers, not one.** `agent-session-overview`
 (Chapter 13) subscribes to the same hook and renders a live table. This
 matters more than a second feature usually would: one subscriber can always be
-a rendering callback wearing a hook's clothes. Two independent subscribers,
-one of which filters the kinds it cares about and neither of which knows about
-the other, is what makes the claim "one log, many readers" true rather than
+a rendering callback wearing a hook's clothes. Independent subscribers, each
+filtering the kinds it cares about and none of them knowing about the others,
+is what makes the claim "one log, many readers" true rather than
 aspirational.
+
+The strongest evidence arrived later, with the background-agent tracker
+(§8.5): a subscriber that reads `tool-use` and `tool-result` and **publishes
+four new kinds of its own**. Neither client was modified, no kind was
+renamed, and the agent-list buffer subscribes to the derived kinds without
+knowing where they come from. That is a projection over the log built entirely
+outside the producers — which is the property the target shape below is
+actually after, demonstrated on a small scale before anything was
+re-architected for it.
 
 **A wait/wake primitive exists.** `org_task_wait_for_change` (§7.6) blocks on
 a monotonic `buffer-chars-modified-tick` baseline via an
@@ -6644,7 +7509,7 @@ The direction has practical consequences right now, independent of whether the
 log is ever built.
 
 **Prefer publishing to advising.** If you add a producer, publish an event on
-a hook (§23.5). The IDE taps are advice because they predate the pattern, not
+a hook (§24.5). The IDE taps are advice because they predate the pattern, not
 because advice is right. Every hook-based producer is one that will not need
 rewriting.
 
@@ -6658,7 +7523,7 @@ need "wake when X changes", the tick-token pattern from §7.6 is the one to
 copy — it is the one the design expects to generalise.
 
 **Assume your consumer is one of several.** Swallow your own errors
-(§23.1), never assume you are the only reader, and never mutate the event you
+(§24.1), never assume you are the only reader, and never mutate the event you
 were handed.
 
 Following those four while writing ordinary features is what makes the eventual

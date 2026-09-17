@@ -31,6 +31,7 @@
 (require 'org nil t)
 (require 'org-agenda nil t)
 (require 'ediff nil t)
+(require 'agent-propose)
 
 (defvar ediff-control-buffer)
 (defvar ediff-quit-hook)
@@ -1588,6 +1589,119 @@ this from a filter want `mcp-emacs-git-commit-async'."
          (deadline (+ (float-time) secs 1)))
     (mcp-emacs-git-commit-async
      message timeout
+     (lambda (outcome) (setcar result outcome)))
+    (while (and (null (car result)) (< (float-time) deadline))
+      (mcp-emacs--wait-tick mcp-emacs-org-task-wait-poll-interval))
+    (or (car result) "Status: timeout")))
+
+;;; Editable draft review (propose_text)
+
+;; The propose_text tool is the same shape as apply_diff and git_commit: a
+;; proposal the human answers.  The difference is the surface: there is no
+;; file to compare and no magit dialog -- the draft itself is the review
+;; buffer, editable in place, and accepting returns whatever text the human
+;; ended up with.  `agent-propose' owns the buffer and its single-answer
+;; registry; these helpers are the MCP-facing wrapper around it.
+
+(defcustom mcp-emacs-propose-text-default-timeout 120
+  "Default timeout, in seconds, for `mcp-emacs-propose-text'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defcustom mcp-emacs-propose-text-max-timeout 600
+  "Maximum timeout, in seconds, for `mcp-emacs-propose-text'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defvar mcp-emacs-propose-text--counter 0
+  "Counter supplying unique registry ids to `mcp-emacs-propose-text-async'.
+Each call's proposal is entered in `agent-propose--pending' under its own
+id; an id already pending signals, so concurrent proposals need ids that
+cannot collide.")
+
+(defun mcp-emacs-propose-text-async (text label timeout on-done)
+  "Raise TEXT in an editable review buffer for the human, without blocking.
+Open `agent-propose-request' with TEXT shown and return immediately;
+ON-DONE is called with one argument -- the outcome string, in the same
+format `mcp-emacs-propose-text' returns -- once the human accepts,
+rejects, or TIMEOUT elapses.  An accept answers with the buffer's final
+text exactly (edited or not); a reject answers \"Status: rejected\"; a
+timeout answers \"Status: timeout\".
+
+This exists because the synchronous variant cannot be resolved by a human
+when it is served from a process filter: Emacs runs filters with
+`inhibit-quit' bound to t and no command loop for the review buffer, so
+the buffer is displayed but its keys are dead.  Returning to the event
+loop instead -- and answering the request from the proposal's resolve
+continuation -- keeps the buffer editable.  See
+`mcp-emacs-server--handler' for the HTTP side of the deferral.
+
+LABEL names the proposal for the human (e.g. \"MR description\") and is
+shown in the review buffer's header line; nil is fine.  TIMEOUT is capped
+at `mcp-emacs-propose-text-max-timeout' and defaults to
+`mcp-emacs-propose-text-default-timeout'."
+  (condition-case err
+      (let* ((id (format "propose-%d"
+                         (setq mcp-emacs-propose-text--counter
+                               (1+ mcp-emacs-propose-text--counter))))
+             (secs (min mcp-emacs-propose-text-max-timeout
+                        (if (and (numberp timeout) (> timeout 0))
+                            timeout
+                          mcp-emacs-propose-text-default-timeout)))
+             ;; Guards single delivery: the human's answer and the timeout
+             ;; timer race, and whichever arrives first must be the only
+             ;; answer.  `agent-propose-request' arms that timer itself; a
+             ;; late fire is a registry no-op, since the answered proposal
+             ;; is already removed.
+             (result (list nil)))
+        (let ((finish
+               (lambda (outcome)
+                 (unless (car result)
+                   (setcar result outcome)
+                   (funcall on-done outcome)))))
+          (agent-propose-request
+           id text
+           :label label
+           :timeout secs
+           :resolve (lambda (answer)
+                      (funcall finish
+                               (cond
+                                ((eq answer 'reject) "Status: rejected")
+                                ((eq answer 'timeout) "Status: timeout")
+                                (t answer))))))
+        nil)
+    (error (funcall on-done (error-message-string err)) nil)))
+
+(defun mcp-emacs-propose-text (text label timeout)
+  "Raise TEXT in an editable review buffer and block until it is answered.
+Open `agent-propose-request' with TEXT shown, wait cooperatively until the
+human accepts it -- possibly after editing it in the buffer -- rejects it,
+or TIMEOUT elapses, then return the outcome.  An accept returns the
+buffer's final text exactly as the human left it; a reject returns
+\"Status: rejected\"; a timeout returns \"Status: timeout\", leaving
+nothing applied.
+LABEL is a name for the proposal shown in the review buffer's header line.
+TIMEOUT is capped at `mcp-emacs-propose-text-max-timeout' and defaults to
+`mcp-emacs-propose-text-default-timeout'.
+
+Refuses to run under a process filter.  The wait needs a command loop to
+deliver the human's edits and keys to the review buffer, and a filter has
+none -- Emacs binds `inhibit-quit' to t there, so the review would show
+with dead keys and freeze Emacs until the timeout expired.  Callers
+reaching this from a filter want `mcp-emacs-propose-text-async'."
+  (when inhibit-quit
+    (error (concat "propose_text cannot run synchronously here: no command "
+                   "loop to answer the review (use mcp-emacs-propose-text-async)")))
+  (let* ((secs (min mcp-emacs-propose-text-max-timeout
+                    (if (and (numberp timeout) (> timeout 0))
+                        timeout
+                      mcp-emacs-propose-text-default-timeout)))
+         (result (list nil))
+         ;; The async helper answers from its own timeout timer at SECS;
+         ;; the extra second is grace so that answer wins the poll.
+         (deadline (+ (float-time) secs 1)))
+    (mcp-emacs-propose-text-async
+     text label timeout
      (lambda (outcome) (setcar result outcome)))
     (while (and (null (car result)) (< (float-time) deadline))
       (mcp-emacs--wait-tick mcp-emacs-org-task-wait-poll-interval))
