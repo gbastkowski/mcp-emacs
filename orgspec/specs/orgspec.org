@@ -29,3 +29,23 @@ change that has any such error.
   no duplicate or cross-op conflict
 - WHEN the change is validated
 - THEN it reports as valid and archive proceeds
+* Change files can point back at a tracker issue
+orgspec SHALL read a tracker and issue back-link from a change buffer's
+top-level ~#+PROPERTY:~ keywords (as the buffer-file properties the issue came
+from) and SHALL carry both on the parsed ~orgspec-change~, so a change's
+origin discussion on an external issue tracker is discoverable from the Org
+file alone.
+** The parser surfaces the tracker/issue back-link
+- GIVEN a change buffer whose top-level keywords carry ~#+PROPERTY: TRACKER github~
+  and ~#+PROPERTY: ISSUE gbastkowski:mcp-emacs-63~
+- WHEN the change is parsed
+- THEN the resulting ~orgspec-change~ carries tracker ~github~ and issue
+  ~gbastkowski:mcp-emacs-63~
+** A change with no back-link parses without one
+- GIVEN a change buffer with no TRACKER or ISSUE property
+- WHEN the change is parsed
+- THEN the resulting ~orgspec-change~ carries nil tracker and nil issue
+** The MCP surface reports the back-link
+- GIVEN a parsed change that carries a tracker and issue
+- WHEN ~orgspec_parse~ renders it
+- THEN the rendered text names the tracker and issue
