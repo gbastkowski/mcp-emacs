@@ -134,6 +134,19 @@ Optional: the default is a no-op.")
   "Return the project root BACKEND works in, or nil.
 Optional: the default returns nil.")
 
+(cl-defgeneric agent-backend-turn-state (backend)
+  "Return BACKEND's conversation turn state: `working', `idle', or `finished'.
+Read the backend's buffer, never the process alone: a long-lived process
+that already emitted its result is idle, not working (issue #76).  The
+default is `finished', so a backend that tracks no turn state never
+over-claims.")
+
+(cl-defgeneric agent-backend-turn-elapsed (backend)
+  "Return the seconds BACKEND's current turn has been running, or nil.
+Non-nil only while BACKEND's state is `working'.  The default is nil, so
+a backend that tracks no turn state never fabricates an elapsed time
+\(issue #76).")
+
 (cl-defgeneric agent-backend-render (backend)
   "Re-render BACKEND's conversation buffer.
 Optional: the default is a no-op.  Publishing events (see
@@ -226,6 +239,16 @@ this; a backend that cannot says so rather than silently doing nothing."
   (ignore backend)
   nil)
 
+(cl-defmethod agent-backend-turn-state ((backend agent-backend))
+  "Default turn state: `finished', never over-claiming."
+  (ignore backend)
+  'finished)
+
+(cl-defmethod agent-backend-turn-elapsed ((backend agent-backend))
+  "Default elapsed time: nil, since the default state is `finished'."
+  (ignore backend)
+  nil)
+
 (cl-defmethod agent-backend-render ((backend agent-backend))
   "No-op default: BACKEND renders by other means, or not at all."
   (ignore backend)
@@ -278,8 +301,13 @@ publisher never has to know who is listening.")
 (defun agent-backend--publish (buffer event)
   "Publish EVENT for BUFFER to `agent-backend-event-functions'.
 Publishing is decoupled from rendering: this only notifies subscribers
-and never touches BUFFER's contents or display."
-  (run-hook-with-args 'agent-backend-event-functions buffer event))
+and never touches BUFFER's contents or display.  Every event is a
+turn-state transition, so the mode line is forced to refresh and the
+standing indicator follows the log; also because a publish can arrive on
+a request or process path from any buffer, and the conversation may be
+shown in another window (issue #76)."
+  (run-hook-with-args 'agent-backend-event-functions buffer event)
+  (force-mode-line-update t))
 
 ;;;; Background agents (issue #74)
 
@@ -813,6 +841,30 @@ none to take it from."
     (require 'claude-client nil t)
     (make-instance 'claude-client-backend)))
 
+;;;; Turn-state mode-line indicator (issue #76)
+
+(defun agent-backend--format-elapsed (seconds)
+  "Format SECONDS as M:SS for the turn-state mode-line indicator.
+A turn that has run eight minutes reads differently from one that has
+run eight seconds, so the elapsed time earns two digits for the seconds."
+  (let ((total (truncate seconds)))
+    (format "%d:%02d" (/ total 60) (mod total 60))))
+
+(defun agent-backend--turn-mode-line (backend)
+  "Return the mode-line turn-state indicator for BACKEND's conversation.
+\"working M:SS\" while a turn is in flight, \"idle\" when BACKEND's
+process is alive but no turn is running, and \"finished\" otherwise.  A
+nil BACKEND -- no instance in the buffer -- reads `finished', so a
+conversation buffer with nothing driving it never over-claims."
+  (if (null backend)
+      "finished"
+    (pcase (agent-backend-turn-state backend)
+      ('working (format "working %s"
+                        (agent-backend--format-elapsed
+                         (or (agent-backend-turn-elapsed backend) 0))))
+      ('idle "idle")
+      ('finished "finished"))))
+
 ;;;; Major mode
 
 (defun agent-backend-send-command (prompt)
@@ -883,7 +935,14 @@ mid-turn was a distinction to make rather than a choice worth having
 (define-derived-mode agent-backend-mode special-mode "agent"
   "Major mode for a conversation buffer driven by an `agent-backend'.
 The backend instance lives in the buffer-local `agent-backend--instance'."
-  (setq-local truncate-lines nil))
+  (setq-local truncate-lines nil)
+  ;; The standing turn-state indicator (issue #76): one `:eval' slot whose
+  ;; form reads this buffer's own instance, so every conversation buffer
+  ;; reports working / idle / finished, with the elapsed time while working.
+  (setq-local mode-line-format
+              (append mode-line-format
+                      (list '(:eval (agent-backend--turn-mode-line
+                                     agent-backend--instance))))))
 
 ;; The client functions are loaded on demand; declare them so the
 ;; shared core still byte-compiles standalone (the clients require

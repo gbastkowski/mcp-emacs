@@ -287,6 +287,13 @@ stays alive after emitting `result' (it waits on stdin for a follow-up
 turn), so `process-live-p' reports `run' long after the turn is over
 and cannot answer \"is the model working right now?\".")
 
+(defvar-local claude-client--turn-started nil
+  "Float timestamp (from `float-time') of when the current turn began.
+Set wherever `claude-client--turn-active' is set to t and cleared
+wherever it is reset to nil, so the two always move together.  Nil
+while no turn is in flight; `agent-backend-turn-elapsed' reads it to
+answer \"how long has this turn been working?\" (issue #76).")
+
 (defvaralias 'claude-client-event-functions 'agent-backend-event-functions)
 (make-obsolete-variable 'claude-client-event-functions
                         'agent-backend-event-functions "1.7.0")
@@ -687,7 +694,9 @@ subscribers on either name see every event."
       ;; Drained after `finished' so the log reads in the order things
       ;; actually happened.
       (when (buffer-live-p buffer)
-        (with-current-buffer buffer (setq claude-client--turn-active nil)))
+        (with-current-buffer buffer
+          (setq claude-client--turn-active nil
+                claude-client--turn-started nil)))
       (claude-client--drain-notes buffer))
      (t nil))))
 
@@ -765,7 +774,8 @@ Returns the drained notes, oldest first, and clears the queue."
           (when (and claude-client-deliver-notes
                      (not claude-client--turn-active)
                      (process-live-p claude-client--process))
-            (setq claude-client--turn-active t)
+            (setq claude-client--turn-active t
+                  claude-client--turn-started (float-time))
             (claude-client--send-turn
              claude-client--process
              (concat
@@ -824,7 +834,8 @@ Returns the drained notes, oldest first, and clears the queue."
           ;; The process dying ends any turn with it; leaving the flag set
           ;; would wedge the buffer against ever starting another.
           (setq claude-client--process nil
-                claude-client--turn-active nil))
+                claude-client--turn-active nil
+                claude-client--turn-started nil))
         ;; A turn cut short by the process dying has to say so in the log.
         ;; The render model is the event list, so clearing the flag alone
         ;; leaves the transcript ending on whatever the model was doing --
@@ -1266,6 +1277,7 @@ with the one being answered."
       (claude-client--push-event (current-buffer)
                                  (list :kind 'prompt :text prompt))
       (setq claude-client--turn-active t
+            claude-client--turn-started (float-time)
             claude-client--interrupted nil)
       (claude-client--send-turn claude-client--process text)))))
 
@@ -1375,7 +1387,8 @@ file change opens an ediff for the human to accept or reject."
                    :sentinel (lambda (p c)
                                (claude-client--sentinel buffer p c)))))
         (setq claude-client--process proc
-              claude-client--turn-active t)
+              claude-client--turn-active t
+              claude-client--turn-started (float-time))
         (when resume-id
           (claude-client--push-event buffer (list :kind 'resumed
                                                   :session resume-id)))
@@ -1503,7 +1516,8 @@ on a frame you are not looking at is worse than surprising."
   (when (process-live-p claude-client--process)
     (delete-process claude-client--process))
   (setq claude-client--process nil
-        claude-client--turn-active nil))
+        claude-client--turn-active nil
+        claude-client--turn-started nil))
 
 ;;;; agent-backend methods
 
@@ -1614,6 +1628,33 @@ configurable (`claude-client-note-interrupts'), which meant a defcustom
 silently decided whether typing abandoned the model's work; stopping a
 turn is now only ever `claude-client-interrupt' (issue #69)."
   :queue)
+
+(cl-defmethod agent-backend-turn-state ((backend claude-client-backend))
+  "Return BACKEND's turn state from its buffer's stream-derived flags.
+`working' while a turn is in flight (`claude-client--turn-active'),
+`idle' when the CLI process is alive with no turn, `finished' otherwise
+-- the same reading `claude-client--label' gives the picker.  Read from
+the buffer, never the process alone: a live `--print' process that
+already emitted `result' is idle, not working (issue #76)."
+  (let ((buffer (oref backend buffer)))
+    (cond
+     ((not (buffer-live-p buffer)) 'finished)
+     ((buffer-local-value 'claude-client--turn-active buffer) 'working)
+     ((process-live-p (buffer-local-value 'claude-client--process buffer))
+      'idle)
+     (t 'finished))))
+
+(cl-defmethod agent-backend-turn-elapsed ((backend claude-client-backend))
+  "Return the seconds BACKEND's current turn has been running, or nil.
+The difference between now and BACKEND's buffer's
+`claude-client--turn-started' timestamp, non-nil only while a turn is in
+flight -- so a settled or idle conversation reads nil, never a stale
+count (issue #76)."
+  (let ((buffer (oref backend buffer)))
+    (when (and (buffer-live-p buffer)
+               (buffer-local-value 'claude-client--turn-active buffer))
+      (let ((started (buffer-local-value 'claude-client--turn-started buffer)))
+        (and started (- (float-time) started))))))
 
 ;; Claude never emits permission or question requests: its gate is the
 ;; ediff review (mcp-emacs-ide), not a stream-json request.  The base
