@@ -31,6 +31,7 @@
 (require 'org nil t)
 (require 'org-agenda nil t)
 (require 'ediff nil t)
+(require 'diff nil t)
 (require 'agent-propose)
 
 (defvar ediff-control-buffer)
@@ -1121,6 +1122,15 @@ layout — including side windows such as Treemacs — comes back."
                  (const above) (const below))
   :group 'mcp-emacs)
 
+(defcustom mcp-emacs-apply-diff-inline-limit 40
+  "Line count at or below which an apply_diff review renders inline.
+A diff whose unified-diff output has at most this many lines is shown as
+text in the conversation buffer, with accept/reject/jump keys bound
+locally, instead of opening a full ediff session; a larger diff keeps
+the ediff path.  Set to 0 to force ediff for everything."
+  :type 'integer
+  :group 'mcp-emacs)
+
 (defun mcp-emacs--apply-diff-accept (buffer-a buffer-b entry-content result)
   "Record an accept decision for an apply-diff session.
 Apply the proposal in BUFFER-B to BUFFER-A when BUFFER-A is still at
@@ -1250,19 +1260,267 @@ timeout."
              (signal (car err) (cdr err))))
     control))
 
+(defvar diff-command)
+
+(defun mcp-emacs--apply-diff-unified (buffer-a buffer-b)
+  "Return the unified diff text between BUFFER-A and BUFFER-B, or nil.
+Writes both buffers to temp files and runs the `diff' program
+synchronously with `-u', so the result is exactly the unified diff --
+no command line or status trailer.  Returns nil when the run fails (the
+`diff' program missing, say), so callers can fall back to ediff; an
+empty string means the buffers are identical."
+  (let ((file-a (make-temp-file "mcp-apply-diff-a-"))
+        (file-b (make-temp-file "mcp-apply-diff-b-")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer-a
+            (write-region (point-min) (point-max) file-a nil 'no-message))
+          (with-current-buffer buffer-b
+            (write-region (point-min) (point-max) file-b nil 'no-message))
+          (condition-case nil
+              (let ((buf (generate-new-buffer " *mcp-apply-diff-unified*")))
+                (unwind-protect
+                    (progn
+                      (call-process diff-command nil buf nil
+                                    "-u" file-a file-b)
+                      (with-current-buffer buf
+                        (buffer-substring-no-properties
+                         (point-min) (point-max))))
+                  (when (buffer-live-p buf) (kill-buffer buf))))
+            (error nil)))
+      (delete-file file-a)
+      (delete-file file-b))))
+
+(defun mcp-emacs--apply-diff-inline-p (diff-text)
+  "Return non-nil when DIFF-TEXT fits the inline review limit.
+`mcp-emacs-apply-diff-inline-limit' holds the cutoff: a unified diff
+with at most that many lines renders inline.  Nil DIFF-TEXT (the diff
+could not be produced) is treated as too large, so ediff stays the
+fallback."
+  (and diff-text
+       (<= (length (split-string diff-text "\n" t))
+           mcp-emacs-apply-diff-inline-limit)))
+
+(defun mcp-emacs--apply-diff-conversation-buffer (from)
+  "Return the conversation buffer an inline review renders into.
+FROM is the buffer the review was started from (the caller's current
+buffer).  It is used as is when it is an agent conversation buffer;
+otherwise the buffer of the currently selected window is returned when
+it is not a file buffer, which for a Claude turn is the conversation
+buffer the apply_diff request belongs to.  Returns nil when neither is
+usable, so the review falls back to ediff rather than landing in an
+arbitrary file."
+  (or (and (buffer-live-p from)
+           (with-current-buffer from
+             (when (derived-mode-p 'agent-backend-mode) from)))
+      (let ((window-buffer (mcp-emacs--current-buffer)))
+        (and (buffer-live-p window-buffer)
+             (not (with-current-buffer window-buffer buffer-file-name))
+             window-buffer))))
+
+(defvar mcp-emacs--apply-diff-inline-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c C-c") #'mcp-emacs--apply-diff-inline-accept)
+    (define-key map (kbd "C-c C-k") #'mcp-emacs--apply-diff-inline-reject)
+    (define-key map (kbd "C-c C-e") #'mcp-emacs--apply-diff-inline-jump)
+    map)
+  "Keymap for `mcp-emacs--apply-diff-inline-mode'.")
+
+(defvar-local mcp-emacs--apply-diff-inline-data nil
+  "Session state of the inline apply-diff review in this buffer.
+A plist holding :buffer-a, :buffer-b, :entry-content, :result,
+:on-resolve and the shared :claimed/:control cells; nil when no inline
+review is on screen here.")
+
+(defun mcp-emacs--apply-diff-inline-teardown ()
+  "Disable the inline review in the current buffer and clear its state.
+Marks the review claimed so a stale keypress cannot act on a finished
+review; a no-op when no inline review is active here."
+  (let ((st mcp-emacs--apply-diff-inline-data))
+    (when st
+      (setcar (plist-get st :claimed) t)
+      (mcp-emacs--apply-diff-inline-mode -1)
+      (setq-local mcp-emacs--apply-diff-inline-data nil))))
+
+(defun mcp-emacs--apply-diff-inline-accept ()
+  "Accept the inline apply-diff review in this conversation buffer.
+Applies the proposal exactly as the ediff accept does
+\(`mcp-emacs--apply-diff-accept'), then delivers the outcome once; a
+review already claimed elsewhere (a jump to ediff, a timeout) does
+nothing."
+  (interactive)
+  (let ((st mcp-emacs--apply-diff-inline-data)
+        (on-resolve nil))
+    (when (and st (not (car (plist-get st :claimed))))
+      (setcar (plist-get st :claimed) t)
+      (mcp-emacs--apply-diff-accept (plist-get st :buffer-a)
+                                    (plist-get st :buffer-b)
+                                    (plist-get st :entry-content)
+                                    (plist-get st :result))
+      (setq on-resolve (plist-get st :on-resolve))
+      (mcp-emacs--apply-diff-inline-teardown)
+      (when on-resolve (funcall on-resolve)))))
+
+(defun mcp-emacs--apply-diff-inline-reject ()
+  "Reject the inline apply-diff review in this conversation buffer.
+Leaves the file untouched (`mcp-emacs--apply-diff-reject') and delivers
+the rejected outcome once; a review already claimed elsewhere does
+nothing."
+  (interactive)
+  (let ((st mcp-emacs--apply-diff-inline-data)
+        (on-resolve nil))
+    (when (and st (not (car (plist-get st :claimed))))
+      (setcar (plist-get st :claimed) t)
+      (mcp-emacs--apply-diff-reject (plist-get st :result))
+      (setq on-resolve (plist-get st :on-resolve))
+      (mcp-emacs--apply-diff-inline-teardown)
+      (when on-resolve (funcall on-resolve)))))
+
+(defun mcp-emacs--apply-diff-inline-jump ()
+  "Jump from the inline review to a full ediff session.
+Starts `mcp-emacs--ediff-review' against the same two buffers and the
+same result cell, so the human can do the full compare/merge and reach
+the same accept/reject outcome; whichever surface resolves first is the
+only outcome delivered."
+  (interactive)
+  (let ((st mcp-emacs--apply-diff-inline-data)
+        (conv (current-buffer)))
+    (when (and st (not (car (plist-get st :claimed))))
+      (setcar (plist-get st :claimed) t)
+      (let* ((on-resolve (plist-get st :on-resolve))
+             (control-cell (plist-get st :control))
+             (ctl (mcp-emacs--ediff-review
+                   (plist-get st :buffer-a)
+                   (plist-get st :buffer-b)
+                   (plist-get st :entry-content)
+                   (plist-get st :result)
+                   on-resolve)))
+        (setcar control-cell ctl))
+      ;; ediff has switched windows and buffers by now; tear the inline
+      ;; surface down in the conversation it lived in.
+      (with-current-buffer conv
+        (mcp-emacs--apply-diff-inline-teardown)))))
+
+(define-minor-mode mcp-emacs--apply-diff-inline-mode
+  "Minor mode active while an inline apply-diff review is on screen.
+Turned on by `mcp-emacs--inline-review' when a small diff renders in a
+conversation buffer, and off again the moment the review resolves or is
+dismissed.  C-c C-c accepts, C-c C-k rejects, C-c C-e jumps to a full
+ediff session."
+  :lighter " diff"
+  :keymap mcp-emacs--apply-diff-inline-mode-map)
+
+(defun mcp-emacs--inline-review (buffer-a buffer-b entry-content result
+                                   &optional on-resolve diff-text)
+  "Render a small-diff apply-diff review inline in the conversation buffer.
+Displays the unified diff (DIFF-TEXT, or computed from BUFFER-A's entry
+content against BUFFER-B) as text with the file path in the conversation
+buffer the review was started from, and turns on
+`mcp-emacs--apply-diff-inline-mode' so accept/reject/jump keys are
+bound locally.  Accepting applies the proposal exactly as the ediff
+accept does (`mcp-emacs--apply-diff-accept') and reports the same
+outcome via ON-RESOLVE; rejecting leaves the file alone; the jump key
+starts `mcp-emacs--ediff-review' on the same two buffers and result
+cell, so whichever surface the human resolves first is the only answer.
+When no conversation buffer is available, falls back to
+`mcp-emacs--ediff-review' so the review still happens.
+Returns the review handle callers force-close on timeout: the dismiss
+function for the inline surface, or the ediff control buffer when it
+fell back."
+  (let ((conv (mcp-emacs--apply-diff-conversation-buffer (current-buffer))))
+    (if (not (and conv (buffer-live-p conv)))
+        (mcp-emacs--ediff-review buffer-a buffer-b entry-content result
+                                 on-resolve)
+      (let* ((text (or diff-text
+                       (mcp-emacs--apply-diff-unified buffer-a buffer-b)))
+             (claimed (list nil))
+             (control-cell (list nil))
+             (st (list :buffer-a buffer-a :buffer-b buffer-b
+                       :entry-content entry-content :result result
+                       :on-resolve on-resolve
+                       :claimed claimed :control control-cell)))
+        (condition-case nil
+            (progn
+              (with-current-buffer conv
+                (let ((inhibit-read-only t))
+                  (goto-char (point-max))
+                  (insert (format "── apply_diff review: %s ──\n"
+                                  (or (buffer-file-name buffer-a)
+                                      (buffer-name buffer-a)))
+                          (or text "")
+                          (if (and text (string-empty-p text))
+                              "(no differences)\n" "")
+                          "C-c C-c accept, C-c C-k reject, C-c C-e ediff\n"))
+                (setq-local mcp-emacs--apply-diff-inline-data st)
+                (mcp-emacs--apply-diff-inline-mode 1))
+              (message
+               "mcp diff: C-c C-c to accept, C-c C-k to reject, C-c C-e for ediff")
+              ;; The timeout path: claim + tear down the inline surface,
+              ;; and force-quit any ediff the jump key started.
+              (lambda ()
+                (when (buffer-live-p conv)
+                  (with-current-buffer conv
+                    (when mcp-emacs--apply-diff-inline-data
+                      (mcp-emacs--apply-diff-inline-teardown))
+                    (let ((ctl (car control-cell)))
+                      (when (and ctl (buffer-live-p ctl))
+                        (with-current-buffer ctl
+                          (if (fboundp 'ediff-really-quit)
+                              (ignore-errors (ediff-really-quit nil))
+                            (kill-buffer ctl)))))))))
+          (error
+           ;; The conversation could not take the review; do not lose it.
+           (mcp-emacs--ediff-review buffer-a buffer-b entry-content result
+                                    on-resolve)))))))
+
+(defun mcp-emacs--apply-diff-review (buffer-a buffer-b entry-content result
+                                      &optional on-resolve)
+  "Start an apply-diff review of BUFFER-A against proposal BUFFER-B.
+Gate on `mcp-emacs-apply-diff-inline-limit': a small diff
+\(`mcp-emacs--apply-diff-inline-p') renders inline in the conversation
+buffer; a larger one -- or one too big to diff -- opens
+`mcp-emacs--ediff-review' as before.  ON-RESOLVE, when given, is handed
+to whichever surface starts and is called once after the decision is
+recorded.  Returns the review handle callers force-close on timeout: the
+ediff control buffer, or the dismiss function the inline review
+returned."
+  (let ((diff-text (mcp-emacs--apply-diff-unified buffer-a buffer-b)))
+    (if (mcp-emacs--apply-diff-inline-p diff-text)
+        (mcp-emacs--inline-review buffer-a buffer-b entry-content result
+                                  on-resolve diff-text)
+      (mcp-emacs--ediff-review buffer-a buffer-b entry-content result
+                               on-resolve))))
+
+(defun mcp-emacs--apply-diff-force-quit (handle)
+  "Force-close an apply-diff review HANDLE on timeout.
+HANDLE is either the ediff control buffer `mcp-emacs--ediff-review'
+returned, or the dismiss function the inline review returned.  A
+function handle tears the inline surface down and force-quits any ediff
+the jump key started, so a timeout cannot orphan either surface.
+Closing is a no-op once the review resolved; the caller reports
+`timeout' regardless."
+  (cond
+   ((functionp handle) (ignore-errors (funcall handle)))
+   ((and handle (buffer-live-p handle))
+    (with-current-buffer handle
+      (if (fboundp 'ediff-really-quit)
+          (ignore-errors (ediff-really-quit nil))
+        (kill-buffer handle))))))
+
 (defun mcp-emacs-apply-diff-async (path new-content timeout on-done)
-  "Review NEW-CONTENT against the file at PATH via ediff, without blocking.
-Open the ediff session and return immediately; ON-DONE is called with one
-argument -- the outcome string, in the same format
-`mcp-emacs-apply-diff' returns -- once the human accepts or rejects, or
-when TIMEOUT elapses.
+  "Review NEW-CONTENT against the file at PATH without blocking.
+Start the review -- inline in the conversation buffer when the diff fits
+`mcp-emacs-apply-diff-inline-limit', ediff otherwise -- and return
+immediately; ON-DONE is called with one argument -- the outcome string,
+in the same format `mcp-emacs-apply-diff' returns -- once the human
+accepts or rejects, or when TIMEOUT elapses.
 
 This exists because the synchronous variant cannot be resolved by a human
 when it is served from a process filter: Emacs runs filters with
-`inhibit-quit' bound to t and no command loop for the ediff control
-panel, so the review is displayed but its keys are dead.  Returning to
-the event loop instead -- and answering the request from the ediff quit
-hook -- keeps the panel interactive.  See `mcp-emacs-server--handler' for
+`inhibit-quit' bound to t and no command loop to answer the review's
+keys, so the review is displayed but its keys are dead.  Returning to
+the event loop instead -- and answering the request from the review's
+resolution -- keeps the keys live.  See `mcp-emacs-server--handler' for
 the HTTP side of the deferral.
 
 TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
@@ -1297,7 +1555,7 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
                    (when (buffer-live-p buffer-b) (kill-buffer buffer-b))
                    (funcall on-done outcome)))))
           (setq control
-                (mcp-emacs--ediff-review
+                (mcp-emacs--apply-diff-review
                  buffer-a buffer-b entry-content result
                  (lambda ()
                    (funcall
@@ -1308,36 +1566,36 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
                                   (buffer-substring-no-properties
                                    (point-min) (point-max))))
                       "Status: rejected")))))
-          ;; Timeout arms only after setup succeeded, so a failed ediff
+          ;; Timeout arms only after setup succeeded, so a failed review
           ;; cannot leave a timer pointing at a dead session.
           (setq timer
                 (run-at-time
                  secs nil
                  (lambda ()
-                   ;; Claim the outcome before forcing the quit: the
-                   ;; force-quit runs the ediff quit hook, which would
-                   ;; otherwise record an implicit `rejected' and answer
-                   ;; first.  Delivering the timeout here makes that hook's
-                   ;; finish the no-op, so `timeout' is what the caller sees.
+                   ;; Claim the outcome before forcing the close: the
+                   ;; force-close runs the ediff quit hook (or tears down
+                   ;; the inline surface), which would otherwise record an
+                   ;; implicit `rejected' and answer first.  Delivering
+                   ;; the timeout here makes that finish the no-op, so
+                   ;; `timeout' is what the caller sees.
                    (funcall finish "Status: timeout")
-                   (when (and control (buffer-live-p control))
-                     (with-current-buffer control
-                       (if (fboundp 'ediff-really-quit)
-                           (ignore-errors (ediff-really-quit nil))
-                         (kill-buffer control))))))))
+                   (mcp-emacs--apply-diff-force-quit control)))))
         nil)
     (error (funcall on-done (error-message-string err)) nil)))
 
 (defun mcp-emacs-apply-diff (path new-content timeout)
-  "Present NEW-CONTENT as a proposed change to the file at PATH via ediff.
-Open an `ediff-buffers' session comparing the file's current content
-against NEW-CONTENT, block cooperatively until the human resolves it or
-TIMEOUT elapses, then return the outcome.  The buffer visiting PATH is
-Buffer A; the proposal is a temporary Buffer B.  On accept the proposal
-(or the human's edited version) is applied to Buffer A and written to
-disk, and the final content is returned; a reject (or a bare quit)
-leaves the file unchanged.  On timeout the ediff session is abandoned
-and the file left untouched.
+  "Present NEW-CONTENT as a proposed change to the file at PATH.
+A small diff (at or below `mcp-emacs-apply-diff-inline-limit'
+unified-diff lines) renders inline in the conversation buffer; a larger
+one opens an `ediff-buffers' session comparing the file's current
+content against NEW-CONTENT.  In both cases the function blocks
+cooperatively until the human resolves it or TIMEOUT elapses, then
+returns the outcome.  The buffer visiting PATH is Buffer A; the
+proposal is a temporary Buffer B.  On accept the proposal (or the
+human's edited version) is applied to Buffer A and written to disk, and
+the final content is returned; a reject (or a bare quit) leaves the
+file unchanged.  On timeout the review surface is abandoned and the
+file left untouched.
 TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
 `mcp-emacs-apply-diff-default-timeout'.
 
@@ -1372,10 +1630,11 @@ reaching this from a filter want `mcp-emacs-apply-diff-async'."
         (unwind-protect
             (progn
               (setq control
-                    (mcp-emacs--ediff-review
+                    (mcp-emacs--apply-diff-review
                      buffer-a buffer-b entry-content result))
-              ;; Cooperative wait: yield so ediff, edits, and other tool
-              ;; calls keep processing until the human quits or we time out.
+              ;; Cooperative wait: yield so the review (ediff or inline),
+              ;; edits, and other tool calls keep processing until the
+              ;; human quits or we time out.
               (let ((deadline (+ (float-time) secs)))
                 (while (and (null (car result))
                             (< (float-time) deadline))
@@ -1389,12 +1648,9 @@ reaching this from a filter want `mcp-emacs-apply-diff-async'."
                            (point-min) (point-max)))))
                ((eq (car result) 'rejected) "Status: rejected")
                (t
-                ;; Timeout: force-quit any still-live ediff session.
-                (when (and control (buffer-live-p control))
-                  (with-current-buffer control
-                    (if (fboundp 'ediff-really-quit)
-                        (ignore-errors (ediff-really-quit nil))
-                      (kill-buffer control))))
+                ;; Timeout: force-close the live review surface -- the
+                ;; ediff control buffer or the inline review.
+                (mcp-emacs--apply-diff-force-quit control)
                 "Status: timeout")))
           ;; The window configuration is saved and restored inside
           ;; `mcp-emacs--ediff-review' now, for both callers.

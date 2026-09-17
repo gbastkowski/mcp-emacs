@@ -5,6 +5,9 @@
 (require 'test-helper)
 (require 'cl-lib)
 (require 'mcp-emacs)
+;; The inline review renders into a conversation buffer; these suites
+;; use a real claude-client-mode buffer to prove that reachability.
+(require 'claude-client)
 
 (defun mcp--make-session (a-text b-text)
   "Return (buffer-a buffer-b entry-content result) for a fake diff session."
@@ -240,6 +243,9 @@ and `control' is the fake control buffer."
     f))
 
 (describe "mcp-emacs-apply-diff-async"
+  ;; These pin the ediff path; small diffs go inline since issue #81, so
+  ;; force the old behaviour by zeroing the inline limit.
+  (let ((mcp-emacs-apply-diff-inline-limit 0))
   ;; Returns immediately (nil) rather than blocking until a decision, and does
   ;; not invoke the callback before the human resolves.
   (let ((file (mcp--async-fixture)))
@@ -359,12 +365,14 @@ and `control' is the fake control buffer."
               (check (length calls) 1))
             (it "cancels the timeout timer once the review resolves"
               (check (length timer-list) before))))
-      (let ((buf (find-buffer-visiting file)))
+(let ((buf (find-buffer-visiting file)))
         (when buf (with-current-buffer buf (set-buffer-modified-p nil))
               (kill-buffer buf)))
-      (delete-file file))))
-
+      (delete-file file)))))
 (describe "mcp-emacs-apply-diff-async timeout beats the quit hook"
+  ;; Pins the ediff quit-hook race; zero the inline limit so the tiny
+  ;; test diff cannot take the inline path (issue #81).
+  (let ((mcp-emacs-apply-diff-inline-limit 0))
   ;; The timeout must win its own race against the force-quit's quit hook.
   ;; A real `ediff-really-quit' runs the ediff quit hook, and that hook
   ;; treats any quit without an explicit accept as a rejection -- so when the
@@ -403,17 +411,12 @@ and `control' is the fake control buffer."
                        (buffer-string))
                      "old\n")))
           (when (buffer-live-p control) (kill-buffer control)))
-      (let ((buf (find-buffer-visiting file)))
+(let ((buf (find-buffer-visiting file)))
         (when buf (with-current-buffer buf (set-buffer-modified-p nil))
               (kill-buffer buf)))
-      (delete-file file))))
-
-;; A path that does not exist is NOT an error: `find-file-noselect' happily
-;; makes a buffer for a new file, so the review opens as usual.  What matters
-;; for the deferred HTTP reply is that the callback still fires on its own —
-;; the request must never hang waiting for a session nobody will answer.
-;; (Uses a real ediff rather than the stub, hence the 1-second timeout.)
+      (delete-file file)))))
 (describe "mcp-emacs-apply-diff-async on a nonexistent path"
+  (let ((mcp-emacs-apply-diff-inline-limit 0))
   (let ((calls nil))
     (mcp-emacs-apply-diff-async
      "/nonexistent-dir-mcp-test/nope.txt" "new\n" 1
@@ -422,7 +425,7 @@ and `control' is the fake control buffer."
       (check calls nil))
     (sleep-for 2)
     (it "still answers on its own so the request cannot hang"
-      (check (length calls) 1))))
+      (check (length calls) 1)))))
 
 ;; The synchronous variant must refuse to run under a process filter.  A
 ;; filter has no command loop to deliver the human's keypress to ediff, and
@@ -444,6 +447,265 @@ and `control' is the fake control buffer."
             (check-that (and err t)))
           (it "names the async variant so the caller knows the way out"
             (check-that (string-match-p "async" (format "%S" err)))))
+      (delete-file file))))
+
+;;;; Inline review (issue #81)
+
+;; The size gate decides between the inline surface and ediff from the
+;; unified-diff line count alone.
+(describe "the apply-diff size gate"
+  (it "renders a diff at or below the limit inline"
+    (let ((mcp-emacs-apply-diff-inline-limit 40))
+      (check (mcp-emacs--apply-diff-inline-p
+              "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n")
+             t)))
+  (it "opens ediff for a diff above the limit"
+    (let ((mcp-emacs-apply-diff-inline-limit 3))
+      (check (mcp-emacs--apply-diff-inline-p
+              "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n")
+             nil)))
+  (it "treats a diff that could not be produced as too large"
+    (let ((mcp-emacs-apply-diff-inline-limit 1000))
+      (check (mcp-emacs--apply-diff-inline-p nil) nil))))
+
+;; The dispatch shared by the sync and async callers must route a small
+;; real diff to the inline surface and a large one to ediff.
+(describe "the review dispatch honours the size gate"
+  (let* ((a (generate-new-buffer " *gate-a*"))
+         (b (generate-new-buffer " *gate-b*"))
+         (result (list nil))
+         (inline-called nil)
+         (ediff-called nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'mcp-emacs--inline-review)
+                   (lambda (&rest _) (setq inline-called t)))
+                  ((symbol-function 'mcp-emacs--ediff-review)
+                   (lambda (&rest _) (setq ediff-called t))))
+          (with-current-buffer a (insert "line one\nline two\n"))
+          (with-current-buffer b (insert "line one\nline two edited\n"))
+          (let ((mcp-emacs-apply-diff-inline-limit 40))
+            (mcp-emacs--apply-diff-review a b "line one\nline two\n" result)
+            (it "sends a small diff to the inline review"
+              (check inline-called t))
+            (it "does not open ediff for a small diff"
+              (check ediff-called nil)))
+          (setq inline-called nil ediff-called nil)
+          (with-current-buffer b
+            (erase-buffer)
+            (insert (mapconcat (lambda (n) (format "changed line %d" n))
+                               (number-sequence 1 60) "\n")))
+          (let ((mcp-emacs-apply-diff-inline-limit 40))
+            (mcp-emacs--apply-diff-review a b "line one\nline two\n" result)
+            (it "opens ediff for a diff above the limit"
+              (check ediff-called t))
+            (it "does not render a large diff inline"
+              (check inline-called nil))))
+      (kill-buffer a) (kill-buffer b))))
+
+(defun mcp--conversation-buffer ()
+  "Return a fresh claude-client conversation buffer for an inline review."
+  (let ((buf (generate-new-buffer "*claude-client:inline-test:1*")))
+    (with-current-buffer buf (claude-client-mode))
+    buf))
+
+;; The inline surface renders into the conversation buffer the review
+;; was started from; accepting applies the proposal and reports the same
+;; outcome the ediff accept would.
+(describe "an inline review in a conversation buffer"
+  (let ((file (mcp--async-fixture))
+        (conv (mcp--conversation-buffer)))
+    (unwind-protect
+        (let ((calls nil))
+          (let ((mcp-emacs-apply-diff-inline-limit 40))
+            (with-current-buffer conv
+              (mcp-emacs-apply-diff-async file "new\n" 60
+                                          (lambda (out) (push out calls)))))
+          (it "renders the review in a *claude-client* conversation buffer"
+            (check-that (with-current-buffer conv
+                          (string-match-p "apply_diff review" (buffer-string)))))
+          (it "shows the file path in the inline review"
+            (check-that (with-current-buffer conv
+                          (string-match-p (regexp-quote file) (buffer-string)))))
+          (it "shows the unified diff as text"
+            (check-that (with-current-buffer conv
+                          (string-match-p (regexp-quote "+new") (buffer-string)))))
+          (with-current-buffer conv
+            (mcp-emacs--apply-diff-inline-accept))
+          (it "reports Status: applied with the final content"
+            (check (car calls) "Status: applied\nnew\n"))
+          (it "applies the proposal to the file on disk"
+            (check (with-temp-buffer
+                     (insert-file-contents file)
+                     (buffer-string))
+                   "new\n"))
+          (it "turns the inline review mode off after the decision"
+            (check (with-current-buffer conv
+                     mcp-emacs--apply-diff-inline-mode)
+                   nil)))
+      (let ((buf (find-buffer-visiting file)))
+        (when buf (with-current-buffer buf (set-buffer-modified-p nil))
+              (kill-buffer buf)))
+      (when (buffer-live-p conv) (kill-buffer conv))
+      (delete-file file))))
+
+;; A hand-edit made to the file's buffer before accepting is kept, exactly
+;; as with the ediff accept path.
+(describe "a hand edit survives an inline accept"
+  (let ((file (mcp--async-fixture))
+        (conv (mcp--conversation-buffer)))
+    (unwind-protect
+        (let ((calls nil))
+          (let ((mcp-emacs-apply-diff-inline-limit 40))
+            (with-current-buffer conv
+              (mcp-emacs-apply-diff-async file "new\n" 60
+                                          (lambda (out) (push out calls)))))
+          (with-current-buffer (find-buffer-visiting file)
+            (erase-buffer) (insert "hand-edited\n"))
+          (with-current-buffer conv
+            (mcp-emacs--apply-diff-inline-accept))
+          (it "reports applied with the hand-edited content"
+            (check (car calls) "Status: applied\nhand-edited\n"))
+          (it "writes the hand-edit to the file on disk, not the proposal"
+            (check (with-temp-buffer
+                     (insert-file-contents file)
+                     (buffer-string))
+                   "hand-edited\n")))
+      (let ((buf (find-buffer-visiting file)))
+        (when buf (with-current-buffer buf (set-buffer-modified-p nil))
+              (kill-buffer buf)))
+      (when (buffer-live-p conv) (kill-buffer conv))
+      (delete-file file))))
+
+(describe "an inline review that is rejected"
+  (let ((file (mcp--async-fixture))
+        (conv (mcp--conversation-buffer)))
+    (unwind-protect
+        (let ((calls nil))
+          (let ((mcp-emacs-apply-diff-inline-limit 40))
+            (with-current-buffer conv
+              (mcp-emacs-apply-diff-async file "new\n" 60
+                                          (lambda (out) (push out calls)))))
+          (with-current-buffer conv
+            (mcp-emacs--apply-diff-inline-reject))
+          (it "reports Status: rejected"
+            (check (car calls) "Status: rejected"))
+          (it "leaves the file on disk unchanged"
+            (check (with-temp-buffer
+                     (insert-file-contents file)
+                     (buffer-string))
+                   "old\n"))
+          (it "leaves the file's buffer untouched"
+            (check (with-current-buffer (find-buffer-visiting file)
+                     (buffer-substring-no-properties (point-min) (point-max)))
+                   "old\n")))
+      (let ((buf (find-buffer-visiting file)))
+        (when buf (with-current-buffer buf (set-buffer-modified-p nil))
+              (kill-buffer buf)))
+      (when (buffer-live-p conv) (kill-buffer conv))
+      (delete-file file))))
+
+;; The jump key starts a real ediff session against the same two buffers
+;; and result cell; resolving it there is the single outcome, and the
+;; inline surface goes quiet.
+(describe "the jump key hands an inline review to ediff"
+  (let ((file (mcp--async-fixture))
+        (conv (mcp--conversation-buffer))
+        (control (generate-new-buffer " *fake-jump-control*")))
+    (unwind-protect
+        (let ((calls nil) (seen-a nil) (seen-b nil) (cell nil) (captured nil))
+          (cl-letf (((symbol-function 'mcp-emacs--ediff-review)
+                     (lambda (a b _entry result &optional on-resolve _tab)
+                       (setq seen-a a seen-b b cell result captured on-resolve)
+                       control)))
+            (let ((mcp-emacs-apply-diff-inline-limit 40))
+              (with-current-buffer conv
+                (mcp-emacs-apply-diff-async file "new\n" 60
+                                            (lambda (out) (push out calls)))))
+            (with-current-buffer conv
+              (mcp-emacs--apply-diff-inline-jump))
+            (it "opens ediff against the same file buffer"
+              (check seen-a (find-buffer-visiting file)))
+            (it "opens ediff against the same proposal and result cell"
+              (check-that (and (buffer-live-p seen-b) cell)))
+            (it "turns the inline review off after the jump"
+              (check (with-current-buffer conv
+                       mcp-emacs--apply-diff-inline-mode)
+                     nil))
+            ;; Mirror the ediff accept key: record the decision, apply the
+            ;; proposal, then deliver through the shared on-resolve.
+            (setcar cell 'applied)
+            (let ((buf (find-buffer-visiting file)))
+              (with-current-buffer buf (erase-buffer) (insert "new\n")))
+            (funcall captured)
+            (it "delivers the ediff accept as the one outcome"
+              (check (car calls) "Status: applied\nnew\n"))
+            (it "ignores a second attempt on the inline surface"
+              (with-current-buffer conv
+                (mcp-emacs--apply-diff-inline-accept))
+              (check (length calls) 1)))
+          (when (buffer-live-p control) (kill-buffer control)))
+      (let ((buf (find-buffer-visiting file)))
+        (when buf (with-current-buffer buf (set-buffer-modified-p nil))
+              (kill-buffer buf)))
+      (when (buffer-live-p conv) (kill-buffer conv))
+      (delete-file file))))
+
+;; Accept-then-timeout and timeout-then-late-accept: whichever way the
+;; race goes, the caller answers exactly once and the file is only ever
+;; touched by an explicit accept.
+(describe "an inline accept is not followed by a second outcome"
+  (let ((file (mcp--async-fixture))
+        (conv (mcp--conversation-buffer)))
+    (unwind-protect
+        (let ((calls nil))
+          (let ((mcp-emacs-apply-diff-inline-limit 40))
+            (with-current-buffer conv
+              (mcp-emacs-apply-diff-async file "new\n" 1
+                                          (lambda (out) (push out calls)))))
+          (with-current-buffer conv
+            (mcp-emacs--apply-diff-inline-accept))
+          (it "answers once with the applied status"
+            (check (car calls) "Status: applied\nnew\n"))
+          (sleep-for 2)
+          (it "does not deliver again when the timeout would have fired"
+            (check (length calls) 1)))
+      (let ((buf (find-buffer-visiting file)))
+        (when buf (with-current-buffer buf (set-buffer-modified-p nil))
+              (kill-buffer buf)))
+      (when (buffer-live-p conv) (kill-buffer conv))
+      (delete-file file))))
+
+(describe "an inline review answered late cannot double-deliver"
+  (let ((file (mcp--async-fixture))
+        (conv (mcp--conversation-buffer)))
+    (unwind-protect
+        (let ((calls nil))
+          (let ((mcp-emacs-apply-diff-inline-limit 40))
+            (with-current-buffer conv
+              (mcp-emacs-apply-diff-async file "new\n" 1
+                                          (lambda (out) (push out calls)))))
+          (it "has not answered while the timeout is still pending"
+            (check calls nil))
+          (sleep-for 2)
+          (it "reports a timeout status when nobody resolves"
+            (check (car calls) "Status: timeout"))
+          (with-current-buffer conv
+            (mcp-emacs--apply-diff-inline-accept))
+          (it "ignores the late accept instead of delivering twice"
+            (check (length calls) 1))
+          (it "keeps the file on disk unchanged after the timeout"
+            (check (with-temp-buffer
+                     (insert-file-contents file)
+                     (buffer-string))
+                   "old\n"))
+          (it "tears the inline surface down on timeout"
+            (check (with-current-buffer conv
+                     mcp-emacs--apply-diff-inline-mode)
+                   nil)))
+      (let ((buf (find-buffer-visiting file)))
+        (when buf (with-current-buffer buf (set-buffer-modified-p nil))
+              (kill-buffer buf)))
+      (when (buffer-live-p conv) (kill-buffer conv))
       (delete-file file))))
 
 ;;;; Org-task domain events (issue #39)

@@ -422,6 +422,50 @@ does not look answered when it is not.
 ** Org headline left empty
 - WHEN an org template headline (~* How to reproduce~) has nothing under it
 - THEN it is removed from the filed body
+* Small diff reviews render inline in the conversation buffer
+The ~apply_diff~ review SHALL render a small diff inline in the conversation
+buffer (~*claude-client*~ for the Claude client) instead of opening ediff,
+and SHALL open ediff for a diff larger than the inline limit. A diff is small
+when its unified-diff line count is at or below
+= mcp-emacs-apply-diff-inline-limit =. Ediff SHALL remain reachable from the
+inline view with one keypress.
+** A small diff appears inline
+- GIVEN an ~apply_diff~ whose diff fits the inline limit
+- WHEN the review starts
+- THEN it renders as text in the conversation buffer rather than opening ediff
+** A large diff stays in ediff
+- GIVEN an ~apply_diff~ whose diff exceeds the inline limit
+- WHEN the review starts
+- THEN it opens ediff as before
+** Ediff is reachable from the inline view
+- GIVEN an inline diff review is on screen
+- WHEN the human presses the jump key
+- THEN a real ediff session against the same buffers opens
+* Inline accept and reject record the same outcome
+Accepting an inline review SHALL apply the proposal to the file and report
+the same outcome format the ediff accept returns (~~Status: applied~~ plus
+the final content); rejecting SHALL leave the file unchanged and report
+~~Status: rejected~~. A hand-edit made to the file's buffer before accepting
+SHALL be kept, exactly as with the ediff accept path. Whichever surface the
+human resolves first — inline or the jumped-to ediff — SHALL be the only
+outcome delivered.
+** Inline accept applies the change
+- GIVEN an inline diff review whose proposal is untouched beyond the diff
+- WHEN the human accepts it
+- THEN the proposal replaces the file content and the outcome reads
+  ~~Status: applied~~
+** Inline reject leaves the file alone
+- GIVEN an inline diff review
+- WHEN the human rejects it
+- THEN the file is unchanged and the outcome reads ~~Status: rejected~~
+** A hand edit survives an inline accept
+- GIVEN the file's buffer was edited away from the original before accept
+- WHEN the human accepts the inline review
+- THEN the file keeps the hand-edit, matching the ediff accept rule
+** One surface answers once
+- GIVEN an inline review that the human jump-starts into ediff
+- WHEN the human resolves it in ediff
+- THEN the inline view does not deliver a second, competing outcome
 * Commit is proposed, not executed
 The MCP server SHALL expose a ~git_commit~ tool that opens magit's commit
 dialog with a proposed commit message and lets the human confirm (magit's
@@ -476,6 +520,25 @@ connect to the network.
 - GIVEN the tutorial buffer is already open
 - WHEN `mcp-emacs-tutor` is invoked again
 - THEN the same side window is selected and no duplicate buffer is created
+* The feature request buffer opens without prompting headings
+The feature-request report buffer SHALL open without the prompting headings
+("What you want:" / "Why it would help:") by default, matching the empty
+buffer `mcp-emacs-report-template' set to nil; the active region in the
+source buffer SHALL still be seeded when there is one.
+** A feature request opens with an empty body
+- GIVEN a feature request is composed with `mcp-emacs-report-template'
+  non-nil and no active region
+- WHEN the composition buffer opens
+- THEN its body holds no prompting headings
+** A region still seeds the feature request
+- GIVEN a feature request is composed from a buffer with an active region
+- WHEN the composition buffer opens
+- THEN the region text is seeded, and no prompting headings follow it
+** The bug report keeps its scaffold
+- GIVEN a bug report is composed with `mcp-emacs-report-template' non-nil
+- WHEN the composition buffer opens
+- THEN the bug-report prompting headings ("What happened:" / "What you
+  expected:" / "How to reproduce:") are still offered
 * A propose_text tool presents draft text for the human to edit and approve
 The system SHALL expose an MCP tool ~propose_text~ that presents proposed
 text (a draft commit message, MR description, or similar) to the human in an
