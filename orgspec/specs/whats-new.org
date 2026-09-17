@@ -1,0 +1,23 @@
+* The What's new command shows release notes since the last seen version
+Emacs SHALL provide an interactive command `mcp-emacs-whats-new` that opens a
+read-only Org buffer containing the release-notes Org files shipped with the
+installed mcp-emacs — one top-level headline per release — for every release
+newer than the previously-installed version recorded in a local
+`.mcp-emacs-last-seen` stamp file.  The command SHALL write the installed
+version (from the `Version:` header of `mcp-emacs.el`) back to that stamp
+after showing the notes, so each upgrade shows the notes for the releases
+installed since the stamp and nothing is shown twice.  When the stamp is
+absent, SHOW all shipped release notes rather than none.  The installed
+version MUST come from the local checkout, never from the network.
+** One-time notes on upgrade
+- GIVEN an installed version newer than the `.mcp-emacs-last-seen` stamp and release-notes Org files for the intervening releases
+- WHEN `mcp-emacs-whats-new` is invoked
+- THEN a read-only Org buffer shows one top-level headline per intervening release with the notes, and the stamp is updated to the installed version
+** Nothing new after the stamp is current
+- GIVEN an installed version equal to the `.mcp-emacs-last-seen` stamp
+- WHEN `mcp-emacs-whats-new` is invoked
+- THEN no notes are shown and the installed version is re-stamped
+** First run shows everything when no stamp exists
+- GIVEN no `.mcp-emacs-last-seen` stamp file
+- WHEN `mcp-emacs-whats-new` is invoked
+- THEN all shipped release-notes Org files are shown and a stamp is created at the installed version

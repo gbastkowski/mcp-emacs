@@ -67,6 +67,16 @@ jobs:
           printf '## What changed\n\n%s\n\n_Generated on batch completion._\n' \
             "$notes" > /tmp/release-notes.md
 
+          # Ship the same merged-PR notes in the checkout as an Org file so
+          # the What's new screen can read them offline; one top-level
+          # headline per release.  Committed from the runner's git identity.
+          mkdir -p news
+          printf '* Release %s\n\n## What changed\n\n%s\n\n_Generated on batch completion._\n' \
+            "$ver" "$notes" > "news/release-$ver.org"
+          git add "news/release-$ver.org"
+          git commit -m "Add release notes for $ver"
+          git push origin "HEAD:$GITHUB_REF_NAME"
+
           gh release create "$ver" \
             --title "Release $ver" \
             --notes-file /tmp/release-notes.md
