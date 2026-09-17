@@ -517,20 +517,52 @@ continuation, and opencode holds the call open until it arrives."
           backend request-id
           (if (eq decision 'allow) "allow" "deny")))))))
 
+(defun opencode-client--tool-status (part)
+  "Return the state/status string of tool PART, or nil.
+`state' is either the status string itself or an alist carrying
+`status'; both shapes occur in the stream (see `opencode-client--render-part')."
+  (let ((state (alist-get 'state part)))
+    (if (listp state) (alist-get 'status state) state)))
+
+(defun opencode-client--tool-result-text (part)
+  "Return the result text of a completed tool PART, or nil.
+A completed tool part carries its output in the `state' as `output';
+nil when the part has none, so a publisher never invents text the part
+does not carry."
+  (let ((state (alist-get 'state part)))
+    (when (listp state)
+      (let ((output (alist-get 'output state)))
+        (and (stringp output)
+             (not (string-empty-p (string-trim output)))
+             output)))))
+
 (defun opencode-client--publish-part (buffer part)
   "Publish PART from BUFFER as a shared `:kind' event, when renderable.
 Maps opencode part types onto the shared vocabulary: a text part becomes
-`:text', a tool part becomes `:tool-use'."
+`:text', a tool part becomes `:tool-use' -- and, once the part reaches a
+terminal `state' (\"completed\" or \"error\"), a `:tool-result' carrying
+the part's output, so a spawned agent leaves `running'."
   (pcase (alist-get 'type part)
     ("text"
      (let ((text (alist-get 'text part)))
        (when (and text (not (string-empty-p (string-trim text))))
          (agent-backend--publish buffer (list :kind 'text :text text)))))
     ("tool"
-     (agent-backend--publish
-      buffer (list :kind 'tool-use
-                   :name (or (alist-get 'tool part)
-                             (alist-get 'name part)))))
+     (let* ((name (or (alist-get 'tool part)
+                      (alist-get 'name part)))
+            (status (opencode-client--tool-status part)))
+       (agent-backend--publish
+        buffer (list :kind 'tool-use :name name))
+       ;; The same part is streamed across its lifecycle; a terminal state
+       ;; is the completion signal the shared spawned-agent tracker uses to
+       ;; close the agent this tool-use opened.
+       (when (member status '("completed" "error"))
+         (let ((result (opencode-client--tool-result-text part)))
+           (agent-backend--publish
+            buffer (nconc (list :kind 'tool-result
+                                :name name
+                                :status (if (equal status "error") 'failed 'done))
+                          (and result (list :text result))))))))
     (_ nil)))
 
 (defun opencode-client--render-part (pid)

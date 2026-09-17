@@ -146,8 +146,8 @@
       (opencode-client--publish-part buf '((type . "text") (text . "hi there")))
       (opencode-client--publish-part buf '((type . "tool") (tool . "read") (state . ((status . "completed")))))
       (opencode-client--publish-part buf '((type . "reasoning") (text . "skip me")))
-      (it "publishes text as `text' and tool as `tool-use', staying silent on unknown kinds"
-        (check (mapcar #'cdr seen) '(tool-use text)))
+      (it "publishes text as `text', tool as `tool-use', and a completed tool also as `tool-result', staying silent on unknown kinds"
+        (check (mapcar #'cdr seen) '(tool-result tool-use text)))
       (it "publishes the event against the backend's buffer"
         (check (caar seen) buf)))))
 
@@ -203,6 +203,52 @@
         (it "publishes a `prompt' event on the shared hook"
           (check (plist-get (car seen) :kind) 'prompt))))))
 
+
+;; Issue #74: opencode streams a tool part across states; a terminal
+;; state is the completion that lets a spawned agent leave `running', so
+;; the client publishes a `tool-result' for it.  The hook is kept to a
+;; single capture subscriber so the publisher's own mapping is what is
+;; being asserted.
+(with-temp-buffer
+  (opencode-client-mode)
+  (let ((backend (new-backend))
+        (seen nil)
+        (agent-backend-event-functions nil)
+        (buf (current-buffer)))
+    (add-hook 'agent-backend-event-functions
+              (lambda (_b ev) (push ev seen)))
+    (describe "opencode-client--publish-part completion (issue #74)"
+      (opencode-client--publish-part
+       buf '((type . "tool") (tool . "task") (state . ((status . "running")))))
+      (it "publishes only tool-use while a tool part runs"
+        (check (mapcar (lambda (ev) (plist-get ev :kind)) seen) '(tool-use)))
+      (setq seen nil)
+      (opencode-client--publish-part
+       buf '((type . "tool") (tool . "task")
+             (state . ((status . "completed") (output . "the review")))))
+      (let ((result (seq-find (lambda (ev) (eq (plist-get ev :kind) 'tool-result)) seen)))
+        (it "publishes a tool-result when the part completes"
+          (check-that result))
+        (it "names the completed tool on the tool-result"
+          (check (plist-get result :name) "task"))
+        (it "reports the completed status as done"
+          (check (plist-get result :status) 'done))
+        (it "carries the part's output as the result text"
+          (check (plist-get result :text) "the review")))
+      (setq seen nil)
+      (opencode-client--publish-part
+       buf '((type . "tool") (tool . "task") (state . ((status . "error")))))
+      (it "reports an errored part as a failed tool-result"
+        (check (plist-get (seq-find (lambda (ev) (eq (plist-get ev :kind) 'tool-result)) seen)
+                          :status)
+               'failed))
+      (setq seen nil)
+      (opencode-client--publish-part
+       buf '((type . "tool") (tool . "task") (state . ((status . "completed")))))
+      (it "omits the result text when the part carries none"
+        (check (plist-get (seq-find (lambda (ev) (eq (plist-get ev :kind) 'tool-result)) seen)
+                          :text)
+               nil)))))
 
 ;;;; Permission and question replies
 

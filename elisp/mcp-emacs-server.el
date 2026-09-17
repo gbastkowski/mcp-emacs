@@ -511,15 +511,31 @@ they are exposed without editing the core tool list.")
                       "type" "text"
                       "text" (format "%s" (or text ""))))))
 
-(defun mcp-emacs-server--tools-call (params)
-  "Execute a tools/call request described by PARAMS, return the result value."
+(defun mcp-emacs-server--tools-call (params &optional completion)
+  "Execute a tools/call request described by PARAMS, return the result value.
+When PARAMS names a tool declaring an `:async-handler' and COMPLETION is
+given, dispatch through that handler with a thunk feeding the tool's text
+result into COMPLETION and return the symbol `deferred'.  An
+`:async-handler' called without COMPLETION cannot be answered here, so
+refuse loudly rather than starting the blocking `:handler'.  A
+synchronous tool is funcalled as today and its text result returned
+wrapped."
   (let* ((name (alist-get 'name params))
          (args (alist-get 'arguments params))
-         (tool (mcp-emacs-server--find-tool name)))
+         (tool (mcp-emacs-server--find-tool name))
+         (async (and tool (plist-get tool :async-handler))))
     (unless tool
       (error "Unknown tool: %s" name))
-    (mcp-emacs-server--text-result
-     (funcall (plist-get tool :handler) args))))
+    (if async
+        (progn
+          (unless completion
+            (error "Tool %s declares :async-handler; a completion callback is required" name))
+          (funcall async args
+                   (lambda (text)
+                     (funcall completion text)))
+          'deferred)
+      (mcp-emacs-server--text-result
+       (funcall (plist-get tool :handler) args)))))
 
 (defun mcp-emacs-server--tools-call-async (params id send)
   "Start the async tools/call described by PARAMS for request ID.
@@ -529,14 +545,16 @@ started, nil when the tool is synchronous and should be dispatched
 normally.
 
 Async tools are for reviews a human has to answer: blocking the process
-filter would leave Emacs without a command loop to answer them in."
+filter would leave Emacs without a command loop to answer them in.
+Delegates to `mcp-emacs-server--tools-call', which carries the single
+rule deciding sync vs async dispatch; the completion callback here wraps
+the tool's text as the JSON-RPC response for ID."
   (let* ((name (alist-get 'name params))
-         (args (alist-get 'arguments params))
          (tool (mcp-emacs-server--find-tool name))
          (async (and tool (plist-get tool :async-handler))))
     (when async
-      (funcall
-       async args
+      (mcp-emacs-server--tools-call
+       params
        (lambda (text)
          (funcall send (mcp-emacs-server--result
                         id (mcp-emacs-server--text-result text)))))
@@ -568,9 +586,13 @@ filter would leave Emacs without a command loop to answer them in."
                            "mimeType" (plist-get res :mime)
                            "text" (format "%s" (or text ""))))))))
 
-(defun mcp-emacs-server--dispatch (request)
+(defun mcp-emacs-server--dispatch (request &optional completion)
   "Dispatch a parsed JSON-RPC REQUEST alist, returning a response alist or nil.
-Returns nil for notifications, which require no response."
+Returns nil for notifications, which require no response.  COMPLETION,
+when given, is passed on for tools/call: a tool declaring an
+`:async-handler' then returns a response whose result is the symbol
+`deferred' and delivers its text through COMPLETION instead of
+blocking."
   (let ((id (alist-get 'id request))
         (method (alist-get 'method request))
         (params (alist-get 'params request)))
@@ -589,7 +611,8 @@ Returns nil for notifications, which require no response."
       (mcp-emacs-server--result id (mcp-emacs-server--tools-list)))
      ((string= method "tools/call")
       (condition-case err
-          (mcp-emacs-server--result id (mcp-emacs-server--tools-call params))
+          (mcp-emacs-server--result
+           id (mcp-emacs-server--tools-call params completion))
         (error (mcp-emacs-server--error id -32603 (error-message-string err)))))
      ((string= method "resources/list")
       (mcp-emacs-server--result id (mcp-emacs-server--resources-list)))

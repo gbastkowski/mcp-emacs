@@ -48,20 +48,32 @@
                alist "\n")))
 
 (defun orgspec-mcp--format-change (change)
-  "Render an `orgspec-change' CHANGE as a readable per-requirement summary."
-  (let ((reqs (orgspec-change-requirements change)))
+  "Render an `orgspec-change' CHANGE as a readable per-requirement summary.
+Prefixes the requirements with the change id and its tracker/issue back-link
+when one is present, so an agent reading a change sees where its discussion
+lives."
+  (let ((reqs (orgspec-change-requirements change))
+        (head (concat (orgspec-change-id change)
+                      (when (or (orgspec-change-tracker change)
+                                (orgspec-change-issue change))
+                        (format " (from %s%s)"
+                                (or (orgspec-change-tracker change) "-")
+                                (if (orgspec-change-issue change)
+                                    (format ":%s" (orgspec-change-issue change))
+                                  ""))))))
     (if (null reqs)
-        (format "%s: no delta requirements" (orgspec-change-id change))
-      (mapconcat
-       (lambda (r)
-         (format "- %s [%s] area=%s%s scenarios=%d"
-                 (orgspec-requirement-name r)
-                 (or (orgspec-requirement-op r) "?")
-                 (or (orgspec-requirement-area r) "?")
-                 (if (orgspec-requirement-from r)
-                     (format " from=%S" (orgspec-requirement-from r)) "")
-                 (length (orgspec-requirement-scenarios r))))
-       reqs "\n"))))
+        (format "%s: no delta requirements" head)
+      (concat head "\n"
+              (mapconcat
+               (lambda (r)
+                 (format "- %s [%s] area=%s%s scenarios=%d"
+                         (orgspec-requirement-name r)
+                         (or (orgspec-requirement-op r) "?")
+                         (or (orgspec-requirement-area r) "?")
+                         (if (orgspec-requirement-from r)
+                             (format " from=%S" (orgspec-requirement-from r)) "")
+                         (length (orgspec-requirement-scenarios r))))
+               reqs "\n")))))
 
 ;;;; Handlers
 
@@ -122,6 +134,16 @@ Emacs session happens to be in."
     (let ((orgspec-project-root (or (alist-get 'root args)
                                     orgspec-project-root)))
       (funcall handler args))))
+
+(defun orgspec-mcp--with-root-async (handler)
+  "Return the two-argument async HANDLER wrapped to honour `root'.
+Like `orgspec-mcp--with-root' but for a handler called with the args
+alist and a DONE callback, so an async orgspec tool routes the same way
+as its synchronous one."
+  (lambda (args done)
+    (let ((orgspec-project-root (or (alist-get 'root args)
+                                    orgspec-project-root)))
+      (funcall handler args done))))
 
 (defun orgspec-mcp--root-prop ()
   "Return the `root' property pair for a tool schema."
@@ -199,21 +221,41 @@ Emacs session happens to be in."
 (defun orgspec-mcp--routed-tools ()
   "Return `orgspec-mcp--tools' with every handler wrapped for `root'.
 Wrapping once here, rather than in each handler, keeps the routing off
-the handlers and applies to any tool added later."
+the handlers and applies to any tool added later.  An optional
+`:async-handler' is wrapped for `root' the same way."
   (mapcar (lambda (tl)
             (let ((copy (copy-sequence tl)))
               (plist-put copy :handler
-                         (orgspec-mcp--with-root (plist-get tl :handler)))))
+                         (orgspec-mcp--with-root (plist-get tl :handler)))
+              (when (plist-get tl :async-handler)
+                (plist-put copy :async-handler
+                           (orgspec-mcp--with-root-async
+                            (plist-get tl :async-handler))))
+              copy))
           orgspec-mcp--tools))
 
-(defun orgspec-mcp-call (name args)
+(defun orgspec-mcp-call (name args &optional completion)
   "Invoke orgspec tool NAME with ARGS through its registered handler.
 Goes via `orgspec-mcp--routed-tools', so `root' routing applies exactly
-as it does for a request arriving at the server."
-  (let ((tool (seq-find (lambda (tl) (equal (plist-get tl :name) name))
-                        (orgspec-mcp--routed-tools))))
+as it does for a request arriving at the server.  When the tool declares
+an `:async-handler' and COMPLETION is given, dispatch through that
+handler with a thunk feeding the text result into COMPLETION and return
+the symbol `deferred'; an `:async-handler' without COMPLETION refuses
+loudly rather than blocking.  A synchronous tool returns its text result
+as before."
+  (let* ((tool (seq-find (lambda (tl) (equal (plist-get tl :name) name))
+                         (orgspec-mcp--routed-tools)))
+         (async (and tool (plist-get tool :async-handler))))
     (unless tool (error "No orgspec tool named %s" name))
-    (funcall (plist-get tool :handler) args)))
+    (if async
+        (progn
+          (unless completion
+            (error "orgspec tool %s declares :async-handler; a completion callback is required" name))
+          (funcall async args
+                   (lambda (text)
+                     (funcall completion text)))
+          'deferred)
+      (funcall (plist-get tool :handler) args))))
 
 (defun orgspec-mcp-register ()
   "Register the orgspec tools onto `mcp-emacs-server-extra-tools'.

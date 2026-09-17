@@ -55,6 +55,21 @@
         (it "includes the requirement's area property"
           (check-that (string-match-p "area=auth" s)))))
 
+    (describe "orgspec-mcp--parse surfaces a tracker/issue back-link"
+      (let ((f (orgspec-commands--change-file "with-backlink")))
+        (orgspec-mcp-call "orgspec_new" `((id . "with-backlink") (root . ,root)))
+        (with-temp-file f
+          (insert "#+PROPERTY: TRACKER github\n"
+                  "#+PROPERTY: ISSUE gbastkowski/mcp-emacs#63\n"
+                  "* Tasks\n- [ ] a\n* Delta\n"
+                  "** Login required :ADDED:\n:PROPERTIES:\n:AREA: auth\n:END:\n"
+                  "The system SHALL require login.\n*** happy\n- GIVEN x\n"))
+        (let ((s (orgspec-mcp--parse '((id . "with-backlink")))))
+          (it "names the tracker in the rendered change"
+            (check-that (string-match-p "(from github" s)))
+          (it "names the issue in the rendered change"
+            (check-that (string-match-p ":gbastkowski/mcp-emacs#63" s))))))
+
     (describe "orgspec-mcp--advance"
       (it "moves a requirement to the active todo keyword"
         (check (orgspec-mcp--advance
@@ -120,6 +135,52 @@
                       (file-exists-p
                        (expand-file-name "orgspec/changes/ok/change.org" initialised)))
                t)))))
+
+;;;; Async dispatch (issue #88)
+;; `orgspec-mcp-call' used to funcall the registered `:handler'
+;; unconditionally, so an orgspec tool declaring `:async-handler' would
+;; run its blocking sync handler on this path.  It now routes by
+;; `:async-handler' with the same completion-callback contract as the
+;; server's direct dispatch.
+
+(describe "orgspec-mcp-call with an async tool"
+  (let* ((done-cb nil)
+         (received nil)
+         (stub (list :name "orgspec_stub_async"
+                     :description "test stub"
+                     :schema (mcp-emacs-server--no-args)
+                     :handler (lambda (_args) "sync fallback")
+                     :async-handler (lambda (_args done)
+                                      (setq done-cb done))))
+         (orgspec-mcp--tools (cons stub orgspec-mcp--tools)))
+    (let ((ret (orgspec-mcp-call "orgspec_stub_async" nil
+                                 (lambda (text) (setq received text)))))
+      (it "defers instead of running the synchronous handler"
+        (check ret 'deferred))
+      (it "has not answered synchronously"
+        (check received nil))
+      (funcall done-cb "review complete")
+      (it "delivers the text result through the completion callback"
+        (check received "review complete")))))
+
+(describe "orgspec-mcp-call with an async tool and no completion"
+  (let* ((blocking-called nil)
+         (stub (list :name "orgspec_stub_async_refuse"
+                     :description "test stub"
+                     :schema (mcp-emacs-server--no-args)
+                     :handler (lambda (_args)
+                                (setq blocking-called t)
+                                "should never run")
+                     :async-handler (lambda (_args _done) nil)))
+         (orgspec-mcp--tools (cons stub orgspec-mcp--tools)))
+    (it "refuses loudly with an error"
+      (check (condition-case err
+                 (progn (orgspec-mcp-call "orgspec_stub_async_refuse" nil) :called)
+               (error (and (string-match-p "completion" (error-message-string err))
+                           :refused)))
+             :refused))
+    (it "never starts the blocking synchronous handler"
+      (check blocking-called nil))))
 
 (test-helper-summary)
 

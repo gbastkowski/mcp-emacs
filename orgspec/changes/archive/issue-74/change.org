@@ -1,0 +1,187 @@
+#+TITLE: surface-background-agents-in-emacs
+
+* Intent
+A turn can fan out to several background agents (a security review and a
+conventions review running in parallel is the stated case). From Emacs none
+of that is visible: the agents live inside the parent conversation's stream,
+so there is no per-agent view, no way to tell which are still running, and no
+way to read one agent's findings apart from the others.
+
+The shared event vocabulary on =agent-backend-event-functions= already carries
+~tool-use~ and ~tool-result~, and a fan-out shows up on that seam as a tool
+call by the main agent. Today the vocabulary stops there: no ~agent-…~
+lifecycle kinds exist, neither client synthesises one, and =agent-session-overview=
+lists only top-level sessions, not the agents a session spawned. This change
+makes the fan-out visible: a backend-agnostic vocabulary for agent lifecycle,
+a per-conversation registry of the agents that conversation spawned, and a
+small surface to list them, open one agent's output on its own, and notice
+when one finishes — with a seam to stop one, used honestly where the backend
+cannot.
+
+=agent-backend-start-another= (=SPC A A~ / ~agent-session-overview~ ~n~, issue
+#85) is *starting* a second conversation in parallel; it is not this. This
+issue is about surfacing the agents a *single turn* spawns, which no current
+layer does.
+
+* Scope
+In scope:
+- Extend the ~:kind~ vocabulary on =agent-backend-event-functions= with
+  ~agent-started~, ~agent-update~, ~agent-finished~, and ~agent-killed~, with
+  documented payload keys (~:agent~ identity, ~:name~ spawn tool, ~:task~ the
+  prompt, ~:text~/~:result~ output, ~:status~ done/failed).
+- Detect a fan-out from the events already published on the seam: a ~tool-use~
+  whose ~:name~ is in a known spawn-tool set opens an agent, the matching
+  ~tool-result~ (or a backend's own completion publication) closes it. The
+  spawn-tool set is a defcustom, =agent-backend-spawn-tool-names=.
+- A per-conversation (buffer-local) registry of the agents that conversation
+  spawned: identity, spawn tool, task, status, isolated-output buffer,
+  started/finished timestamps. No global session store — the same
+  no-registry stance =agent-session-overview= takes for sessions.
+- A surface (~agent-backend-agent-list~) listing the current conversation's
+  spawned agents with status and task, with a key to open one agent's output
+  in its own buffer and a key to ask a backend to stop one. The surface
+  re-renders from the event hook, so a finish is visible without a manual
+  refresh.
+- =opencode-client=: publish a completion (tool-result-equivalent) for spawn
+  tools so opencode agents leave ~running~; opencode currently publishes
+  ~tool-use~ but no ~tool-result~, so without this an opencode agent would sit
+  in ~running~ forever.
+- Tests in ~test/agent-backend-test.el~ (+ ~test/opencode-client-test.el~
+  where the completion mapping is touched) in the repo's =describe/it/check=
+  style.
+- The orgspec change folded into =specs/agent-backend.org= and archived (the
+  change ends `Closes #74` per repo style).
+
+Out of scope:
+- A per-agent kill that actually stops a lone subagent. Neither backend's
+  client can stop one subagent without the parent turn; the command raises the
+  intent to the backend and a backend with no way to honour it SHALL say so.
+  The seam is real but the action is backend-dependent.
+- Attaching arbitrary mid-fan-out model text to a specific agent wherever that
+  requires per-agent tagging the current event seam cannot provide (clients
+  publish one text stream). An agent's isolated output is its task plus the
+  updates and final result that are attributable to it.
+- Naming, limits, or persistence of background agents.
+- The Doom/Evil leader binding for the new surface (dotfiles repo).
+
+* Approach
+- =agent-backend.el=: add the four ~agent-…~ kinds to the ~:kind~ docstring list.
+  Add defcustom =agent-backend-spawn-tool-names= (defaults the tool names both
+  clients use to fan out: ~task~, ~delegate_task~, ~developer~; extendable).
+  Add a detached subprocess-free tracker installed on =agent-backend-event-functions=
+  that owns the per-buffer registry and the agent-output buffers:
+  - on ~tool-use~ with ~:name~ in the spawn set, open an agent entry (status
+    ~running~), publish an ~agent-started~ event carrying ~:agent~, ~:name~,
+    and ~:task~ (the tool input), and create the isolated output buffer;
+  - on the matching ~tool-result~ (claude) or the backend's completion
+    publication (opencode), close the entry ~done~/~failed~ from the result
+    text/status and publish ~agent-finished~;
+  - forward ~agent-update~/~agent-killed~ events into the matching entry and
+    into its output buffer.
+  Add a generic =agent-backend-kill-agent= (default ~user-error~: the backend
+  cannot stop a single background agent) so the surface can raise the intent.
+- =opencode-client.el=: when a spawn-tool part completes (its part state /
+  step transition), publish a ~tool-result~ with the result text so the shared
+  tracker can close the agent — the minimal opencode-side mapping.
+- =claude-client.el=: it already publishes ~tool-use~ and ~tool-result~; no
+  change beyond confirming the result carries text. (Stated so the change is
+  honest that only opencode needed a new publication.)
+- New surface =agent-backend-agent-list= in =agent-backend.el=: a
+  ~tabulated-list-mode~ buffer (mirroring =agent-session-overview=) listing the
+  agents of the buffer the command was invoked from (or the resolved
+  conversation), columns Agent / Status / Task. Keys: ~RET~ open the agent's
+  output buffer, ~k~ ask =agent-backend-kill-agent=, ~g~ refresh, ~q~ bury,
+  ~?~ help. It subscribes to the same event hook and re-renders on ~agent-…~
+  events.
+- Tests: (a) a ~tool-use~ with a spawn name opens a ~running~ entry and
+  publishes ~agent-started~ with the input as ~:task~; (b) the matching
+  ~tool-result~ closes it ~done~ and publishes ~agent-finished~; (c) a failed
+  result closes it ~failed~; (d) the registry is buffer-local (two buffers keep
+  their own agents); (e) ~agent-backend-agent-list~ shows a row per agent with
+  status and task; (f) ~RET~ visits an isolated output buffer containing the
+  task; (g) ~k~ on a backend that lacks a kill method reports the backend
+  cannot stop a single agent rather than silently doing nothing; (h) opencode-
+  client publishes a ~tool-result~ when a spawn tool completes.
+- Verify with =bin/test-emacs.sh --compile --strict= and the full suite on a
+  separate Emacs (akiko, via the loop's =verify.sh= before delivery).
+
+* Tasks
+- [ ] Extend the ~:kind~ vocabulary in =agent-backend.el= with the four ~agent-…~ kinds and their payload keys
+- [ ] Add =agent-backend-spawn-tool-names= and the event-hook tracker owning a buffer-local spawned-agent registry + isolated output buffers
+- [ ] Publish ~agent-started~/~agent-update~/~agent-finished~ from the tracker; ~agent-killed~ forwarded for subscribers
+- [ ] Add generic =agent-backend-kill-agent= with an honest default refusal
+- [ ] Add =agent-backend-agent-list~ surface (list, open output, ask-stop, live re-render)
+- [ ] =opencode-client.el=: publish a ~tool-result~ when a spawn tool completes so opencode agents leave ~running~
+- [ ] Tests for spawn/open/close/fail, registry isolation, surface actions, and the opencode completion mapping
+- [ ] =bin/test-emacs.sh --compile --strict= clean and full suite green on akiko
+- [ ] Fold the change into =specs/agent-backend.org= (spec.sh archive) and commit in repo style
+* Delta
+** Background-agent lifecycle is part of the shared vocabulary  :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+The =agent-backend-event-functions= ~:kind~ vocabulary SHALL cover background-agent
+lifecycle with at least ~agent-started~, ~agent-update~, ~agent-finished~, and
+~agent-killed~. ~agent-started~ SHALL carry an ~:agent~ identity, the ~:name~
+of the tool that spawned the agent, and the ~:task~ the agent was asked to do;
+~agent-update~ SHALL carry ~:agent~ and ~:text~; ~agent-finished~ SHALL carry
+~:agent~, a ~:status~ of ~done~ or ~failed~, and ~:result~ text. A backend that
+cannot attribute an event SHALL omit the key rather than invent it, and
+subscribers SHALL ignore unknown kinds (existing rule).
+*** A fanned-out agent appears as agent-started
+- WHEN a conversation's turn fans out to a background agent via a spawn tool
+- THEN the seam publishes ~agent-started~ with the agent's identity, the spawn
+  tool name, and the task it was asked to do
+*** An agent's output flows as agent-update
+- WHEN a running background agent produces output attributable to it
+- THEN the seam publishes ~agent-update~ carrying the text
+*** A completing agent leaves running via agent-finished
+- WHEN a background agent's result arrives
+- THEN the seam publishes ~agent-finished~ with ~:status~ ~done~ (or ~failed~
+  on error) and the result text
+** A conversation tracks the agents it spawned                        :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+The agent-backend module SHALL maintain a per-conversation (buffer-local)
+registry of the background agents that conversation spawned, recording each
+agent's identity, spawn tool, task, status (running / done / failed), its
+isolated-output buffer, and start/finish markers. The registry SHALL be
+buffer-local with no global session store, and SHALL be derived from the ~tool-use~
+and ~tool-result~ (or backend completion) events already on the seam — a spawn
+tool (~:name~ in =agent-backend-spawn-tool-names=) opens an agent, its result
+closes it.
+*** A spawn tool opens a running agent
+- WHEN the conversation publishes a ~tool-use~ whose ~:name~ is in =agent-backend-spawn-tool-names=
+- THEN its registry holds a ~running~ entry whose task is that tool's input
+*** A result closes the agent it opened
+- WHEN a ~running~ agent's matching ~tool-result~ (or backend completion) arrives
+- THEN the entry becomes ~done~ (or ~failed~ on error) and records the result
+*** Every conversation keeps its own agents
+- WHEN two conversations each spawn agents
+- THEN each holds only its own, because the registry is buffer-local
+** Spawned agents are visible and actionable                               :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+Emacs SHALL provide a command listing the background agents a conversation
+spawned — identity, status, and task — and SHALL let the human open one
+agent's output in its own buffer and ask to stop one. Opening an agent SHALL
+show the task and the agent's accumulated output in an isolated buffer.
+Stopping one SHALL raise the intent to the backend via =agent-backend-kill-agent=,
+and a backend with no way to stop a single background agent SHALL say so
+rather than silently doing nothing. When a spawned agent reaches ~done~ or
+~failed~, the list SHALL reflect it without a manual refresh.
+*** The list shows identity, status, and task
+- WHEN the list for a conversation with spawned agents is opened
+- THEN each agent appears as a row with its identity, status, and task
+*** An agent's output opens on its own
+- WHEN the human opens a listed agent
+- THEN an isolated buffer shows the task it was asked to do and its output
+*** Stopping is honest about what a backend can do
+- WHEN the human asks to stop an agent on a backend that cannot stop a single
+  background agent
+- THEN the command reports that the backend cannot rather than pretending
+*** A finish is noticed without a refresh
+- WHEN the list is on screen and a running agent reaches ~done~ or ~failed~
+- THEN its row updates by itself

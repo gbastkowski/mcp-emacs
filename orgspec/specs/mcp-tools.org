@@ -351,6 +351,26 @@ path, tags, TODO state objects, outline path, or marker position.
 - WHEN the response is read
 - THEN it contains only plain text for the task at point or the fallback
   message
+* Non-HTTP dispatch honours async tools
+
+The server SHALL route a tools/call that names a tool declaring
+`:async-handler` through that handler on every dispatch path, including
+the non-HTTP direct dispatch and `orgspec-mcp-call`; the result SHALL be
+delivered via the caller-supplied completion callback.
+
+** WHEN a tool declares an :async-handler and is called outside HTTP
+    THEN the tool is dispatched through :async-handler
+    AND the caller receives the completion via its callback
+    AND the dispatch returns a deferred marker instead of a blocking result
+
+** WHEN a tool declares no :async-handler
+    THEN the existing synchronous dispatch is unchanged
+    AND the text result is returned as before
+
+** WHEN a caller cannot defer and the tool declares :async-handler
+    THEN the dispatch refuses loudly with an error
+    AND no blocking wait is started
+
 * A session file change wait is served without blocking the process filter
 The ~org_task_wait_for_change~ tool SHALL be registered with an
 ~:async-handler~ alongside its synchronous ~:handler~, shaped like
