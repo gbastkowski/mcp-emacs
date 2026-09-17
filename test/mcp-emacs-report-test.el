@@ -212,11 +212,17 @@
                                     (mcp-emacs-report--initial "bug" nil))
                     t)
                t))
-      (it "offers the feature template for a feature"
-        (check (and (string-match-p "Why it would help:"
-                                    (mcp-emacs-report--initial "feature" nil))
-                    t)
-               t))))
+      (it "opens a feature request with an empty body"
+        (check (mcp-emacs-report--initial "feature" nil) nil))))
+
+  ;; A source region still seeds a feature request; absent for `feature',
+  ;; no template would otherwise follow the seed.
+  (let ((mcp-emacs-report-template t))
+    (cl-letf (((symbol-function 'agent-prompt-region-seed)
+               (lambda (&rest _) "foo.el:12")))
+      (it "seeds an active region into a feature request, with no template after it"
+        (check (mcp-emacs-report--initial "feature" (current-buffer))
+               "\n\nfoo.el:12"))))
 
   ;; The code in front of you is usually what the report is about.
   (let ((mcp-emacs-report-template nil))

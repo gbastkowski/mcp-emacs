@@ -1,0 +1,71 @@
+#+TITLE: remove-the-prompting-questions-in-the-feature-request-buffer
+#+PROPERTY: TRACKER github
+#+PROPERTY: ISSUE gbastkowski/mcp-emacs#107
+
+* Intent
+The feature-request composition buffer opens pre-seeded with prompting
+headings — "What you want:" / "Why it would help:" — because a note written
+in thirty seconds should still say enough to act on.  Gunnar finds the
+scaffold more noise than help for a feature idea and asked to drop it: a
+feature request should open as an empty text buffer (or with the active
+region seeded), the same as `mcp-emacs-report-template' being nil.  The bug
+report keeps its scaffold, which is the case where the prompts carry real
+weight ("How to reproduce:" is the part a bug report is useless without).
+
+* Scope
+In scope:
+- The feature request no longer seeds prompting headings by default: the
+  `feature' entry drops out of `mcp-emacs-report--templates'.
+- The bug report keeps its scaffold unchanged.
+- The existing escape hatches stay intact: `mcp-emacs-report-template' nil
+  still opens an empty buffer for every kind, and a region in the source
+  buffer still seeds the composed report.
+- Tests updated to pin the new default.
+
+Out of scope:
+- A templating engine (yasnippet or otherwise) to offer optional feature
+  templates.  Gunnar floated this as a question on the issue ("WDYT?"); it
+  is a larger, separate decision and is tracked as a follow-up, not
+  guessed into this change.
+
+* Approach
+- Remove the `("feature" . "...")` entry from
+  `mcp-emacs-report--templates` and update its docstring: templates now
+  cover only kinds that benefit from scaffolding, and `feature' receives
+  none.
+- `mcp-emacs-report--initial` needs no change — it already seeds whatever
+  `mcp-emacs-report--templates` has for the kind, so a missing `feature'
+  entry means an empty buffer (modulo a source region), exactly the
+  requested default.
+- Update the report test suite: the "offers the feature template" case now
+  asserts no feature scaffold by default, while the bug-scaffold case stays.
+
+* Tasks
+- [ ] Drop the feature entry from `mcp-emacs-report--templates'
+- [ ] Update the const's docstring
+- [ ] Update `test/mcp-emacs-report-test.el` to pin the new feature default
+- [ ] Run the repository's own test entry point and byte-compile clean
+
+* Delta
+** The feature request buffer opens without prompting headings :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The feature-request report buffer SHALL open without the prompting headings
+("What you want:" / "Why it would help:") by default, matching the empty
+buffer `mcp-emacs-report-template' set to nil; the active region in the
+source buffer SHALL still be seeded when there is one.
+*** A feature request opens with an empty body
+- GIVEN a feature request is composed with `mcp-emacs-report-template'
+  non-nil and no active region
+- WHEN the composition buffer opens
+- THEN its body holds no prompting headings
+*** A region still seeds the feature request
+- GIVEN a feature request is composed from a buffer with an active region
+- WHEN the composition buffer opens
+- THEN the region text is seeded, and no prompting headings follow it
+*** The bug report keeps its scaffold
+- GIVEN a bug report is composed with `mcp-emacs-report-template' non-nil
+- WHEN the composition buffer opens
+- THEN the bug-report prompting headings ("What happened:" / "What you
+  expected:" / "How to reproduce:") are still offered
