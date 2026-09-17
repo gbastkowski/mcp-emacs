@@ -1,0 +1,103 @@
+#+TITLE: let-the-human-edit-a-proposed-text-before-approving-it
+#+PROPERTY: TRACKER github
+#+PROPERTY: ISSUE gbastkowski/mcp-emacs#70
+
+* Intent
+An agent drafts text the human is going to stand behind — a commit message,
+an MR description, an issue body — and the current flow funnels it through
+the permission gate only when it is already an argument to a command about
+to run (gate-tool-permissions-in-emacs).  That gate cannot help with a draft
+that exists before any command does, and neither backend's permission-reply
+contract can carry an edited call back into the running turn (verified on
+this issue: opencode's reply endpoint takes only once|always|reject, and the
+Claude PreToolUse hook returns a scalar decision — no channel for replacing
+the tool input).  So a tool the agent calls explicitly at draft time is the
+one shape that works: it raises the proposed text in the same decision
+buffer family as the gate, lets the human edit it in place, and returns
+exactly the text the human ended up with.  Slice 3 of this issue, chosen by
+Gunnar.
+
+* Scope
+In scope:
+- A backend-agnostic MCP tool ~propose_text~ that accepts proposed text and
+  an optional label, raises an editable review buffer, and returns the final
+  text after the human edits and/or accepts it; a rejection or a timeout
+  reports as such and returns nothing.
+- The review buffer reuses the agent-permission family: the same split /
+  window / close plumbing and single-answer registry shape, extended from a
+  read-only decision to an editable draft.
+- An async handler on the tool so the wait does not occupy the process
+  filter, mirroring ~apply_diff~, plus a synchronous blocking fallback for
+  direct dispatch.
+- A bounded timeout that fails closed (treated as ~timeout~, distinct from
+  ~rejected~), leaving nothing applied.
+- A test suite covering edit-and-accept, plain accept, reject, timeout, and
+  the async single-delivery guarantee.
+
+Out of scope:
+- Routing a commit message through magit's commit dialog (#80) — a separate
+  decision, tracked there.
+- Changing the opencode or Claude permission-reply contracts (slice 1 / 2,
+  ruled out on this issue: neither can carry edited input today).
+- Auto-editing the live agent turn: the tool returns the final text to the
+  caller, which decides what to do with it.
+
+* Approach
+- Add ~elisp/agent-propose.el~, a sibling of ~agent-permission.el~: a pending
+  registry of (ID . PLIST) holding ~:text~, ~:label~, ~:resolve~ and
+  ~:buffer~, with the same take-resolves-once invariant so a second answer
+  finds nothing.
+- Reuse the permission buffer's window splitting and closing wholesale (same
+  header-line prompt, split-below-then-sideways), but make the body editable:
+  the keys accept / reject resolve the proposal with the buffer's current
+  text (accept) or discard it (reject).
+- Add ~mcp-emacs-propose-text-async~ and synchronous ~mcp-emacs-propose-text~
+  helpers in ~elisp/mcp-emacs.el~ mirroring the apply_diff pair: the async
+  one arms a timeout timer and resolves exactly once via the shared finish
+  closure; the sync one refuses under a process filter and waits
+  cooperatively on the result cell.
+- Register ~propose_text~ in ~elisp/mcp-emacs-server.el~ with ~:async-handler~
+  and ~:handler~.
+
+* Tasks
+- [ ] Add ~elisp/agent-propose.el~ with the editable review buffer and its
+      single-answer registry
+- [ ] Add ~mcp-emacs-propose-text-async~ / ~mcp-emacs-propose-text~ in
+      ~elisp/mcp-emacs.el~
+- [ ] Register the ~propose_text~ tool in ~elisp/mcp-emacs-server.el~
+- [ ] Add ~test/agent-propose-test.el~ covering accept, edit-and-accept,
+      reject, timeout, and async single delivery
+- [ ] Run the repository's own test entry point and byte-compile clean
+
+* Delta
+** A propose_text tool presents draft text for the human to edit and approve :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL expose an MCP tool ~propose_text~ that presents proposed
+text (a draft commit message, MR description, or similar) to the human in an
+editable review buffer and returns the final text once the human accepts it.
+The buffer SHALL let the human edit the proposal before accepting, so what is
+returned is exactly the text the human ended up with.
+*** An accepted proposal returns the final text
+- GIVEN a propose_text call with proposed text and an optional label
+- WHEN the human edits and accepts it
+- THEN the tool returns the edited text, not the original proposal
+*** A plain accept returns the proposal unchanged
+- GIVEN a propose_text call with proposed text
+- WHEN the human accepts without editing
+- THEN the tool returns the proposal exactly as given
+*** A rejection returns nothing applied
+- GIVEN a propose_text review in progress
+- WHEN the human rejects the proposal
+- THEN the tool returns a status of ~rejected~ and nothing is applied
+*** The proposal wait is bounded by a timeout
+- GIVEN a propose_text review the human neither accepts nor rejects
+- WHEN the timeout elapses
+- THEN the tool reports a status of ~timeout~, distinct from ~rejected~, and
+  returns nothing applied
+*** The wait does not occupy the event loop over HTTP
+- GIVEN a propose_text call over HTTP
+- WHEN the human has not yet answered
+- THEN the handler returns to the event loop immediately and the response is
+  written later, once the human answers or the timeout elapses
