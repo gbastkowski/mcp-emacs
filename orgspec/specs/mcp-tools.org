@@ -424,3 +424,23 @@ human's behalf.
 ** Staged changes are what get committed
 - WHEN some changes are staged
 - THEN the commit contains exactly those staged changes
+* The tutor shows a side-window guided intro
+Emacs SHALL provide an interactive command `mcp-emacs-tutor` that opens a
+read-only Org buffer of the project's guided ~10-minute introduction in a
+side window.  The buffer SHALL contain a short sequence of steps, each a
+top-level headline, covering starting the MCP server, attaching a client,
+running an agent client inside Emacs, and seeing an edit gated by diff
+review.  The user SHALL advance by scrolling or reading sections manually;
+the tutor MUST NOT require any input other than scrolling, and MUST NOT
+connect to the network.
+** A command opens the tutorial side window
+- GIVEN an Emacs session with mcp-emacs loaded
+- WHEN `mcp-emacs-tutor` is invoked
+- THEN a non-empty, read-only Org buffer of tutorial steps appears in a side window
+** The tutorial shows the project's headline steps
+- GIVEN the tutorial buffer is open
+- THEN it contains a step for starting the MCP server and a step for seeing a diff-gated edit
+** Re-invoking the tutorial reuses the same buffer
+- GIVEN the tutorial buffer is already open
+- WHEN `mcp-emacs-tutor` is invoked again
+- THEN the same side window is selected and no duplicate buffer is created
