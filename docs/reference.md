@@ -2,7 +2,7 @@
 title: "mcp-emacs — Source Reference"
 subtitle: "A guided tour of the code, its structure, and the Emacs Lisp it leans on"
 author: "Gunnar Bastkowski"
-date: "v1.12.4+36"
+date: "v1.12.4+37"
 ---
 
 # About This Document {-}
