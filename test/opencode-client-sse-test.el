@@ -406,6 +406,38 @@
           (it "keeps one registry entry per project"
             (check (length opencode-client--servers) 2)))))))
 
+(describe "opencode-client--ask-question (question.asked SSE)"
+  (with-temp-buffer
+    (opencode-client-mode)
+    (let* ((backend (new-backend))
+           (buf (current-buffer))
+           (seen nil)
+           (answers nil)
+           (agent-backend-event-functions nil))
+      (oset backend session-id "sesQ")
+      (cl-letf (((symbol-function 'opencode-client--reply-question)
+                 (lambda (_be id rid answer)
+                   (push (list id rid answer) answers))))
+        (add-hook 'agent-backend-event-functions
+                  (lambda (_b ev) (push (plist-get ev :kind) seen)))
+        (describe "a question.asked event for the active session"
+          (opencode-client--apply-sync-event
+           buf '((syncEvent (type . "question.asked") (seq . 1)
+                            (data . ((id . "qreq1")
+                                     (sessionID . "sesQ")
+                                     (questions . (((header . "Pick a branch")
+                                                    (question . "Which branch?")
+                                                    (options . (((label . "main") (description . ""))
+                                                                ((label . "dev") (description . "")))))))))))
+          (it "publishes a `question-request' event on the shared hook"
+            (check (member 'question-request seen) t))
+          (it "raises an answer menu for the question"
+            (check (buffer-live-p (get-buffer "*agent-question: qreq1*")) t))
+          (it "answers the question through the reply path on resolve"
+            (agent-question--resolve "qreq1" "main")
+            (sit-for 0.2)
+            (check (nreverse answers) '(("sesQ" "qreq1" "main"))))))))))
+
 (test-helper-summary)
 
 ;;; opencode-client-sse-test.el ends here

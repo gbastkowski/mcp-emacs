@@ -48,6 +48,7 @@
 (require 'plz nil t)
 (require 'agent-backend)
 (require 'agent-prompt)
+(require 'agent-question)
 (require 'agent-permission)
 
 (declare-function plz "plz"
@@ -477,6 +478,8 @@ translated events on `agent-backend-event-functions'."
               ;; speaks.
               ((or "permission.v2.asked" "permission.asked")
                (opencode-client--ask-permission backend buffer data))
+              ("question.asked"
+               (opencode-client--ask-question backend buffer data))
               (_ nil))))))))
 
 (defun opencode-client--permission-input (data)
@@ -535,6 +538,44 @@ does not carry."
         (and (stringp output)
              (not (string-empty-p (string-trim output)))
              output)))))
+
+(defun opencode-client--question-options (questions)
+  "Return the proposed answer strings from QUESTIONS.
+Resolves the first question in QUESTIONS: `header' names the question
+the menu renders, and each entry's option `label' is one proposed answer.
+A question without options yields nil, meaning only the free-form escape
+is offered."
+  (let* ((first (car (append questions nil)))
+         (options (when (consp first) (alist-get 'options first))))
+    (mapcar (lambda (o)
+              (format "%s" (if (consp o) (alist-get 'label o) o)))
+            (append options nil))))
+
+(defun opencode-client--ask-question (backend buffer data)
+  "Raise question event DATA from BACKEND as an answer menu in BUFFER.
+Answers through the shared `agent-question' menu rather than a bare
+`read-string', so the proposed options are shown one key each plus a
+free-form escape.  Nothing here waits: the reply is posted from the
+menu's continuation, and opencode holds the question open until it
+arrives."
+  (when-let* ((request-id (alist-get 'id data)))
+    (agent-backend--publish
+     buffer (list :kind 'question-request :id request-id))
+    (unless (member request-id (agent-question-pending-ids))
+      (let* ((questions (alist-get 'questions data))
+             (first (car (append questions nil)))
+             (question (cond ((consp first)
+                              (or (alist-get 'header first)
+                                  (alist-get 'question first)))
+                             (t first)))
+             (question (or question "opencode would like an answer")))
+        (agent-question-request
+         request-id question
+         (opencode-client--question-options questions)
+         :window (get-buffer-window buffer)
+         :resolve
+         (lambda (answer)
+           (agent-backend-reply-question backend request-id answer)))))))
 
 (defun opencode-client--publish-part (buffer part)
   "Publish PART from BUFFER as a shared `:kind' event, when renderable.
@@ -926,10 +967,18 @@ after a reconnect that missed the event, or when the menu was killed."
 
 ;;;###autoload
 (defun opencode-client-answer-question (request-id)
-  "Prompt the user to answer question REQUEST-ID in the active session."
+  "Prompt the user to answer question REQUEST-ID in the active session.
+A request that arrived over the stream has already raised its own
+answer menu, so this escape hatch answers one by id -- after a reconnect
+that missed the event, or when the menu was killed.  When the request is
+still pending it resolves through the existing menu (one key per
+proposed option); otherwise it falls back to a bare `read-string'."
   (interactive (list (read-string "Question request id: ")))
-  (agent-backend-reply-question
-   (opencode-client--active-backend) request-id (read-string "Answer: ")))
+  (let ((backend (opencode-client--active-backend)))
+    (if (member request-id (agent-question-pending-ids))
+        (message "That question is already open; answer it in its buffer")
+      (agent-backend-reply-question
+       backend request-id (read-string "Answer: ")))))
 
 ;;;; Major mode
 
