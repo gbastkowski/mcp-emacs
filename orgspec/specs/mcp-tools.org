@@ -390,6 +390,38 @@ request SHALL be answered from a timer callback.
 - THEN the deferred response carries the no-change flag and current session view exactly once
 ** The synchronous fallback stays
 - THEN ~org_task_wait_for_change~ SHALL keep its ~:handler~ so callers that dispatch directly (outside HTTP) are served synchronously, exactly as ~apply_diff~ does
+* Report buffer opens in org-mode
+The interactive bug-report and feature-request commands SHALL open their
+composition buffer in org-mode, so the human has org editing helpers
+(headings, emphasis, markup) available while writing the report.
+** Buffer starts in org-mode
+- WHEN ~mcp-emacs-report-bug~ or ~mcp-emacs-report-feature~ opens the
+  composition buffer
+- THEN the buffer's major mode is ~org-mode~
+- AND the prompt send/abort bindings still work on top of it
+* Org-written report filed as markdown
+When the human writes a report body in org and files it, the system SHALL
+export the body to markdown (through the org ~ox-md~ backend) before
+creating the GitHub issue, so the filed body renders as markdown on GitHub.
+The first line (the title) SHALL stay as written, not exported.
+** Org body exported to markdown
+- WHEN a report composed in org-mode is filed with an org-formatted body
+- THEN the created issue body is the org text exported to markdown
+- AND the title is the first line, unchanged
+** No markup backend available
+- WHEN org's markdown export is unavailable at filing time
+- THEN the body is filed as-is rather than failing
+** Recovery keeps the org text
+- WHEN filing fails after the buffer is closed
+- THEN the recoverable text is what the human wrote in org, not the
+  exported markdown
+* Empty template headings still stripped
+Template headings the human never answered SHALL be dropped before filing,
+whether they are plain-suffix headings or org headlines, so the filed issue
+does not look answered when it is not.
+** Org headline left empty
+- WHEN an org template headline (~* How to reproduce~) has nothing under it
+- THEN it is removed from the filed body
 * Small diff reviews render inline in the conversation buffer
 The ~apply_diff~ review SHALL render a small diff inline in the conversation
 buffer (~*claude-client*~ for the Claude client) instead of opening ediff,

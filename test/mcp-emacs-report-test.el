@@ -119,17 +119,35 @@
   ;; answered would make the filed issue look answered when it is not.
   (it "drops template headings that were left unanswered"
     (check (mcp-emacs-report--split
-            "Title\n\nWhat happened:\n\nWhat you expected:\n\nHow to reproduce:\n")
+            "Title\n\n* What happened\n\n* What you expected\n\n* How to reproduce\n")
            '("Title")))
 
   (it "keeps the headings that were answered and drops the rest"
     (check (mcp-emacs-report--split
-            "Title\n\nWhat happened:\nit crashed\n\nWhat you expected:\n")
-           '("Title" . "What happened:\nit crashed")))
+            "Title\n\n* What happened\nit crashed\n\n* What you expected\n")
+           '("Title" . "* What happened\nit crashed")))
 
   (it "keeps body text that is not a heading at all"
     (check (mcp-emacs-report--split "Title\n\njust a sentence about it")
            '("Title" . "just a sentence about it"))))
+
+(describe "mcp-emacs-report--heading-p"
+  (it "recognises an empty org headline as a template heading"
+    (check (mcp-emacs-report--heading-p "* How to reproduce") t))
+  (it "still recognises a plain suffix heading"
+    (check (mcp-emacs-report--heading-p "What happened:") t))
+  (it "ignores ordinary report text"
+    (check (mcp-emacs-report--heading-p "it crashed") nil)))
+
+(describe "mcp-emacs-report--org-to-md"
+  (it "exports org headings as markdown headings"
+    (check (mcp-emacs-report--org-to-md "* What happened\nit crashed")
+           "# What happened\n\nit crashed"))
+  (it "exports several headings without a table of contents"
+    (check (mcp-emacs-report--org-to-md "* A\nx\n\n* B\ny")
+           "# A\n\nx\n\n# B\n\ny"))
+  (it "leaves plain text without org markup untouched"
+    (check (mcp-emacs-report--org-to-md "just a sentence") "just a sentence")))
 
 ;; --- 4.5 Filing what was composed --------------------------------------------
 
@@ -141,11 +159,11 @@
                  "Created issue: https://github.com/gbastkowski/mcp-emacs/issues/7"))
               ((symbol-function 'message)
                (lambda (fmt &rest args) (setq messaged (apply #'format fmt args)))))
-      (mcp-emacs-report--file-composed "bug" "Title\n\nWhat happened:\nboom")
+      (mcp-emacs-report--file-composed "bug" "Title\n\n* What happened\nboom")
       (it "files the first line as the title"
         (check (nth 0 filed) "Title"))
-      (it "files the remaining lines as the body"
-        (check (nth 1 filed) "What happened:\nboom"))
+      (it "files the org body exported to markdown"
+        (check (nth 1 filed) "# What happened\n\nboom"))
       (it "labels the issue with the kind it was composed for"
         (check (nth 2 filed) "bug"))
       (it "reports the issue URL in the echo area"
@@ -208,7 +226,7 @@
       (it "leaves the first line free for the title"
         (check (string-prefix-p "\n\n" (mcp-emacs-report--initial "bug" nil)) t))
       (it "offers the bug template for a bug"
-        (check (and (string-match-p "How to reproduce:"
+        (check (and (string-match-p "\\* How to reproduce"
                                     (mcp-emacs-report--initial "bug" nil))
                     t)
                t))
@@ -278,6 +296,15 @@
     (check (and (commandp 'mcp-emacs-report-bug)
                 (commandp 'mcp-emacs-report-feature) t)
            t)))
+
+(describe "the report composition buffer"
+  (it "opens in org-mode so org markup helpers are available"
+    (let ((mode nil))
+      (cl-letf (((symbol-function 'agent-prompt-read)
+                 (lambda (&rest _) (setq mode agent-prompt-major-mode) nil))
+                ((symbol-function 'message) (lambda (&rest _) nil)))
+        (mcp-emacs-report--compose "bug" "bug report"))
+      (check mode 'org-mode))))
 
 (test-helper-summary)
 
