@@ -7,3 +7,7 @@ node_modules/
 
 # Packages and runtime state of the isolated test Emacs (bin/test-emacs.sh)
 .test-emacs/
+
+# agent loop runtime artifacts
+.agent-loop-prompt.md
+.omo/

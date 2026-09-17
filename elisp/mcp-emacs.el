@@ -934,6 +934,15 @@ instead -- return to the event loop and answer from a callback, as
   (unless (sit-for seconds)
     (sleep-for seconds)))
 
+(defun mcp-emacs--org-task-wait-result (changed path)
+  "Format the wait result for PATH, saying whether it CHANGED.
+CHANGED non-nil renders as \"Changed: yes\", nil as \"Changed: no\"; either
+way the current session view follows.  Shared by the synchronous and the
+timer-driven waits so the two cannot drift in output format."
+  (format "Changed: %s\n%s"
+          (if changed "yes" "no")
+          (mcp-emacs-org-task-read path)))
+
 (defun mcp-emacs-org-task-wait-for-change (path token timeout)
   "Wait until the session file at PATH changes past TOKEN, or TIMEOUT elapses.
 TOKEN is a baseline change token from a prior read; when nil or already
@@ -964,10 +973,80 @@ a change indication, the new token, and the current session view."
             (mcp-emacs--wait-tick mcp-emacs-org-task-wait-poll-interval))
           (let ((changed (or (null baseline)
                              (/= (mcp-emacs-org-task--token) baseline))))
-            (format "Changed: %s\n%s"
-                    (if changed "yes" "no")
-                    (mcp-emacs-org-task-read path)))))
+            (mcp-emacs--org-task-wait-result changed path))))
     (user-error (error-message-string err))))
+
+(defun mcp-emacs-org-task-wait-for-change-async (path token timeout on-done)
+  "Wait for the session file at PATH to change past TOKEN, without blocking.
+Like `mcp-emacs-org-task-wait-for-change', but returns to the Emacs event
+loop immediately and calls ON-DONE with the result text exactly once --
+the same \"Changed: yes/no\" indication and session view the synchronous
+function returns -- either when a poll timer observes the change or when
+TIMEOUT elapses.  ON-DONE is called with one argument, the result string.
+
+This exists because the synchronous wait runs inline in the web server's
+process filter and can hold it for up to its cap.  A wait on a file-change
+token needs no command loop, so a poll timer and a bounding timer can
+answer the deferred request from the event loop instead.
+
+TOKEN is a baseline change token from a prior read; a nil or already stale
+token is answered at once.  TIMEOUT is in seconds, defaulting to
+`mcp-emacs-org-task-wait-default-timeout' and capped at
+`mcp-emacs-org-task-wait-max-timeout'.  Returns nil."
+  (condition-case err
+      (with-current-buffer (mcp-emacs-org-task--buffer-for-path path)
+        (unless (derived-mode-p 'org-mode)
+          (user-error "Not an Org file: %s" path))
+        (let* ((buffer (current-buffer))
+               (baseline (cond
+                          ((integerp token) token)
+                          ((and (stringp token) (not (string-empty-p token)))
+                           (string-to-number token))
+                          (t nil)))
+               (secs (min mcp-emacs-org-task-wait-max-timeout
+                          (if (and (numberp timeout) (> timeout 0))
+                              timeout
+                            mcp-emacs-org-task-wait-default-timeout)))
+               ;; Guards single delivery: the poll timer and the bounding
+               ;; timer race, and whichever arrives first must be the only
+               ;; answer.
+               (done (list nil))
+               poll-timer timeout-timer)
+          (let ((finish
+                 (lambda (changed)
+                   (unless (car done)
+                     (setcar done t)
+                     (when poll-timer (cancel-timer poll-timer))
+                     (when timeout-timer (cancel-timer timeout-timer))
+                     (funcall on-done
+                              (mcp-emacs--org-task-wait-result changed path))))))
+            (if (or (null baseline)
+                    (/= (with-current-buffer buffer
+                          (mcp-emacs-org-task--token))
+                        baseline))
+                ;; Nothing to wait for: no baseline, or already advanced.
+                (funcall finish t)
+              ;; Poll without looping: the callback re-checks the token and
+              ;; resolves the wait when it moves past the baseline.
+              (setq poll-timer
+                    (run-with-timer
+                     mcp-emacs-org-task-wait-poll-interval
+                     mcp-emacs-org-task-wait-poll-interval
+                     (lambda ()
+                       (when (and (buffer-live-p buffer)
+                                  (/= (with-current-buffer buffer
+                                        (mcp-emacs-org-task--token))
+                                      baseline))
+                         (funcall finish t)))))
+              ;; Bounding timer: if no change arrives, answer no-change and
+              ;; cancel the poller.
+              (setq timeout-timer
+                    (run-with-timer
+                     secs nil
+                     (lambda ()
+                       (funcall finish nil))))))
+          nil))
+    (error (funcall on-done (error-message-string err)) nil)))
 
 ;;; Editor-state tools
 
@@ -1030,13 +1109,17 @@ layout — including side windows such as Treemacs — comes back."
   "Record an accept decision for an apply-diff session.
 Apply the proposal in BUFFER-B to BUFFER-A when BUFFER-A is still at
 ENTRY-CONTENT (an untouched review); otherwise keep BUFFER-A's
-hand-edited content.  Set the RESULT cell's car to `applied'."
+hand-edited content.  Save BUFFER-A when it visits a file and is
+modified, so `applied' means the file on disk holds that content.  Set
+the RESULT cell's car to `applied'."
   (when (buffer-live-p buffer-a)
     (with-current-buffer buffer-a
       (when (string= (buffer-substring-no-properties (point-min) (point-max))
                      entry-content)
         (erase-buffer)
-        (insert-buffer-substring buffer-b))))
+        (insert-buffer-substring buffer-b))
+      (when (and buffer-file-name (buffer-modified-p))
+        (save-buffer))))
   (setcar result 'applied))
 
 (defun mcp-emacs--apply-diff-reject (result)
@@ -1215,12 +1298,17 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
                 (run-at-time
                  secs nil
                  (lambda ()
+                   ;; Claim the outcome before forcing the quit: the
+                   ;; force-quit runs the ediff quit hook, which would
+                   ;; otherwise record an implicit `rejected' and answer
+                   ;; first.  Delivering the timeout here makes that hook's
+                   ;; finish the no-op, so `timeout' is what the caller sees.
+                   (funcall finish "Status: timeout")
                    (when (and control (buffer-live-p control))
                      (with-current-buffer control
                        (if (fboundp 'ediff-really-quit)
                            (ignore-errors (ediff-really-quit nil))
-                         (kill-buffer control))))
-                   (funcall finish "Status: timeout")))))
+                         (kill-buffer control))))))))
         nil)
     (error (funcall on-done (error-message-string err)) nil)))
 
@@ -1229,10 +1317,11 @@ TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
 Open an `ediff-buffers' session comparing the file's current content
 against NEW-CONTENT, block cooperatively until the human resolves it or
 TIMEOUT elapses, then return the outcome.  The buffer visiting PATH is
-Buffer A; the proposal is a temporary Buffer B.  On quit, if Buffer A's
-content changed from its entry state the outcome is applied (the final
-content is returned; saving is left to the human); otherwise rejected.
-On timeout the ediff session is abandoned and Buffer A left untouched.
+Buffer A; the proposal is a temporary Buffer B.  On accept the proposal
+(or the human's edited version) is applied to Buffer A and written to
+disk, and the final content is returned; a reject (or a bare quit)
+leaves the file unchanged.  On timeout the ediff session is abandoned
+and the file left untouched.
 TIMEOUT is capped at `mcp-emacs-apply-diff-max-timeout' and defaults to
 `mcp-emacs-apply-diff-default-timeout'.
 

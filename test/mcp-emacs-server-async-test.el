@@ -63,6 +63,15 @@
     (it "keeps apply_diff's synchronous handler as a direct-dispatch fallback"
       (check-that (functionp (plist-get tool :handler)))))
 
+  ;; A wait can occupy the process filter for its whole 300-second cap, so
+  ;; it is deferred too -- while its synchronous handler stays for callers
+  ;; that dispatch directly.
+  (let ((tool (mcp-emacs-server--find-tool "org_task_wait_for_change")))
+    (it "gives the change wait an async handler"
+      (check-that (functionp (plist-get tool :async-handler))))
+    (it "keeps the change wait's synchronous handler as a direct-dispatch fallback"
+      (check-that (functionp (plist-get tool :handler)))))
+
   ;; Ordinary tools must stay synchronous: deferring them would hold a
   ;; connection open for a reply that is already available.
   (let ((tool (mcp-emacs-server--find-tool "project_info")))

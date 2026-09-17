@@ -1179,6 +1179,8 @@ stays alive after `result', so process liveness cannot stand in for it."
       (let ((claude-client-window-direction 'right)
             (claude-client-window-width 0.4))
         (claude-client--display (current-buffer))
+        (it "reuses an existing window before placing the conversation"
+          (check (caar captured) 'display-buffer-reuse-window))
         (it "places the conversation with `display-buffer-in-direction'"
           (check-that (memq 'display-buffer-in-direction (car captured))))
         (it "honours `claude-client-window-direction'"
@@ -2107,6 +2109,147 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
           (check displayed (car made)))
         (it "never restarts the conversation it was invoked from"
           (check (memq buf made) nil))))))
+
+;;;; The effective permission allowlist (issue #73)
+
+(defun claude-test--write-settings (dir file allow)
+  "Write a Claude settings file DIR/.claude/FILE with ALLOW as the allowlist.
+ALLOW is a vector of rule strings; nil writes settings with no allow
+list at all, so the file exists but contributes nothing."
+  (let ((path (expand-file-name (format ".claude/%s" file) dir)))
+    (make-directory (file-name-directory path) t)
+    (with-temp-file path
+      (insert (json-encode
+               (if allow
+                   `((permissions . ((allow . ,allow))))
+                 '((permissions . ((deny . []))))))))
+    path))
+
+(describe "claude-client--allowlist-text"
+  ;; The user-layer files are resolved from $HOME when the text is built, so
+  ;; HOME is pointed at a temp dir to keep every layer controllable without
+  ;; touching a real ~/.claude.  Restored unconditionally, so a failing
+  ;; expectation cannot leak the temp HOME into later suites.
+  (let* ((home (make-temp-file "claude-test-home" t))
+         (root (make-temp-file "claude-test-root" t))
+         (saved-home (getenv "HOME"))
+         (text
+          (unwind-protect
+              (progn
+                (setenv "HOME" home)
+                (claude-test--write-settings
+                 root "settings.json" ["Bash(git status)"])
+                (claude-client--allowlist-text root))
+            (setenv "HOME" saved-home))))
+    (it "heads the listing with the project root"
+      (check-that (string-prefix-p (concat "Allowlist for " root "\n") text)))
+    (it "lists a rule from the project file under its scope label"
+      (check-that (string-match-p
+                   (regexp-quote
+                    (format "  project (%s/.claude/settings.json):\n    - Bash(git status)"
+                            root))
+                   text)))
+    (it "omits a settings file that does not exist"
+      (check-that (and (not (string-match-p "user" text))
+                       (not (string-match-p "project-local" text)))))))
+
+(describe "the allowlist's layered sources"
+  (let* ((home (make-temp-file "claude-test-home" t))
+         (root (make-temp-file "claude-test-root" t))
+         (saved-home (getenv "HOME"))
+         (text
+          (unwind-protect
+              (progn
+                (setenv "HOME" home)
+                (claude-test--write-settings
+                 home "settings.json" ["Bash(git status)"])
+                (claude-test--write-settings
+                 home "settings.local.json" ["Bash(ls *)"])
+                (claude-test--write-settings
+                 root "settings.json" ["Bash(echo *)"])
+                (claude-test--write-settings root "settings.local.json" nil)
+                (claude-client--allowlist-text root))
+            (setenv "HOME" saved-home))))
+    (it "labels a user rule with the user scope"
+      (check-that (string-match-p
+                   (concat "  user (.*):\n"
+                           (regexp-quote "    - Bash(git status)"))
+                   text)))
+    (it "labels a user-local rule with the user-local scope"
+      (check-that (string-match-p
+                   (concat "  user-local (.*):\n"
+                           (regexp-quote "    - Bash(ls *)"))
+                   text)))
+    (it "labels a project rule with the project scope"
+      (check-that (string-match-p
+                   (regexp-quote
+                    (format "  project (%s/.claude/settings.json):\n    - Bash(echo *)"
+                            root))
+                   text)))
+    (it "shows the user files before the project files"
+      (check-that (< (string-match (regexp-quote "  user (") text)
+                     (string-match (regexp-quote "  project (") text))))
+    (it "calls out an existing file with no allow list as contributing none"
+      (check-that (string-match-p
+                   (regexp-quote
+                    (format "  project-local (%s/.claude/settings.local.json):\n    (contributing none)"
+                            root))
+                   text)))))
+
+(describe "the empty-source note is exact"
+  (let* ((root (make-temp-file "claude-test-root" t))
+         (saved-home (getenv "HOME"))
+         (text
+          (unwind-protect
+              (progn
+                (setenv "HOME" (make-temp-file "claude-test-home" t))
+                ;; An empty JSON array, not a missing key: the vector must
+                ;; still read as \"no entries\".  One existing file, nothing
+                ;; else, so the whole listing is exact.
+                (claude-test--write-settings root "settings.local.json" [])
+                (claude-client--allowlist-text root))
+            (setenv "HOME" saved-home))))
+    (it "reports the only file as existing but contributing none"
+      (check text
+             (format "Allowlist for %s\n\n  project-local (%s/.claude/settings.local.json):\n    (contributing none)\n"
+                     root root)))))
+
+(describe "claude-client-show-allowlist reachability"
+  (it "is bound to a C-c-prefixed key in the conversation buffer"
+    (check (lookup-key claude-client-mode-map (kbd "C-c C-p"))
+           'claude-client-show-allowlist))
+  (it "is listed by the `?' help"
+    (check (assoc "C-c C-p" claude-client--help)
+           '("C-c C-p"
+             "show the effective permission allowlist and where each rule lives")))
+  (let* ((buf (get-buffer-create "*claude-client:allowlist-test:1*"))
+         (root (make-temp-file "claude-test-root" t))
+         (saved-home (getenv "HOME")))
+    (unwind-protect
+        (progn
+          (setenv "HOME" (make-temp-file "claude-test-home" t))
+          (cl-letf (((symbol-function 'claude-client--project-root)
+                     (lambda () root)))
+            (claude-test--write-settings root "settings.json" ["Bash(git status)"])
+            (with-current-buffer buf (claude-client-mode))
+            (delete-other-windows)
+            (switch-to-buffer buf)
+            (claude-client-show-allowlist))
+          (it "shows the listing in the help-style window"
+            (check-that (window-live-p
+                         (get-buffer-window claude-client--allowlist-buffer-name))))
+          (it "renders the rule from the effective set"
+            (check-that (string-match-p
+                         (regexp-quote "    - Bash(git status)")
+                         (with-current-buffer
+                             claude-client--allowlist-buffer-name
+                           (buffer-substring-no-properties
+                            (point-min) (point-max)))))))
+      (setenv "HOME" saved-home)
+      (when (get-buffer claude-client--allowlist-buffer-name)
+        (kill-buffer claude-client--allowlist-buffer-name))
+      (kill-buffer buf)
+      (delete-other-windows))))
 
 (test-helper-summary)
 

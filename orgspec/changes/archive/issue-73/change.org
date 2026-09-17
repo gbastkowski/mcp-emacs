@@ -1,0 +1,112 @@
+#+TITLE: show-effective-permission-allowlist
+
+* Intent
+Permission prompts are a steady source of dead ends in a Claude session, and
+there is no way to see the effective allowlist without leaving Emacs and
+hand-editing `.claude/settings.local.json`. Two of the issue's asks already
+exist as `agent-permission.el`, which is backend-agnostic on purpose: a gated
+call is raised in Emacs and answered before it runs (`agent-permission-request`
+behind the `/permission-gate` endpoint and the `PreToolUse` hook), and the `A`
+key (`agent-permission-always-allow`) derives a rule from the blocked call and
+writes it to the project's settings file after an explicit confirmation. Only
+the third ask is missing: a command that shows the *effective* allowlist for the
+current project and, because the same rule text can live in any of the settings
+files the CLI layers, which file each entry comes from.
+
+That lookup belongs here: the settings files and their `permissions.allow`
+schema are Claude Code's, not `agent-backend`'s, so the reader and its command
+live in `elisp/claude-client.el` beside the settings-file writer the session
+already uses (`claude-client--settings-file`).
+
+* Scope
+In scope:
+- Add `claude-client-show-allowlist`, an interactive command showing the
+  `permissions.allow` entries the current project would take as effective,
+  each labelled with the settings file it comes from.
+- Read the four files the CLI layers -- user (`~/.claude/settings.json`),
+  user-local (`~/.claude/settings.local.json`), project
+  (`<root>/.claude/settings.json`) and project-local
+  (`<root>/.claude/settings.local.json`) -- and list the allow entries of each
+  existing file, so a rule can be traced to its source and a missing one is
+  visible rather than silently absent.
+- A source file that exists and has rules is shown with them; a file with no
+  allow entries is described as contributing none, so the human can tell a rule
+  is absent from the effective set rather than that the file was skipped.
+- Bind the command in `claude-client-mode-map` to a `C-c`-prefixed key (safe
+  under evil) and list it in the `?` help.
+- Tests in `test/claude-client-test.el` covering the file-to-entries mapping,
+  the layering labels, and the absent-file note.
+
+Out of scope:
+- The answer surface for a single blocked call (already `agent-permission`) and
+  the "always allow" rule writer (already `agent-permission-always-allow`); this
+  change does not touch either.
+- Reading `permissions.deny` or the other settings keys: the issue asks for the
+  allowlist.
+- Editing the allowlist from this buffer; adding a rule stays the
+  always-allow path. Read-only inspection is the gap being closed.
+- Anything behind `agent-backend`: the layout is Claude-specific.
+
+* Approach
+- Add a small settings-file reader `claude-client--allowlist-source (path)` that
+  returns the `permissions.allow` entries of PATH (nil when absent or empty),
+  parsing the JSON the same way the CLI does (alists, allow as a vector) so
+  arrays the command does not touch are read faithfully.
+- Add `claude-client--allowlist-sources (root)` returning the four layered files
+  in display order, each tagged with the label that names their scope
+  (user / user-local / project / project-local).
+- Add `claude-client--allowlist-text (root)` building the buffer text: the
+  project root as a heading, then one section per source, each existing file
+  listing its allow rules prefixed with the scope label, and any file that
+  exists but contributes no rules noted explicitly. This text builder is the
+  unit-tested core.
+- Add `claude-client-show-allowlist` (interactive) that resolves the project
+  root via `claude-client--project-root` and shows the text in a help-style
+  window, reusing `claude-client--display-help` so the split-and-dismiss chore
+  matches the existing help.
+- Bind `C-c C-p` to it in `claude-client-mode-map` and add a
+  `("C-c C-p" "show the effective permission allowlist and where each rule lives")`
+  entry to `claude-client--help`. A `C-c` prefix works under evil, matching the
+  existing `C-c C-q` / `C-c C-r` vocabulary.
+- Tests write temp settings files (as `agent-permission-test` does) and check:
+  (a) entries are read and tagged with the right scope label; (b) a file with no
+  allow list yields an explicit "none" note rather than being skipped; (c) user
+  vs project files both appear; (d) a missing file contributes nothing.
+- Verify with `bin/test-emacs.sh --compile --strict` and the full suite on akiko.
+
+* Tasks
+- [ ] Add `claude-client--allowlist-source` reading `permissions.allow` from one settings file
+- [ ] Add `claude-client--allowlist-sources` mapping a project root to the four layered files with scope labels
+- [ ] Add `claude-client--allowlist-text` building the labelled, sourced listing (explicit note for empty sources)
+- [ ] Add `claude-client-show-allowlist` (interactive) showing the listing in a help window
+- [ ] Bind `C-c C-p` in `claude-client-mode-map` and list it in `claude-client--help`
+- [ ] Tests: scope labels, empty-source note, user+project layering, missing files
+- [ ] `bin/test-emacs.sh --compile` clean and the full suite green in a separate Emacs
+- [ ] orgspec change validated and the fold archived into `specs/claude-client.org` when green
+
+* Delta
+** The effective Claude allowlist is visible, with its sources         :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The Claude client SHALL provide a command `claude-client-show-allowlist` that
+shows the effective permission allowlist for the current project, reading each
+of the settings files the CLI layers -- user, user-local, project and
+project-local -- and SHALL label every allow entry with the file it came from,
+so a rule can be traced to its source.  An existing file that contributes no
+allow entries SHALL be reported as contributing none rather than omitted, so a
+rule missing from the effective set is visible.
+*** Every entry is shown with its source file
+- WHEN `claude-client-show-allowlist` runs for a project whose layered settings
+  contribute allow entries
+- THEN each entry appears labelled with the scope of the file it came from
+  (user, user-local, project, or project-local)
+*** A file with rules and a file without are both accounted for
+- GIVEN one settings file holds allow entries and another exists with none
+- WHEN `claude-client-show-allowlist` runs
+- THEN the first is listed with its entries and the second is reported as
+  contributing none, so an absent rule is visible rather than silently dropped
+*** The command is reachable from a conversation
+- WHEN a `claude-client-mode` buffer is focused
+- THEN `claude-client-show-allowlist` is bound to a `C-c`-prefixed key and
+  listed by the buffer's `?` help

@@ -377,6 +377,99 @@ permission rules still apply to the session."
                 (when hooks `((hooks . ,hooks)))))))
     file))
 
+;;;; The effective permission allowlist
+
+;; Claude layers four settings files, each able to carry a
+;; `permissions.allow' list: user, user-local, project and project-local
+;; (see `claude-client--allowlist-sources').  A blocked call is already
+;; surfaced and answerable by `agent-permission' and its always-allow rule
+;; writer, but the session had no way to see the effective set and trace
+;; each rule to the file it lives in -- the gap closed here (issue #73).
+
+(defun claude-client--allowlist-source (path)
+  "Return the `permissions.allow' entries of settings file PATH.
+Nil when PATH is absent or carries none, so \"nothing here\" and \"not
+there\" read the same to callers.  Parsed the way the CLI reads
+settings -- alists, allow as a vector -- so the JSON is read faithfully
+even though this only looks at `permissions.allow'."
+  (when (file-exists-p path)
+    (with-temp-buffer
+      (insert-file-contents path)
+      (unless (zerop (buffer-size))
+        (let ((json-object-type 'alist)
+              (json-array-type 'vector)
+              (json-key-type 'symbol))
+          ;; Append to a list: an empty JSON array can parse to an empty
+          ;; vector, which is truthy but holds no entries.
+          (append (alist-get 'allow (alist-get 'permissions
+                                               (json-read-from-string
+                                                (buffer-string))))
+                  nil))))))
+
+(defun claude-client--allowlist-sources (root)
+  "Return the four layered settings files for project ROOT.
+Each is a (LABEL . PATH) pair in the order the CLI layers them --
+user, user-local, project, project-local -- where LABEL is the scope
+`claude-client-show-allowlist' shows beside each rule."
+  (list (cons "user" (expand-file-name ".claude/settings.json"
+                                       (expand-file-name "~")))
+        (cons "user-local" (expand-file-name ".claude/settings.local.json"
+                                             (expand-file-name "~")))
+        (cons "project" (expand-file-name ".claude/settings.json" root))
+        (cons "project-local" (expand-file-name ".claude/settings.local.json"
+                                                root))))
+
+(defun claude-client--allowlist-text (root)
+  "Return the labelled allowlist listing for project ROOT.
+The project root heads the text; beneath it, each existing settings
+file gets a section listing its allow rules, each prefixed with the
+scope label of the file it came from.  A file that exists but holds
+no allow entries is called out as \"contributing none\", so a rule
+absent from the effective set reads as absent rather than as a
+skipped file; a file that does not exist contributes nothing at all."
+  (let* ((sources (claude-client--allowlist-sources root))
+         (sections
+          (delq nil
+                (mapcar
+                 (lambda (source)
+                   (let ((label (car source))
+                         (path (cdr source)))
+                     (when (file-exists-p path)
+                       (let ((rules (claude-client--allowlist-source path)))
+                         (concat
+                          (format "  %s (%s):\n"
+                                  label (abbreviate-file-name path))
+                          (if rules
+                              (mapconcat (lambda (r) (format "    - %s" r))
+                                         rules "\n")
+                            "    (contributing none)"))))))
+                 sources))))
+    (concat "Allowlist for "
+            (directory-file-name (expand-file-name root))
+            (if sections
+                (concat "\n\n" (mapconcat #'identity sections "\n\n") "\n")
+              "\n"))))
+
+(defconst claude-client--allowlist-buffer-name "*claude-client allowlist*"
+  "Name of the buffer `claude-client-show-allowlist' writes to.")
+
+;;;###autoload
+(defun claude-client-show-allowlist ()
+  "Show the effective Claude permission allowlist for this project.
+Reads the four settings files the CLI layers -- user, user-local,
+project and project-local -- and lists every rule with the scope label
+of the file it came from, so a blocked call can be traced to where its
+rule would live.  Shown in the same help-style window as the `?' help
+\(`claude-client--display-help'), so it splits, scrolls and dismisses
+the same way."
+  (interactive)
+  (let ((display-buffer-alist
+         (cons `(,(regexp-quote claude-client--allowlist-buffer-name)
+                 (claude-client--display-help))
+               display-buffer-alist)))
+    (with-help-window claude-client--allowlist-buffer-name
+      (princ (claude-client--allowlist-text (claude-client--project-root))))))
+
 (defun claude-client--system-prompt-file ()
   "Write and return a file holding `claude-client-system-prompt'."
   (let ((file (make-temp-file "claude-client-prompt-" nil ".txt")))
@@ -491,9 +584,10 @@ buffer it was started from."
 
 (defun claude-client--display (buffer)
   "Display BUFFER in the conversation window and return that window.
-Placed with `display-buffer-in-direction' so it stays an ordinary,
-splittable window rather than a dedicated side window -- the same shape
-`mcp-emacs-run--display' gives the eat runner."
+Reuses an existing window already showing BUFFER; only when it is not
+displayed is one placed with `display-buffer-in-direction', so it stays
+an ordinary, splittable window rather than a dedicated side window --
+the same shape `mcp-emacs-run--display' gives the eat runner."
   (let* ((window
           (if (null claude-client-window-direction)
               (display-buffer buffer)
@@ -502,7 +596,7 @@ splittable window rather than a dedicated side window -- the same shape
                           `(window-height . ,claude-client-window-height))))
               (display-buffer
                buffer
-               `((display-buffer-in-direction)
+               `((display-buffer-reuse-window display-buffer-in-direction)
                  (direction . ,claude-client-window-direction)
                  ,size))))))
     (when (and window claude-client-focus-on-show)
@@ -1569,6 +1663,7 @@ turn is now only ever `claude-client-interrupt' (issue #69)."
     ("?"       "toggle this help")
     ("C-c C-q" "kill the CLI process for this buffer")
     ("C-c C-r" "resume, by session id")
+    ("C-c C-p" "show the effective permission allowlist and where each rule lives")
     ("q"       "bury the conversation"))
   "The bindings, as (KEY DESCRIPTION).
 The destructive pair is spelled `C-c'-prefixed on purpose: `k' and `g'
@@ -1638,6 +1733,7 @@ window behind to clean up by hand."
     (define-key map (kbd "A") #'agent-backend-start-another)
     (define-key map (kbd "?") #'claude-client-help)
     (define-key map (kbd "TAB") #'claude-client-toggle-tool-result)
+    (define-key map (kbd "C-c C-p") #'claude-client-show-allowlist)
     map)
   "Keymap for `claude-client-mode'.
 The single-letter keys are only reachable in plain Emacs; under evil they
