@@ -177,13 +177,15 @@ returns the manual-filing text so the caller can file by hand.  Signals a
   :prefix "mcp-emacs-report-")
 
 (defconst mcp-emacs-report--templates
-  '(("bug" . "What happened:\n\nWhat you expected:\n\nHow to reproduce:\n")
-    ("feature" . "What you want:\n\nWhy it would help:\n"))
+  '(("bug" . "What happened:\n\nWhat you expected:\n\nHow to reproduce:\n"))
   "Body scaffolding offered per kind, keyed by `mcp-emacs-report-kinds' value.
-Prompts for the things a report is useless without, so a note written in
-thirty seconds still says enough to act on later.  Headings left empty
-are stripped before filing, so the scaffold costs nothing when the human
-would rather just write a sentence.")
+Only kinds that benefit from scaffolding are covered -- the prompts are
+the things a report is useless without, so a note written in thirty
+seconds still says enough to act on later.  `feature' receives none and
+opens empty (modulo an active region), the same as
+`mcp-emacs-report-template' being nil.  Headings left empty are stripped
+before filing, so the scaffold costs nothing when the human would rather
+just write a sentence.")
 
 (defcustom mcp-emacs-report-template t
   "When non-nil, seed the report buffer with per-kind prompting headings.

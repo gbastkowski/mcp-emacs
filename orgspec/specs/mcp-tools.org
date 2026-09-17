@@ -444,3 +444,22 @@ connect to the network.
 - GIVEN the tutorial buffer is already open
 - WHEN `mcp-emacs-tutor` is invoked again
 - THEN the same side window is selected and no duplicate buffer is created
+* The feature request buffer opens without prompting headings
+The feature-request report buffer SHALL open without the prompting headings
+("What you want:" / "Why it would help:") by default, matching the empty
+buffer `mcp-emacs-report-template' set to nil; the active region in the
+source buffer SHALL still be seeded when there is one.
+** A feature request opens with an empty body
+- GIVEN a feature request is composed with `mcp-emacs-report-template'
+  non-nil and no active region
+- WHEN the composition buffer opens
+- THEN its body holds no prompting headings
+** A region still seeds the feature request
+- GIVEN a feature request is composed from a buffer with an active region
+- WHEN the composition buffer opens
+- THEN the region text is seeded, and no prompting headings follow it
+** The bug report keeps its scaffold
+- GIVEN a bug report is composed with `mcp-emacs-report-template' non-nil
+- WHEN the composition buffer opens
+- THEN the bug-report prompting headings ("What happened:" / "What you
+  expected:" / "How to reproduce:") are still offered
