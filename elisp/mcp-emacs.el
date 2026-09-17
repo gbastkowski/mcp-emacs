@@ -31,11 +31,27 @@
 (require 'org nil t)
 (require 'org-agenda nil t)
 (require 'ediff nil t)
+(require 'agent-propose)
 
 (defvar ediff-control-buffer)
 (defvar ediff-quit-hook)
 (declare-function ediff-buffers "ediff" (buffer-a buffer-b &optional startup-hooks job-name))
 (declare-function ediff-really-quit "ediff-util" (reverse-default-keep-variants))
+
+;; magit and with-editor are soft dependencies: the `git_commit' helpers
+;; below defer to magit's commit dialog and refuse clearly when magit is
+;; not installed, so these symbols are only referenced from behind that
+;; load guard.  The declarations keep the byte-compiled file clean when
+;; magit is absent (as it is in the batch test Emacs).
+(defvar with-editor-post-finish-hook)
+(defvar with-editor-post-cancel-hook)
+(defvar with-editor-filter-visit-hook)
+(defvar with-editor-cancel-query-functions)
+(declare-function magit-commit-create "magit-commit" (&optional args))
+(declare-function magit-commit-message-buffer "magit-commit" ())
+(declare-function magit-git-lines "magit-git" (&rest args))
+(declare-function magit-rev-parse "magit-git" (&rest args))
+(declare-function with-editor-cancel "with-editor" (force))
 
 (defun mcp-emacs--current-buffer ()
   "Return the buffer associated with the currently selected window."
@@ -1384,6 +1400,312 @@ reaching this from a filter want `mcp-emacs-apply-diff-async'."
           ;; `mcp-emacs--ediff-review' now, for both callers.
           (when (buffer-live-p buffer-b) (kill-buffer buffer-b))))
     (error (error-message-string err))))
+
+;;; Interactive commit via magit
+
+;; The commit tool is the same shape as apply_diff: a proposal the human
+;; answers.  magit drives the dialog through the `with-editor' package
+;; (`magit-commit-create' runs `git commit' with $GIT_EDITOR served as an
+;; Emacs session), so the dialog buffer -- `.git/COMMIT_EDITMSG' -- shows
+;; up asynchronously shortly after the command returns, and the resolve
+;; hooks are installed buffer-locally there once `with-editor' visits it
+;; (`with-editor-filter-visit-hook').  C-c C-c is `with-editor-finish',
+;; C-c C-k is `with-editor-cancel'; no new keys are needed.
+
+(defcustom mcp-emacs-git-commit-default-timeout 120
+  "Default timeout, in seconds, for `mcp-emacs-git-commit'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defcustom mcp-emacs-git-commit-max-timeout 600
+  "Maximum timeout, in seconds, for `mcp-emacs-git-commit'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defun mcp-emacs-git-commit-async (message timeout on-done)
+  "Propose MESSAGE for a commit via magit's dialog, without blocking.
+Open magit's commit dialog with MESSAGE prefilled in the commit buffer
+and return immediately; ON-DONE is called with one argument -- the
+outcome string, in the same format `mcp-emacs-git-commit' returns --
+once the human confirms, aborts, or TIMEOUT elapses.
+
+A human answers this the way they answer an ediff review, so it cannot
+be resolved from a process filter: Emacs runs filters with
+`inhibit-quit' bound to t and no command loop, so the dialog would
+render with dead keys.  Returning to the event loop and answering from
+the with-editor hooks keeps the dialog interactive.  See
+`mcp-emacs-server--handler' for the HTTP side of the deferral.
+
+Refuses clearly instead of half-working: when magit is not loadable the
+answer is \"Status: magit unavailable\", and when nothing is staged the
+answer is \"Status: nothing staged\" -- the tool never stages on the
+human's behalf.  A confirmation answers \"Status: committed\" plus the
+new commit's SHA, read after a short beat because git creates the
+commit object asynchronously once with-editor signals it.  An abort
+answers \"Status: aborted\"; it is the fail-closed path, never a
+fallback to a background `git commit'.  A timeout abandons the dialog
+fail-closed (magit's own cancel, not a commit) and answers
+\"Status: timeout\".  In every case ON-DONE is called at most once, and
+the timer and dialog hooks are cleaned up once a decision is in.
+
+TIMEOUT is capped at `mcp-emacs-git-commit-max-timeout' and defaults to
+`mcp-emacs-git-commit-default-timeout'."
+  (condition-case err
+      (progn
+        (if (not (condition-case nil
+                     (progn (require 'magit) t)
+                   (error nil)))
+            (funcall on-done "Status: magit unavailable")
+          ;; magit is loaded; its symbols are safe to touch from here on
+          ;; (the absence branch above never references one).
+          (let* ((secs (min mcp-emacs-git-commit-max-timeout
+                            (if (and (numberp timeout) (> timeout 0))
+                                timeout
+                              mcp-emacs-git-commit-default-timeout)))
+                 (staged (magit-git-lines "diff" "--cached" "--name-only")))
+            (if (null staged)
+                (funcall on-done "Status: nothing staged")
+              (let ((head (magit-rev-parse "HEAD"))
+                    (done (list nil))   ; single-delivery latch
+                    (buf (list nil))    ; the commit buffer, once it appears
+                    timer sha-timer filter resolve-finish resolve-abort finish)
+                (setq finish
+                      (lambda (outcome)
+                        ;; The resolve hooks and the timeout timer race;
+                        ;; whichever arrives first is the only answer.
+                        (unless (car done)
+                          (setcar done t)
+                          (when timer (cancel-timer timer))
+                          (when sha-timer (cancel-timer sha-timer))
+                          (remove-hook 'with-editor-filter-visit-hook filter)
+                          (when (and buf (buffer-live-p (car buf)))
+                            (with-current-buffer (car buf)
+                              (remove-hook 'with-editor-post-finish-hook
+                                           resolve-finish t)
+                              (remove-hook 'with-editor-post-cancel-hook
+                                           resolve-abort t)))
+                          (funcall on-done outcome))))
+                (setq filter
+                      (lambda ()
+                        ;; with-editor runs this hook for every editor
+                        ;; session it spins up -- including concurrent
+                        ;; ones -- so act only on this dialog's commit
+                        ;; buffer and then step aside.
+                        (let ((commit (ignore-errors
+                                        (magit-commit-message-buffer))))
+                          (when (and commit (eq commit (current-buffer)))
+                            (setcar buf (current-buffer))
+                            (remove-hook 'with-editor-filter-visit-hook
+                                         filter)
+                            ;; The commit buffer only exists now, so the
+                            ;; buffer-local resolve hooks are installed
+                            ;; here rather than up front.
+                            (add-hook 'with-editor-post-finish-hook
+                                      resolve-finish nil t)
+                            (add-hook 'with-editor-post-cancel-hook
+                                      resolve-abort nil t)
+                            ;; Replace magit's template with the proposal.
+                            (erase-buffer)
+                            (insert message)
+                            (goto-char (point-min))))))
+                (setq resolve-finish
+                      (lambda ()
+                        ;; `with-editor-finish' signals git and the commit
+                        ;; object is created asynchronously a moment later,
+                        ;; so read HEAD after a short beat; a HEAD that
+                        ;; differs from the pre-dialog one is the new SHA.
+                        (setq sha-timer
+                              (run-at-time
+                               0.5 nil
+                               (lambda ()
+                                 (let ((new-head (magit-rev-parse "HEAD")))
+                                   (funcall
+                                    finish
+                                    (if (and new-head
+                                             (not (equal new-head head)))
+                                        (format "Status: committed\n%s"
+                                                new-head)
+                                      "Status: committed"))))))))
+                (setq resolve-abort
+                      (lambda ()
+                        ;; `with-editor-cancel' has already aborted git's
+                        ;; pending commit; report it, never commit behind
+                        ;; the human's back.
+                        (funcall finish "Status: aborted")))
+                (magit-commit-create)
+                ;; The visit cannot race ahead of this: with-editor
+                ;; materializes the commit buffer from the child git
+                ;; process's output, which is only processed once this
+                ;; function returns to the event loop.  Installing the
+                ;; prefill hook (and arming the timeout) only after the
+                ;; dialog launched keeps a failed launch from leaving a
+                ;; stale hook or timer behind it.
+                (add-hook 'with-editor-filter-visit-hook filter)
+                (setq timer
+                      (run-at-time
+                       secs nil
+                       (lambda ()
+                         ;; Abandon the dialog fail-closed: magit's own
+                         ;; cancel is an abort, never a commit.  with-editor
+                         ;; blocks plain kills, so fall back to one only
+                         ;; when with-editor is unavailable.
+                         (let ((live (car buf)))
+                           (when (and live (buffer-live-p live))
+                             (if (fboundp 'with-editor-cancel)
+                                 (with-current-buffer live
+                                   (let ((with-editor-cancel-query-functions
+                                          nil))
+                                     (ignore-errors (with-editor-cancel nil))))
+                               (ignore-errors (kill-buffer live)))))
+                         (funcall finish "Status: timeout"))))))))
+        nil)
+    (error (funcall on-done (error-message-string err)) nil)))
+
+(defun mcp-emacs-git-commit (message timeout)
+  "Propose MESSAGE for a commit via magit's dialog, blocking.
+Open magit's commit dialog prefilled with MESSAGE and block
+cooperatively until the human confirms, edits first, or aborts, or
+TIMEOUT elapses, then return the outcome.  Returns the same status
+strings `mcp-emacs-git-commit-async' hands its callback, including the
+new commit's SHA after a confirmation.
+TIMEOUT is capped at `mcp-emacs-git-commit-max-timeout' and defaults to
+`mcp-emacs-git-commit-default-timeout'.
+
+Refuses to run under a process filter.  The wait needs a command loop
+to deliver the human's keypress to the dialog, and a filter has none --
+Emacs binds `inhibit-quit' to t there, so the dialog would show with
+dead keys and freeze Emacs until the timeout expired.  Callers reaching
+this from a filter want `mcp-emacs-git-commit-async'."
+  (when inhibit-quit
+    (error (concat "git_commit cannot run synchronously here: no command "
+                   "loop to answer the dialog (use mcp-emacs-git-commit-async)")))
+  (let* ((secs (min mcp-emacs-git-commit-max-timeout
+                    (if (and (numberp timeout) (> timeout 0))
+                        timeout
+                      mcp-emacs-git-commit-default-timeout)))
+         (result (list nil))
+         ;; The async helper answers from its own timeout timer at SECS;
+         ;; the extra second is grace so that answer wins the poll.
+         (deadline (+ (float-time) secs 1)))
+    (mcp-emacs-git-commit-async
+     message timeout
+     (lambda (outcome) (setcar result outcome)))
+    (while (and (null (car result)) (< (float-time) deadline))
+      (mcp-emacs--wait-tick mcp-emacs-org-task-wait-poll-interval))
+    (or (car result) "Status: timeout")))
+
+;;; Editable draft review (propose_text)
+
+;; The propose_text tool is the same shape as apply_diff and git_commit: a
+;; proposal the human answers.  The difference is the surface: there is no
+;; file to compare and no magit dialog -- the draft itself is the review
+;; buffer, editable in place, and accepting returns whatever text the human
+;; ended up with.  `agent-propose' owns the buffer and its single-answer
+;; registry; these helpers are the MCP-facing wrapper around it.
+
+(defcustom mcp-emacs-propose-text-default-timeout 120
+  "Default timeout, in seconds, for `mcp-emacs-propose-text'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defcustom mcp-emacs-propose-text-max-timeout 600
+  "Maximum timeout, in seconds, for `mcp-emacs-propose-text'."
+  :type 'integer
+  :group 'mcp-emacs)
+
+(defvar mcp-emacs-propose-text--counter 0
+  "Counter supplying unique registry ids to `mcp-emacs-propose-text-async'.
+Each call's proposal is entered in `agent-propose--pending' under its own
+id; an id already pending signals, so concurrent proposals need ids that
+cannot collide.")
+
+(defun mcp-emacs-propose-text-async (text label timeout on-done)
+  "Raise TEXT in an editable review buffer for the human, without blocking.
+Open `agent-propose-request' with TEXT shown and return immediately;
+ON-DONE is called with one argument -- the outcome string, in the same
+format `mcp-emacs-propose-text' returns -- once the human accepts,
+rejects, or TIMEOUT elapses.  An accept answers with the buffer's final
+text exactly (edited or not); a reject answers \"Status: rejected\"; a
+timeout answers \"Status: timeout\".
+
+This exists because the synchronous variant cannot be resolved by a human
+when it is served from a process filter: Emacs runs filters with
+`inhibit-quit' bound to t and no command loop for the review buffer, so
+the buffer is displayed but its keys are dead.  Returning to the event
+loop instead -- and answering the request from the proposal's resolve
+continuation -- keeps the buffer editable.  See
+`mcp-emacs-server--handler' for the HTTP side of the deferral.
+
+LABEL names the proposal for the human (e.g. \"MR description\") and is
+shown in the review buffer's header line; nil is fine.  TIMEOUT is capped
+at `mcp-emacs-propose-text-max-timeout' and defaults to
+`mcp-emacs-propose-text-default-timeout'."
+  (condition-case err
+      (let* ((id (format "propose-%d"
+                         (setq mcp-emacs-propose-text--counter
+                               (1+ mcp-emacs-propose-text--counter))))
+             (secs (min mcp-emacs-propose-text-max-timeout
+                        (if (and (numberp timeout) (> timeout 0))
+                            timeout
+                          mcp-emacs-propose-text-default-timeout)))
+             ;; Guards single delivery: the human's answer and the timeout
+             ;; timer race, and whichever arrives first must be the only
+             ;; answer.  `agent-propose-request' arms that timer itself; a
+             ;; late fire is a registry no-op, since the answered proposal
+             ;; is already removed.
+             (result (list nil)))
+        (let ((finish
+               (lambda (outcome)
+                 (unless (car result)
+                   (setcar result outcome)
+                   (funcall on-done outcome)))))
+          (agent-propose-request
+           id text
+           :label label
+           :timeout secs
+           :resolve (lambda (answer)
+                      (funcall finish
+                               (cond
+                                ((eq answer 'reject) "Status: rejected")
+                                ((eq answer 'timeout) "Status: timeout")
+                                (t answer))))))
+        nil)
+    (error (funcall on-done (error-message-string err)) nil)))
+
+(defun mcp-emacs-propose-text (text label timeout)
+  "Raise TEXT in an editable review buffer and block until it is answered.
+Open `agent-propose-request' with TEXT shown, wait cooperatively until the
+human accepts it -- possibly after editing it in the buffer -- rejects it,
+or TIMEOUT elapses, then return the outcome.  An accept returns the
+buffer's final text exactly as the human left it; a reject returns
+\"Status: rejected\"; a timeout returns \"Status: timeout\", leaving
+nothing applied.
+LABEL is a name for the proposal shown in the review buffer's header line.
+TIMEOUT is capped at `mcp-emacs-propose-text-max-timeout' and defaults to
+`mcp-emacs-propose-text-default-timeout'.
+
+Refuses to run under a process filter.  The wait needs a command loop to
+deliver the human's edits and keys to the review buffer, and a filter has
+none -- Emacs binds `inhibit-quit' to t there, so the review would show
+with dead keys and freeze Emacs until the timeout expired.  Callers
+reaching this from a filter want `mcp-emacs-propose-text-async'."
+  (when inhibit-quit
+    (error (concat "propose_text cannot run synchronously here: no command "
+                   "loop to answer the review (use mcp-emacs-propose-text-async)")))
+  (let* ((secs (min mcp-emacs-propose-text-max-timeout
+                    (if (and (numberp timeout) (> timeout 0))
+                        timeout
+                      mcp-emacs-propose-text-default-timeout)))
+         (result (list nil))
+         ;; The async helper answers from its own timeout timer at SECS;
+         ;; the extra second is grace so that answer wins the poll.
+         (deadline (+ (float-time) secs 1)))
+    (mcp-emacs-propose-text-async
+     text label timeout
+     (lambda (outcome) (setcar result outcome)))
+    (while (and (null (car result)) (< (float-time) deadline))
+      (mcp-emacs--wait-tick mcp-emacs-org-task-wait-poll-interval))
+    (or (car result) "Status: timeout")))
 
 ;;; Project / workspace tools
 

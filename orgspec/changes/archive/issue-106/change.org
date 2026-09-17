@@ -1,0 +1,78 @@
+#+TITLE: create-tutor-for-this-project
+#+PROPERTY: TRACKER github
+#+PROPERTY: ISSUE gbastkowski/mcp-emacs#106
+
+* Intent
+The project has grown past the README's quickstart, and Gunnar wants a
+guided intro like `vimtutor`/Emacs tutor for a newcomer — human, not agent.
+A short 10-minute introduction is the agreed first cut (to be extended
+later). It should be a side window showing precise instructions the user
+reads and follows; advancing/scrolling is manual, so no keybinding-driven
+lesson player is needed in this slice.
+
+The tutor is documentation with a thin container: a command opens a
+read-only side window of Org text that walks the user through the
+headline flow (start the server → point a client at it → run an agent
+client → see an edit gated by `apply_diff`), one section per step. No new
+dependencies, no network, no interaction model beyond read-and-do.
+
+* Scope
+In scope:
+- A command that opens the tutor as a side window of static, read-only
+  text (Org), ~10 minutes of reading.
+- ~8–10 short steps covering the project's headline surfaces: start the
+  MCP server, attach a client, run an agent client inside Emacs, and see a
+  native edit gated behind diff review.
+- Manual scrolling/advancing; a step is a section, not a state machine.
+- Written for humans learning the Emacs-side UX.
+
+Out of scope:
+- A keybinding/state-machine lesson player (advancing is manual).
+- Agent-facing (MCP-tool-surface) documentation.
+- Auto-open on first run.
+- Any new runtime dependency or network access.
+
+* Approach
+- Add `elisp/mcp-emacs-tutor.el` with a `mcp-emacs-tutor` interactive
+  command. It renders a docstring-style Org buffer into the middle-right
+  side window using the ordinary `display-buffer-in-side-window`
+  mechanism, read-only.
+- The lesson text lives in the same file as an Org string (one headline
+  per step), explicit in the code so it is versionable and diffable like
+  the specs it teaches.
+- README gets a one-line pointer to `M-x mcp-emacs-tutor` under "Pick your
+  entry point".
+- Tests: `mcp-emacs-tutor-test.el` asserts the command produces a
+  non-empty read-only side buffer whose content contains the step
+  headlines, and that repeated invocation reuses the same buffer.
+
+* Tasks
+- [ ] scaffold `elisp/mcp-emacs-tutor.el`: command opens side-window Org buffer, read-only
+- [ ] write ~8–10 step sections (server start, client attach, agent client, diff gate)
+- [ ] README entry point pointer
+- [ ] tests in `test/mcp-emacs-tutor-test.el` (buffer created, read-only, headline present, idempotent)
+
+* Delta
+** The tutor shows a side-window guided intro :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+Emacs SHALL provide an interactive command `mcp-emacs-tutor` that opens a
+read-only Org buffer of the project's guided ~10-minute introduction in a
+side window.  The buffer SHALL contain a short sequence of steps, each a
+top-level headline, covering starting the MCP server, attaching a client,
+running an agent client inside Emacs, and seeing an edit gated by diff
+review.  The user SHALL advance by scrolling or reading sections manually;
+the tutor MUST NOT require any input other than scrolling, and MUST NOT
+connect to the network.
+*** A command opens the tutorial side window
+- GIVEN an Emacs session with mcp-emacs loaded
+- WHEN `mcp-emacs-tutor` is invoked
+- THEN a non-empty, read-only Org buffer of tutorial steps appears in a side window
+*** The tutorial shows the project's headline steps
+- GIVEN the tutorial buffer is open
+- THEN it contains a step for starting the MCP server and a step for seeing a diff-gated edit
+*** Re-invoking the tutorial reuses the same buffer
+- GIVEN the tutorial buffer is already open
+- WHEN `mcp-emacs-tutor` is invoked again
+- THEN the same side window is selected and no duplicate buffer is created

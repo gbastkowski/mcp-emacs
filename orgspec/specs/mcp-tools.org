@@ -422,3 +422,85 @@ does not look answered when it is not.
 ** Org headline left empty
 - WHEN an org template headline (~* How to reproduce~) has nothing under it
 - THEN it is removed from the filed body
+* Commit is proposed, not executed
+The MCP server SHALL expose a ~git_commit~ tool that opens magit's commit
+dialog with a proposed commit message and lets the human confirm (magit's
+~C-c C-c~), edit it first, or abort (~C-c C-k~). The tool SHALL defer via
+~:async-handler~ like ~apply_diff~, since a human answers it, and SHALL
+return which of those happened plus the resulting commit SHA when a commit
+was made. It SHALL fail closed: an abort is an abort, never a fallback to a
+background ~git commit~, and when magit is not available it SHALL say so
+rather than half-working.
+** A commit is proposed in magit's dialog
+- WHEN ~git_commit~ is called with a proposed message
+- THEN magit's commit dialog opens with that message prefilled, and the
+  request is deferred until the human resolves it
+** Confirming commits and returns the SHA
+- WHEN the human commits from the dialog
+- THEN the tool reports the confirmation and the new commit's SHA
+** Aborting fails closed
+- WHEN the human aborts the dialog
+- THEN the tool reports the abort and does not run a commit behind the
+  human's back
+** magit absent is a refusal, not a half-result
+- WHEN magit is not loaded
+- THEN the tool reports that it cannot open the commit dialog rather than
+  returning a made-up result
+* Staging stays the human's call
+The ~git_commit~ tool SHALL commit only what is already staged and SHALL
+refuse an empty index with a clear message; it SHALL NOT stage on the
+human's behalf.
+** An empty index is refused
+- WHEN ~git_commit~ is called with nothing staged
+- THEN it reports that no changes are staged and makes no commit
+** Staged changes are what get committed
+- WHEN some changes are staged
+- THEN the commit contains exactly those staged changes
+* The tutor shows a side-window guided intro
+Emacs SHALL provide an interactive command `mcp-emacs-tutor` that opens a
+read-only Org buffer of the project's guided ~10-minute introduction in a
+side window.  The buffer SHALL contain a short sequence of steps, each a
+top-level headline, covering starting the MCP server, attaching a client,
+running an agent client inside Emacs, and seeing an edit gated by diff
+review.  The user SHALL advance by scrolling or reading sections manually;
+the tutor MUST NOT require any input other than scrolling, and MUST NOT
+connect to the network.
+** A command opens the tutorial side window
+- GIVEN an Emacs session with mcp-emacs loaded
+- WHEN `mcp-emacs-tutor` is invoked
+- THEN a non-empty, read-only Org buffer of tutorial steps appears in a side window
+** The tutorial shows the project's headline steps
+- GIVEN the tutorial buffer is open
+- THEN it contains a step for starting the MCP server and a step for seeing a diff-gated edit
+** Re-invoking the tutorial reuses the same buffer
+- GIVEN the tutorial buffer is already open
+- WHEN `mcp-emacs-tutor` is invoked again
+- THEN the same side window is selected and no duplicate buffer is created
+* A propose_text tool presents draft text for the human to edit and approve
+The system SHALL expose an MCP tool ~propose_text~ that presents proposed
+text (a draft commit message, MR description, or similar) to the human in an
+editable review buffer and returns the final text once the human accepts it.
+The buffer SHALL let the human edit the proposal before accepting, so what is
+returned is exactly the text the human ended up with.
+** An accepted proposal returns the final text
+- GIVEN a propose_text call with proposed text and an optional label
+- WHEN the human edits and accepts it
+- THEN the tool returns the edited text, not the original proposal
+** A plain accept returns the proposal unchanged
+- GIVEN a propose_text call with proposed text
+- WHEN the human accepts without editing
+- THEN the tool returns the proposal exactly as given
+** A rejection returns nothing applied
+- GIVEN a propose_text review in progress
+- WHEN the human rejects the proposal
+- THEN the tool returns a status of ~rejected~ and nothing is applied
+** The proposal wait is bounded by a timeout
+- GIVEN a propose_text review the human neither accepts nor rejects
+- WHEN the timeout elapses
+- THEN the tool reports a status of ~timeout~, distinct from ~rejected~, and
+  returns nothing applied
+** The wait does not occupy the event loop over HTTP
+- GIVEN a propose_text call over HTTP
+- WHEN the human has not yet answered
+- THEN the handler returns to the event loop immediately and the response is
+  written later, once the human answers or the timeout elapses

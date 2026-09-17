@@ -11,6 +11,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'claude-client)
+(require 'mcp-emacs-run-resume)
 
 (defun claude-test--buffer ()
   "Return a fresh conversation buffer in `claude-client-mode'."
@@ -2110,6 +2111,145 @@ ROOT-FN supplies the project root; ON-DELETE, when given, replaces
         (it "never restarts the conversation it was invoked from"
           (check (memq buf made) nil))))))
 
+;;;; Turn-state generics (issue #76)
+
+;; The generic vocabulary reads the buffer's stream-derived flags and
+;; process, never the process alone: `claude --print' stays alive after
+;; `result', so a live process is idle, not working.
+(describe "agent-backend-turn-state under claude"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--process nil claude-client--turn-active nil)
+          (it "reports finished for a conversation with no process and no turn"
+            (check (agent-backend-turn-state agent-backend--instance) 'finished))
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t)))
+            (setq claude-client--process 'fake claude-client--turn-active nil)
+            (it "reports idle for a live process with no turn in flight"
+              (check (agent-backend-turn-state agent-backend--instance) 'idle))
+            (setq claude-client--turn-active t)
+            (it "reports working while a turn is in flight"
+              (check (agent-backend-turn-state agent-backend--instance) 'working))))
+      (kill-buffer buf))))
+
+;; Elapsed time tracks only a working turn: nothing to report for a
+;; settled or idle conversation, so the mode line never shows a stale count.
+(describe "agent-backend-turn-elapsed under claude"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--process nil
+                claude-client--turn-active nil
+                claude-client--turn-started nil)
+          (it "is nil when the conversation is finished"
+            (check (agent-backend-turn-elapsed agent-backend--instance) nil))
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t)))
+            (setq claude-client--process 'fake
+                  claude-client--turn-active nil
+                  claude-client--turn-started nil)
+            (it "is nil when idle, since only a working turn counts"
+              (check (agent-backend-turn-elapsed agent-backend--instance) nil))
+            (setq claude-client--turn-started (- (float-time) 42)
+                  claude-client--turn-active t)
+            (it "is the seconds since the turn began while working"
+              (let ((elapsed (agent-backend-turn-elapsed agent-backend--instance)))
+                (check (and (numberp elapsed)
+                            (>= elapsed 41) (< elapsed 120))
+                       t)))))
+      (kill-buffer buf))))
+
+;; The timestamp rides along with the in-flight flag: set when a turn
+;; begins, cleared when it ends, so the mode line's elapsed time is real
+;; rather than counting a turn that has already settled.
+(describe "claude-client--turn-started tracks the in-flight flag"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--process 'fake
+                claude-client--turn-active t
+                claude-client--turn-started (float-time))
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) nil)))
+            (claude-client--sentinel buf 'fake "exited"))
+          (it "clears the timestamp when the process dies, along with the flag"
+            (check claude-client--turn-started nil))
+          (it "clears the in-flight flag when the process dies"
+            (check claude-client--turn-active nil)))
+      (kill-buffer buf))))
+
+(describe "claude-client--turn-started is cleared on `result'"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--turn-active t
+                claude-client--turn-started (float-time))
+          (claude-test--feed buf (concat claude-test--result "\n"))
+          (it "clears the timestamp when `result' ends the turn"
+            (check claude-client--turn-started nil))
+          (it "clears the in-flight flag when `result' ends the turn"
+            (check claude-client--turn-active nil)))
+      (kill-buffer buf))))
+
+(describe "claude-client-start stamps the turn it begins"
+  (let ((buf nil))
+    (unwind-protect
+        (claude-test--with-stubs
+            (cons (cons 'process-live-p (lambda (_p) nil))
+                  (claude-test--start-stubs (lambda () "/tmp/proj-a/")))
+          (setq buf (claude-client-start "first"))
+          (with-current-buffer buf
+            (it "stamps the turn alongside the in-flight flag"
+              (check-that claude-client--turn-started))
+            (it "marks the turn in flight"
+              (check claude-client--turn-active t))))
+      (let ((kill-buffer-query-functions nil))
+        (when (and buf (buffer-live-p buf)) (kill-buffer buf))))))
+
+(describe "claude-client--drain-notes stamps the follow-up turn"
+  (let ((buf (claude-test--buffer))
+        (sent nil))
+    (unwind-protect
+        (with-current-buffer buf
+          (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t))
+                    ((symbol-function 'process-send-string)
+                     (lambda (_p s) (setq sent s))))
+            (setq claude-client--process 'fake
+                  claude-client--turn-active t
+                  claude-client--turn-started (float-time))
+            (claude-client-add-note "carry this")
+            (claude-test--feed buf (concat claude-test--result "\n"))
+            (it "begins the follow-up turn with a fresh timestamp"
+              (check-that claude-client--turn-started))
+            (it "keeps the follow-up turn in flight"
+              (check claude-client--turn-active t))
+            (it "delivers the drained note to the model"
+              (check-that (and sent (string-match-p "carry this" sent))))))
+      (kill-buffer buf))))
+
+;; The mode box here is the point of the issue: the `:eval' slot inherited
+;; from `agent-backend-mode' reports the buffer's own state, and while
+;; working it shows the elapsed time.
+(describe "the mode-line turn indicator under claude"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (let ((element (assq :eval mode-line-format)))
+            (it "inherits the (:eval ...) indicator from agent-backend-mode"
+              (check-that element))
+            (setq claude-client--process nil
+                  claude-client--turn-active nil
+                  claude-client--turn-started nil)
+            (it "renders finished when the conversation has settled"
+              (check (eval (cadr element)) "finished"))
+            (cl-letf (((symbol-function 'process-live-p) (lambda (_p) t)))
+              (setq claude-client--process 'fake claude-client--turn-active nil)
+              (it "renders idle for a live process with no turn"
+                (check (eval (cadr element)) "idle"))
+              (setq claude-client--turn-started (- (float-time) 8)
+                    claude-client--turn-active t)
+              (it "renders working with the elapsed time while a turn runs"
+                (check (eval (cadr element)) "working 0:08")))))
+      (kill-buffer buf))))
+
 ;;;; The effective permission allowlist (issue #73)
 
 (defun claude-test--write-settings (dir file allow)
@@ -2250,6 +2390,113 @@ list at all, so the file exists but contributes nothing."
         (kill-buffer claude-client--allowlist-buffer-name))
       (kill-buffer buf)
       (delete-other-windows))))
+
+;;;; Rewind (issue #77)
+;;
+;; The CLI has no native rewind: `--resume' reopens a session at its leaf
+;; and `--fork-session' only copies the leaf, neither accepting a
+;; mid-session pointer.  So the rewind is built on the store: truncate the
+;; transcript at the chosen turn into a NEW file and resume that under a
+;; fresh session id.  The original file is never modified.
+
+(describe "claude-client--rewind-prompts"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--events
+                (list '(:kind started)
+                      '(:kind prompt :text "first question")
+                      '(:kind text :text "an answer")
+                      '(:kind note :text "a note, not a turn")
+                      '(:kind prompt :text "second question")))
+          (it "collects the conversation's own human turns in log order"
+            (check (claude-client--rewind-prompts)
+                   '("first question" "second question")))
+          (it "ignores notes and the model's own events"
+            (check (memq "a note, not a turn"
+                         (claude-client--rewind-prompts))
+                   nil)))
+      (kill-buffer buf))))
+
+(describe "claude-client-rewind while a turn is running"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--session-id "abc-123"
+                claude-client--turn-active t)
+          (it "refuses rather than forking a conversation mid-turn"
+            (check (condition-case _ (progn (claude-client-rewind) nil)
+                     (user-error t))
+                   t)))
+      (kill-buffer buf))))
+
+(describe "claude-client-rewind outside a conversation"
+  (with-temp-buffer
+    (it "refuses rather than forking someone else's transcript"
+      (check (condition-case _ (progn (claude-client-rewind) nil)
+               (user-error t))
+             t))))
+
+;; Truncation over a synthetic transcript in a temp store: the first user
+;; line is injected noise, then two genuine turns, each prompt followed by
+;; an answer.  Rewinding to turn 2 cuts at that turn's own user message,
+;; so its answer and everything after it go.
+(describe "claude-client--rewind-fork"
+  (let* ((proj (make-temp-file "claude-test-rewind-proj" t))
+         (mcp-emacs-run-resume-projects-root
+          (make-temp-file "claude-test-rewind-store" t))
+         (dir (mcp-emacs-run-resume--store-dir proj))
+         (file (expand-file-name "sess-orig.jsonl" dir))
+         (fork (expand-file-name "fork-1.jsonl" dir))
+         (noise "{\"type\":\"user\",\"message\":{\"content\":\"<command-message>opsx:new</command-message>\"}}\n")
+         (first "{\"type\":\"user\",\"message\":{\"content\":\"first real prompt\"}}\n")
+         (answer "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"first answer\"}]}}\n")
+         (second "{\"type\":\"user\",\"message\":{\"content\":\"second real prompt\"}}\n")
+         (tail "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"second answer\"}]}}\n")
+         (launched nil))
+    (make-directory dir t)
+    (with-temp-file file (insert noise first answer second tail))
+    (let ((original (with-temp-buffer
+                      (insert-file-contents file)
+                      (buffer-string))))
+      (cl-letf (((symbol-function 'claude-client--rewind-launch)
+                 (lambda (new-id) (setq launched new-id)))
+                ((symbol-function 'claude-client--rewind-session-id)
+                 (lambda () "fork-1")))
+        (claude-client--rewind-fork file 2))
+      (it "writes a new fork file rather than truncating in place"
+        (check (file-exists-p fork) t))
+      (it "leaves the original transcript byte-identical"
+        (check (with-temp-buffer
+                 (insert-file-contents file)
+                 (buffer-string))
+               original))
+      (it "keeps every line through the chosen turn's user message"
+        (check (with-temp-buffer
+                 (insert-file-contents fork)
+                 (buffer-string))
+               (concat noise first answer second)))
+      (it "drops the discarded turns from the fork"
+        (check (with-temp-buffer
+                 (insert-file-contents fork)
+                 (string-match-p "second answer" (buffer-string)))
+               nil))
+      (it "resumes the fork under the fresh session id"
+        (check launched "fork-1")))))
+
+(describe "claude-client--rewind-launch"
+  (let ((started nil))
+    (cl-letf (((symbol-function 'claude-client-start)
+               (lambda (prompt resume-id)
+                 (setq started (list prompt resume-id)))))
+      (claude-client--rewind-launch "fork-9"))
+    (it "launches the fork through `claude-client-start', the shared machinery"
+      (check (cadr started) "fork-9"))
+    (it "sends only a short marker as the resumed prompt, not a real turn"
+      (check (car started) "[rewound here]"))
+    (it "carries --resume with the fork's session id in the launched command"
+      (check (cadr (member "--resume" (claude-client--command "fork-9")))
+             "fork-9"))))
 
 (test-helper-summary)
 
