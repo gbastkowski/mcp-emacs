@@ -345,6 +345,27 @@ rather than `null' (an empty alist would)."
                      (alist-get 'path args)
                      (alist-get 'new_content args)
                      (alist-get 'timeout args))))
+   (list :name "git_commit"
+         :description "Propose a commit via magit's commit dialog; the human confirms (C-c C-c), edits first, or aborts (C-c C-k); returns which happened plus the commit SHA when one was made.  Follows the same human-answered async deferral as apply_diff"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "message" (mcp-emacs-server--prop "string" "Proposed commit message")
+                                "timeout" (mcp-emacs-server--prop "integer" "Timeout in seconds (default 120, capped at 600)"))
+                  "required" (vector "message"))
+         ;; Async, like apply_diff: the human has to answer this one, so
+         ;; defer rather than block the process filter (which would leave
+         ;; no command loop for the dialog).  `:handler' stays as the
+         ;; synchronous fallback for callers that dispatch directly.
+         :async-handler (lambda (args done)
+                          (mcp-emacs-git-commit-async
+                           (alist-get 'message args)
+                           (alist-get 'timeout args)
+                           done))
+         :handler (lambda (args)
+                    (mcp-emacs-git-commit
+                     (alist-get 'message args)
+                     (alist-get 'timeout args))))
    (list :name "org_task_session"
          :description "Read a session task Org file: task heading, session id, status, and TODO checklist"
          :schema (mcp-emacs-server--obj

@@ -390,3 +390,37 @@ request SHALL be answered from a timer callback.
 - THEN the deferred response carries the no-change flag and current session view exactly once
 ** The synchronous fallback stays
 - THEN ~org_task_wait_for_change~ SHALL keep its ~:handler~ so callers that dispatch directly (outside HTTP) are served synchronously, exactly as ~apply_diff~ does
+* Commit is proposed, not executed
+The MCP server SHALL expose a ~git_commit~ tool that opens magit's commit
+dialog with a proposed commit message and lets the human confirm (magit's
+~C-c C-c~), edit it first, or abort (~C-c C-k~). The tool SHALL defer via
+~:async-handler~ like ~apply_diff~, since a human answers it, and SHALL
+return which of those happened plus the resulting commit SHA when a commit
+was made. It SHALL fail closed: an abort is an abort, never a fallback to a
+background ~git commit~, and when magit is not available it SHALL say so
+rather than half-working.
+** A commit is proposed in magit's dialog
+- WHEN ~git_commit~ is called with a proposed message
+- THEN magit's commit dialog opens with that message prefilled, and the
+  request is deferred until the human resolves it
+** Confirming commits and returns the SHA
+- WHEN the human commits from the dialog
+- THEN the tool reports the confirmation and the new commit's SHA
+** Aborting fails closed
+- WHEN the human aborts the dialog
+- THEN the tool reports the abort and does not run a commit behind the
+  human's back
+** magit absent is a refusal, not a half-result
+- WHEN magit is not loaded
+- THEN the tool reports that it cannot open the commit dialog rather than
+  returning a made-up result
+* Staging stays the human's call
+The ~git_commit~ tool SHALL commit only what is already staged and SHALL
+refuse an empty index with a clear message; it SHALL NOT stage on the
+human's behalf.
+** An empty index is refused
+- WHEN ~git_commit~ is called with nothing staged
+- THEN it reports that no changes are staged and makes no commit
+** Staged changes are what get committed
+- WHEN some changes are staged
+- THEN the commit contains exactly those staged changes
