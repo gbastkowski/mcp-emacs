@@ -1,4 +1,4 @@
-#+TITLE: issue-63
+#+TITLE: concept-drive-orgspec-changes-from-an-issue-tracker
 #+PROPERTY: TRACKER github
 #+PROPERTY: ISSUE gbastkowski/mcp-emacs#63
 
