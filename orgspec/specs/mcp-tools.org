@@ -390,6 +390,82 @@ request SHALL be answered from a timer callback.
 - THEN the deferred response carries the no-change flag and current session view exactly once
 ** The synchronous fallback stays
 - THEN ~org_task_wait_for_change~ SHALL keep its ~:handler~ so callers that dispatch directly (outside HTTP) are served synchronously, exactly as ~apply_diff~ does
+* Report buffer opens in org-mode
+The interactive bug-report and feature-request commands SHALL open their
+composition buffer in org-mode, so the human has org editing helpers
+(headings, emphasis, markup) available while writing the report.
+** Buffer starts in org-mode
+- WHEN ~mcp-emacs-report-bug~ or ~mcp-emacs-report-feature~ opens the
+  composition buffer
+- THEN the buffer's major mode is ~org-mode~
+- AND the prompt send/abort bindings still work on top of it
+* Org-written report filed as markdown
+When the human writes a report body in org and files it, the system SHALL
+export the body to markdown (through the org ~ox-md~ backend) before
+creating the GitHub issue, so the filed body renders as markdown on GitHub.
+The first line (the title) SHALL stay as written, not exported.
+** Org body exported to markdown
+- WHEN a report composed in org-mode is filed with an org-formatted body
+- THEN the created issue body is the org text exported to markdown
+- AND the title is the first line, unchanged
+** No markup backend available
+- WHEN org's markdown export is unavailable at filing time
+- THEN the body is filed as-is rather than failing
+** Recovery keeps the org text
+- WHEN filing fails after the buffer is closed
+- THEN the recoverable text is what the human wrote in org, not the
+  exported markdown
+* Empty template headings still stripped
+Template headings the human never answered SHALL be dropped before filing,
+whether they are plain-suffix headings or org headlines, so the filed issue
+does not look answered when it is not.
+** Org headline left empty
+- WHEN an org template headline (~* How to reproduce~) has nothing under it
+- THEN it is removed from the filed body
+* Small diff reviews render inline in the conversation buffer
+The ~apply_diff~ review SHALL render a small diff inline in the conversation
+buffer (~*claude-client*~ for the Claude client) instead of opening ediff,
+and SHALL open ediff for a diff larger than the inline limit. A diff is small
+when its unified-diff line count is at or below
+= mcp-emacs-apply-diff-inline-limit =. Ediff SHALL remain reachable from the
+inline view with one keypress.
+** A small diff appears inline
+- GIVEN an ~apply_diff~ whose diff fits the inline limit
+- WHEN the review starts
+- THEN it renders as text in the conversation buffer rather than opening ediff
+** A large diff stays in ediff
+- GIVEN an ~apply_diff~ whose diff exceeds the inline limit
+- WHEN the review starts
+- THEN it opens ediff as before
+** Ediff is reachable from the inline view
+- GIVEN an inline diff review is on screen
+- WHEN the human presses the jump key
+- THEN a real ediff session against the same buffers opens
+* Inline accept and reject record the same outcome
+Accepting an inline review SHALL apply the proposal to the file and report
+the same outcome format the ediff accept returns (~~Status: applied~~ plus
+the final content); rejecting SHALL leave the file unchanged and report
+~~Status: rejected~~. A hand-edit made to the file's buffer before accepting
+SHALL be kept, exactly as with the ediff accept path. Whichever surface the
+human resolves first — inline or the jumped-to ediff — SHALL be the only
+outcome delivered.
+** Inline accept applies the change
+- GIVEN an inline diff review whose proposal is untouched beyond the diff
+- WHEN the human accepts it
+- THEN the proposal replaces the file content and the outcome reads
+  ~~Status: applied~~
+** Inline reject leaves the file alone
+- GIVEN an inline diff review
+- WHEN the human rejects it
+- THEN the file is unchanged and the outcome reads ~~Status: rejected~~
+** A hand edit survives an inline accept
+- GIVEN the file's buffer was edited away from the original before accept
+- WHEN the human accepts the inline review
+- THEN the file keeps the hand-edit, matching the ediff accept rule
+** One surface answers once
+- GIVEN an inline review that the human jump-starts into ediff
+- WHEN the human resolves it in ediff
+- THEN the inline view does not deliver a second, competing outcome
 * Commit is proposed, not executed
 The MCP server SHALL expose a ~git_commit~ tool that opens magit's commit
 dialog with a proposed commit message and lets the human confirm (magit's
@@ -444,3 +520,50 @@ connect to the network.
 - GIVEN the tutorial buffer is already open
 - WHEN `mcp-emacs-tutor` is invoked again
 - THEN the same side window is selected and no duplicate buffer is created
+* The feature request buffer opens without prompting headings
+The feature-request report buffer SHALL open without the prompting headings
+("What you want:" / "Why it would help:") by default, matching the empty
+buffer `mcp-emacs-report-template' set to nil; the active region in the
+source buffer SHALL still be seeded when there is one.
+** A feature request opens with an empty body
+- GIVEN a feature request is composed with `mcp-emacs-report-template'
+  non-nil and no active region
+- WHEN the composition buffer opens
+- THEN its body holds no prompting headings
+** A region still seeds the feature request
+- GIVEN a feature request is composed from a buffer with an active region
+- WHEN the composition buffer opens
+- THEN the region text is seeded, and no prompting headings follow it
+** The bug report keeps its scaffold
+- GIVEN a bug report is composed with `mcp-emacs-report-template' non-nil
+- WHEN the composition buffer opens
+- THEN the bug-report prompting headings ("What happened:" / "What you
+  expected:" / "How to reproduce:") are still offered
+* A propose_text tool presents draft text for the human to edit and approve
+The system SHALL expose an MCP tool ~propose_text~ that presents proposed
+text (a draft commit message, MR description, or similar) to the human in an
+editable review buffer and returns the final text once the human accepts it.
+The buffer SHALL let the human edit the proposal before accepting, so what is
+returned is exactly the text the human ended up with.
+** An accepted proposal returns the final text
+- GIVEN a propose_text call with proposed text and an optional label
+- WHEN the human edits and accepts it
+- THEN the tool returns the edited text, not the original proposal
+** A plain accept returns the proposal unchanged
+- GIVEN a propose_text call with proposed text
+- WHEN the human accepts without editing
+- THEN the tool returns the proposal exactly as given
+** A rejection returns nothing applied
+- GIVEN a propose_text review in progress
+- WHEN the human rejects the proposal
+- THEN the tool returns a status of ~rejected~ and nothing is applied
+** The proposal wait is bounded by a timeout
+- GIVEN a propose_text review the human neither accepts nor rejects
+- WHEN the timeout elapses
+- THEN the tool reports a status of ~timeout~, distinct from ~rejected~, and
+  returns nothing applied
+** The wait does not occupy the event loop over HTTP
+- GIVEN a propose_text call over HTTP
+- WHEN the human has not yet answered
+- THEN the handler returns to the event loop immediately and the response is
+  written later, once the human answers or the timeout elapses

@@ -1,0 +1,83 @@
+% --- Title page -------------------------------------------------------------
+% Appended after the preset partials, which is the only place it can win: the
+% partials set \pretitle/\posttitle themselves, and whichever definition comes
+% last is the one `titling' uses.
+%
+% This is why the render goes through pandoc here rather than through
+% mcp-latex's render_markdown_to_pdf: that tool composes its header from
+% common + type + layout and passes it as --include-in-header, which displaces
+% a document's own `header-includes'.  There is no caller hook to append to.
+\usepackage{tikz}
+\usepackage{titling}
+\definecolor{mcpaccent}{HTML}{5A3E8E}
+
+% The mark: a bracket pair around a block cursor -- Emacs Lisp in two glyphs.
+% Drawn rather than shipped as an asset so it scales cleanly and lives in
+% version control as text.  The argument is a length and scales the whole
+% glyph, so every coordinate below is a multiple of it.
+\newcommand{\mcpmark}[1][22pt]{%
+  \begin{tikzpicture}[x=#1,y=#1,baseline]
+    \draw[mcpaccent,line width=0.085*#1,line cap=round,line join=round]
+      (0.42,0)--(0.16,0)--(0.16,1)--(0.42,1);
+    \draw[mcpaccent,line width=0.085*#1,line cap=round,line join=round]
+      (1.30,0)--(1.56,0)--(1.56,1)--(1.30,1);
+    \fill[mcpaccent] (0.66,0.24) rectangle (1.06,0.76);
+  \end{tikzpicture}%
+}
+
+% A hairline across the type area, above and below the title.
+\newcommand{\mcprule}{{\color{mcpaccent}\rule{\linewidth}{0.4pt}}}
+
+\makeatletter
+% The version arrives in the `date' field (render-reference.sh stamps it there)
+% and the render date comes from __DOC_STAMP__ in the type partial.  Both are
+% wanted, in that order, inside the block below -- so the version is captured
+% at \begin{document}, once pandoc's \date{} from the metadata has run but
+% before \maketitle reads it.
+\AtBeginDocument{%
+  \let\mcpversion\@date
+  \let\mcpauthor\@author
+  \date{}\author{}%
+}
+\pretitle{%
+  \begin{center}
+  \vspace*{1.5cm}
+  \mcpmark[26pt]\\[2.4em]
+  \mcprule\\[1.6em]
+  \huge\bfseries
+}
+% Everything under the title is emitted here, so author and stamp appear once,
+% in one block, rather than through the partial's own hooks.
+\posttitle{%
+  \par\vspace{0.9em}
+  \mcprule
+  \end{center}
+  \begin{center}
+    \vspace{1.6em}
+    \large\itshape\@subtitle\par
+  \end{center}
+  \vfill
+  \begin{center}
+    {\scshape\large\mcpauthor}\par
+    \vspace{0.7em}
+    {\color{mcpaccent}\small\mcpversion\ \textperiodcentered\ \mcpl@stamp}\par
+    \vspace{1.3em}
+    \mcprule
+  \end{center}
+  \vspace*{1.5cm}
+}
+% The partial's subtitle and stamp blocks hang off its \posttitle, which is
+% replaced above; blank them so a future partial change cannot reintroduce a
+% second copy.
+\renewcommand{\mcpl@subtitleblock}{}
+\renewcommand{\mcpl@stampblock}{}
+% titling prints the author and date through \preauthor/\postauthor and
+% \predate/\postdate.  Both are already in the block above, and \author{} /
+% \date{} at \begin{document} leaves these pairs with nothing to wrap -- but
+% blanking them too keeps the vertical space they would still contribute from
+% pushing the closing rule down the page.
+\preauthor{}
+\postauthor{}
+\predate{}
+\postdate{}
+\makeatother

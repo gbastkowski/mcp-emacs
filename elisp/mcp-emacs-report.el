@@ -170,6 +170,20 @@ returns the manual-filing text so the caller can file by hand.  Signals a
 (declare-function agent-prompt-read "agent-prompt"
                   (callback &optional initial label output-window source))
 (declare-function agent-prompt-region-seed "agent-prompt" (&optional buffer))
+(declare-function org-export-as "ox" (&rest args))
+;; Declare the special variable borrowed from `agent-prompt' so the
+;; byte-compiler keeps the dynamic binding -- it would otherwise read the
+;; `let*' in `mcp-emacs-report--compose' as a dead lexical binding.
+(defvar agent-prompt-major-mode nil
+  "Major mode for `agent-prompt-read' buffers; bound locally for reports.")
+;; Declare org's export options special (no value here, so org keeps its
+;; own defaults) so the `let' binding in `mcp-emacs-report--org-to-md'
+;; actually reaches `org-export-as' -- in a lexical-binding file a `let'
+;; on an undeclared variable would be compiled as lexical and silently
+;; never affect the export.
+(defvar org-export-with-toc)
+(defvar org-export-with-section-numbers)
+(defvar org-export-with-title)
 
 (defgroup mcp-emacs-report nil
   "Filing issues about mcp-emacs itself."
@@ -177,14 +191,17 @@ returns the manual-filing text so the caller can file by hand.  Signals a
   :prefix "mcp-emacs-report-")
 
 (defconst mcp-emacs-report--templates
-  '(("bug" . "What happened:\n\nWhat you expected:\n\nHow to reproduce:\n")
-    ("feature" . "What you want:\n\nWhy it would help:\n"))
+  '(("bug" . "* What happened\n\n* What you expected\n\n* How to reproduce\n"))
   "Body scaffolding offered per kind, keyed by `mcp-emacs-report-kinds' value.
-Prompts for the things a report is useless without, so a note written in
-thirty seconds still says enough to act on later.  Headings left empty
-are stripped before filing, so the scaffold costs nothing when the human
-would rather just write a sentence.")
-
+Only kinds that benefit from scaffolding are covered -- the prompts are
+the things a report is useless without, so a note written in thirty
+seconds still says enough to act on later.  `feature' receives none and
+opens empty (modulo an active region), the same as
+`mcp-emacs-report-template' being nil.  Written as org headlines because
+the report buffer opens in org-mode (issue #108); they export to markdown
+headings in the filed issue.  Headings left empty are stripped before
+filing, so the scaffold costs nothing when the human would rather just
+write a sentence.")
 (defcustom mcp-emacs-report-template t
   "When non-nil, seed the report buffer with per-kind prompting headings.
 See `mcp-emacs-report--templates'.  Nil opens an empty buffer for anyone
@@ -199,8 +216,13 @@ buffer has already been closed.")
 
 (defun mcp-emacs-report--heading-p (line)
   "Return non-nil when LINE is a template heading with nothing after it.
-Headings are the `Something:' lines from `mcp-emacs-report--templates'."
-  (and line (string-match-p "\\`[A-Z][^\n]*:[ \t]*\\'" line)))
+Headings are the `Something:' lines and the empty org headlines
+(`* Something') from `mcp-emacs-report--templates'."
+  (when line
+    (let ((trimmed (string-trim line)))
+      (and (or (string-match-p "\\`[A-Z][^:\n]*:[ \t]*\\'" trimmed)
+               (string-match-p "\\`\\*+[ \t]+[^ \t].*\\'" trimmed))
+           t))))
 
 (defun mcp-emacs-report--strip-empty-headings (body)
   "Return BODY with template headings that were never filled in removed.
@@ -247,15 +269,34 @@ gone by then, so what the human wrote has to land somewhere visible."
     (goto-char (point-min))
     (display-buffer (current-buffer))))
 
+(defun mcp-emacs-report--org-to-md (body)
+  "Return BODY exported from Org to Markdown, or BODY unchanged.
+Exports through the built-in ox-md backend (bundled with org, no extra
+dependency) so a report written in an org-mode composition buffer files as
+markdown on GitHub.  Falls back to the input unchanged when the export is
+unavailable, rather than failing the filing."
+  (if (require 'ox-md nil t)
+      (with-temp-buffer
+        (insert (or body ""))
+        (org-mode)
+        (let ((org-export-with-toc nil)
+              (org-export-with-section-numbers nil)
+              (org-export-with-title nil))
+          (string-trim
+           (replace-regexp-in-string "\n\n\n+" "\n\n" (org-export-as 'md)))))
+    body))
+
 (defun mcp-emacs-report--file-composed (kind text)
   "File TEXT as an issue of KIND and report the outcome.
 TEXT is a composition buffer's contents, split by
-`mcp-emacs-report--split'.  Runs after that buffer is gone, so a failure
-must not lose what was typed: the text goes to
+`mcp-emacs-report--split'.  The body is exported org-to-markdown before
+filing (the buffer opened in org-mode).  Runs after that buffer is gone, so
+a failure must not lose what was typed: the text goes to
 `mcp-emacs-report-last-text', and anything short of a created issue also
 goes to `*mcp-emacs-report*' where it can be recovered."
   (setq mcp-emacs-report-last-text text)
   (pcase-let ((`(,title . ,body) (mcp-emacs-report--split text)))
+    (when body (setq body (mcp-emacs-report--org-to-md body)))
     (if (string-empty-p title)
         (message "Nothing to file: the report needs at least a title")
       (let ((result (condition-case err
@@ -288,12 +329,16 @@ leading blank line keeps the first line free for the title."
 (defun mcp-emacs-report--compose (kind label)
   "Open a composition buffer for an issue of KIND, named LABEL.
 The first line becomes the title and the rest the body; see
-`mcp-emacs-report--split'."
+`mcp-emacs-report--split'.  The buffer opens in org-mode (bound as
+`agent-prompt-major-mode' for the call) so the human has org markup helpers
+while writing; the body is exported to markdown on filing (see
+`mcp-emacs-report--org-to-md')."
   (require 'agent-prompt)
-  (let ((buffer (agent-prompt-read
-                 (lambda (text) (mcp-emacs-report--file-composed kind text))
-                 (mcp-emacs-report--initial kind (current-buffer))
-                 label)))
+  (let* ((agent-prompt-major-mode 'org-mode)
+         (buffer (agent-prompt-read
+                  (lambda (text) (mcp-emacs-report--file-composed kind text))
+                  (mcp-emacs-report--initial kind (current-buffer))
+                  label)))
     ;; `agent-prompt-read' leaves point after the seed, which is right for
     ;; a prompt and wrong here: the title is line 1.
     (when (buffer-live-p buffer)

@@ -322,7 +322,7 @@ rather than `null' (an empty alist would)."
          :handler (lambda (args)
                     (mcp-emacs-check-document-dirty (alist-get 'path args))))
    (list :name "apply_diff"
-         :description "Propose new content for a file via an interactive ediff session; the human explicitly accepts or rejects (editing first if they wish) and the tool returns applied (with final content), rejected, or timeout"
+         :description "Propose new content for a file via an interactive review -- inline in the conversation for a small diff, ediff for a large one; the human explicitly accepts or rejects (editing first if they wish) and the tool returns applied (with final content), rejected, or timeout"
          :schema (mcp-emacs-server--obj
                   "type" "object"
                   "properties" (mcp-emacs-server--obj
@@ -365,6 +365,31 @@ rather than `null' (an empty alist would)."
          :handler (lambda (args)
                     (mcp-emacs-git-commit
                      (alist-get 'message args)
+                     (alist-get 'timeout args))))
+   (list :name "propose_text"
+         :description "Present draft text (a commit message, MR description, or similar) in an editable review buffer for the human to edit and approve; returns the final text once accepted (edited or not), or a rejected/timeout status when it is not"
+         :schema (mcp-emacs-server--obj
+                  "type" "object"
+                  "properties" (mcp-emacs-server--obj
+                                "text" (mcp-emacs-server--prop "string" "Proposed draft text to review")
+                                "label" (mcp-emacs-server--prop "string" "Optional name for the proposal, shown to the human in the review buffer")
+                                "timeout" (mcp-emacs-server--prop "integer" "Timeout in seconds (default 120, capped at 600)"))
+                  "required" (vector "text"))
+         ;; Async, like apply_diff and git_commit: the human has to answer
+         ;; this one, so defer rather than block the process filter (which
+         ;; would leave no command loop for the review buffer).  `:handler'
+         ;; stays as the synchronous fallback for callers that dispatch
+         ;; directly.
+         :async-handler (lambda (args done)
+                          (mcp-emacs-propose-text-async
+                           (alist-get 'text args)
+                           (alist-get 'label args)
+                           (alist-get 'timeout args)
+                           done))
+         :handler (lambda (args)
+                    (mcp-emacs-propose-text
+                     (alist-get 'text args)
+                     (alist-get 'label args)
                      (alist-get 'timeout args))))
    (list :name "org_task_session"
          :description "Read a session task Org file: task heading, session id, status, and TODO checklist"
