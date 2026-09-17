@@ -86,16 +86,16 @@ generic ~agent-backend-turn-state~ returning one of ~working~, ~idle~, or
 (seconds, or nil when no turn is working). The default MUST NOT over-claim: a
 backend that tracks no turn state reads ~finished~ and elapsed nil.
 *** Reports a mid-turn conversation as working
-- WHEN ~agent-backend-turn-state~ is called on a conversation whose model is working on a turn
+- WHEN ~agent-backend-turn-state~ is called on a conversation whose model is working on a turn \\
   THEN it returns ~working~
 *** Reports a live-but-idle conversation as idle
-- WHEN ~agent-backend-turn-state~ is called on a conversation whose process is alive but no turn is in flight
+- WHEN ~agent-backend-turn-state~ is called on a conversation whose process is alive but no turn is in flight \\
   THEN it returns ~idle~
 *** Reports a settled conversation as finished
-- WHEN ~agent-backend-turn-state~ is called on a conversation whose process has exited or which never started
+- WHEN ~agent-backend-turn-state~ is called on a conversation whose process has exited or which never started \\
   THEN it returns ~finished~
 *** Elapsed time tracks only a working turn
-- WHEN ~agent-backend-turn-elapsed~ is called on a working conversation
+- WHEN ~agent-backend-turn-elapsed~ is called on a working conversation \\
   THEN it returns the seconds since that turn started; when no turn is working it returns nil
 ** The conversation mode line shows the state                 :ADDED:
 :PROPERTIES:
@@ -105,10 +105,10 @@ Every ~agent-backend-mode~ conversation buffer SHALL carry a standing
 mode-line indicator of its turn state, updated from the transitions that change
 the state, and SHALL show the elapsed time while working.
 *** Mode line reflects the turn state
-- WHEN a conversation buffer derived from ~agent-backend-mode~ is displayed and its turn state changes
+- WHEN a conversation buffer derived from ~agent-backend-mode~ is displayed and its turn state changes \\
   THEN its mode line shows the new state (working / idle / finished)
 *** Mode line shows elapsed time while working
-- WHEN a ~working~ conversation's mode line is rendered
+- WHEN a ~working~ conversation's mode line is rendered \\
   THEN it includes the seconds the current turn has been running
 ** Claude maps its stream to the shared vocabulary             :ADDED:
 :PROPERTIES:
@@ -120,8 +120,8 @@ The claude-client backend SHALL implement ~agent-backend-turn-state~ and
 turn-started timestamp alongside ~--turn-active~ that is set when a turn begins
 and cleared when it ends
 *** Working from the in-flight flag
-- WHEN a claude-client turn is in flight
+- WHEN a claude-client turn is in flight \\
   THEN ~agent-backend-turn-state~ on its backend returns ~working~ and ~agent-backend-turn-elapsed~ returns the seconds since the turn began
 *** Idle and finished from process liveness
-- WHEN the claude-client process is alive but no turn is in flight
+- WHEN the claude-client process is alive but no turn is in flight \\
   THEN ~agent-backend-turn-state~ returns ~idle~ and elapsed is nil; when the process has exited it returns ~finished~

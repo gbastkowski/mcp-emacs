@@ -166,10 +166,10 @@ The claude-client backend SHALL implement ~agent-backend-turn-state~ and
 turn-started timestamp alongside ~--turn-active~ that is set when a turn begins
 and cleared when it ends
 ** Working from the in-flight flag
-- WHEN a claude-client turn is in flight
+- WHEN a claude-client turn is in flight \\
   THEN ~agent-backend-turn-state~ on its backend returns ~working~ and ~agent-backend-turn-elapsed~ returns the seconds since the turn began
 ** Idle and finished from process liveness
-- WHEN the claude-client process is alive but no turn is in flight
+- WHEN the claude-client process is alive but no turn is in flight \\
   THEN ~agent-backend-turn-state~ returns ~idle~ and elapsed is nil; when the process has exited it returns ~finished~
 
 * Conversation re-display reuses its window
