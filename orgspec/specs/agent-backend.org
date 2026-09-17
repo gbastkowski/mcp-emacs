@@ -221,3 +221,42 @@ buffer it is invoked from — a running conversation is joined, not restarted.
 ** Exposed in the conversation and overview keymaps
 - WHEN a ~claude-client-mode~ or ~agent-session-overview-mode~ buffer is focused
 - THEN ~agent-backend-start-another~ is bound in that mode's keymap
+* A session scope answers every gated call without asking, until turned off
+The permission menu SHALL offer a session-scoped option, alongside allow-once
+and the durable always-allow rule, that answers the current decision `allow`
+and records a per-Emacs-session flag so every later gated call is answered
+`allow` without raising a decision buffer.  The flag SHALL live in memory only
+and MUST NOT be written to any settings file, so a new session starts gated
+again.  It SHALL be possible to turn the session scope off mid-session, and its
+active state SHALL be visible.  The session scope MUST NOT loosen tools that
+are structurally closed (`apply_diff`, `--disallowedTools`): it waives the
+asking, never the closure.  Because the check lives in the shared
+`agent-permission-request` entry point, it SHALL apply to every backend that
+asks through the shared menu -- the Claude hook, the opencode permission
+stream, and the manual escape hatch alike.
+** The menu offers a session-scope key
+- GIVEN a pending permission decision in an `agent-permission` buffer
+- WHEN the session-scope key (`z`) is pressed
+- THEN the current decision is answered `allow` and the session flag is set
+- AND no settings file is written
+** A gated call while the session scope is on resolves without a buffer
+- GIVEN the session-scope flag is set
+- WHEN `agent-permission-request` is called for a gated tool
+- THEN the decision is answered `allow` immediately
+- AND no decision buffer is created and nothing enters the pending registry
+** The session scope can be turned off mid-session
+- GIVEN the session-scope flag is set
+- WHEN `agent-permission-session-allow-all-mode` is invoked with argument 0
+- THEN the flag clears and a later gated call raises a real decision buffer again
+** The active session scope is visible
+- WHEN the session-scope flag is set
+- THEN a mode-line lighter indicating it is active appears in buffers
+** The closure of structurally-closed tools is unchanged
+- WHEN the session-scope flag is set
+- THEN a tool that is structurally closed (`apply_diff`, a `--disallowedTools`
+  entry) is still not callable; only the asking about it is waived
+** Every backend answers through the same session scope
+- GIVEN the session-scope flag is set
+- WHEN a permission request arrives from any backend that uses the shared menu
+  (Claude hook, opencode stream, manual escape hatch)
+- THEN it is answered `allow` without a buffer, by the same code path
