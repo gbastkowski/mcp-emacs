@@ -52,9 +52,13 @@ exactly, drawers and all)."
 
 (cl-defstruct (orgspec-change (:constructor orgspec-change-create))
   "A parsed change: its id and the delta requirements it carries.
-ID is the change directory name.  REQUIREMENTS is a list of
-`orgspec-requirement', each with a non-nil OP."
+ID is the change directory name.  TRACKER and ISSUE are the change's
+back-link to its origin discussion on an external issue tracker (from the
+buffer-level `#+PROPERTY:' keywords); either may be nil.  REQUIREMENTS is a
+list of `orgspec-requirement', each with a non-nil OP."
   id
+  tracker
+  issue
   (requirements nil))
 
 (provide 'orgspec-model)

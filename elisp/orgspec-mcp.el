@@ -48,20 +48,32 @@
                alist "\n")))
 
 (defun orgspec-mcp--format-change (change)
-  "Render an `orgspec-change' CHANGE as a readable per-requirement summary."
-  (let ((reqs (orgspec-change-requirements change)))
+  "Render an `orgspec-change' CHANGE as a readable per-requirement summary.
+Prefixes the requirements with the change id and its tracker/issue back-link
+when one is present, so an agent reading a change sees where its discussion
+lives."
+  (let ((reqs (orgspec-change-requirements change))
+        (head (concat (orgspec-change-id change)
+                      (when (or (orgspec-change-tracker change)
+                                (orgspec-change-issue change))
+                        (format " (from %s%s)"
+                                (or (orgspec-change-tracker change) "-")
+                                (if (orgspec-change-issue change)
+                                    (format ":%s" (orgspec-change-issue change))
+                                  ""))))))
     (if (null reqs)
-        (format "%s: no delta requirements" (orgspec-change-id change))
-      (mapconcat
-       (lambda (r)
-         (format "- %s [%s] area=%s%s scenarios=%d"
-                 (orgspec-requirement-name r)
-                 (or (orgspec-requirement-op r) "?")
-                 (or (orgspec-requirement-area r) "?")
-                 (if (orgspec-requirement-from r)
-                     (format " from=%S" (orgspec-requirement-from r)) "")
-                 (length (orgspec-requirement-scenarios r))))
-       reqs "\n"))))
+        (format "%s: no delta requirements" head)
+      (concat head "\n"
+              (mapconcat
+               (lambda (r)
+                 (format "- %s [%s] area=%s%s scenarios=%d"
+                         (orgspec-requirement-name r)
+                         (or (orgspec-requirement-op r) "?")
+                         (or (orgspec-requirement-area r) "?")
+                         (if (orgspec-requirement-from r)
+                             (format " from=%S" (orgspec-requirement-from r)) "")
+                         (length (orgspec-requirement-scenarios r))))
+               reqs "\n")))))
 
 ;;;; Handlers
 

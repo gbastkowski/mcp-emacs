@@ -74,6 +74,32 @@ Renamed.
     (it "takes the requirement name from the headline text"
       (check (orgspec-requirement-name (car reqs)) "Req one"))))
 
+(describe "orgspec-parse-change reads the tracker/issue back-link"
+  (let* ((chg (parse-test--change "#+PROPERTY: TRACKER github
+#+PROPERTY: ISSUE gbastkowski/mcp-emacs#63
+* Delta
+** Req                                                     :ADDED:
+:PROPERTIES:
+:AREA: auth
+:END:
+The system SHALL notify.
+")))
+    (it "reads the tracker from the buffer-level TRACKER property"
+      (check (orgspec-change-tracker chg) "github"))
+    (it "reads the issue from the buffer-level ISSUE property"
+      (check (orgspec-change-issue chg) "gbastkowski/mcp-emacs#63")))
+  (let* ((chg (parse-test--change "* Delta
+** Req                                                     :ADDED:
+:PROPERTIES:
+:AREA: auth
+:END:
+The system SHALL notify.
+")))
+    (it "carries nil tracker/issue when no back-link is present"
+      (check (and (null (orgspec-change-tracker chg))
+                  (null (orgspec-change-issue chg)))
+             t))))
+
 (test-helper-summary)
 
 ;;; orgspec-parse-test.el ends here

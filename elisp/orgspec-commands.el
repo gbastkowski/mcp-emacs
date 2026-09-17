@@ -111,6 +111,8 @@ one would make no sense."
 
 (defconst orgspec-commands--change-template "\
 #+TITLE: %s
+#+PROPERTY: TRACKER
+#+PROPERTY: ISSUE
 
 * Intent
 * Scope

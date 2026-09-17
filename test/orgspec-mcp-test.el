@@ -55,6 +55,21 @@
         (it "includes the requirement's area property"
           (check-that (string-match-p "area=auth" s)))))
 
+    (describe "orgspec-mcp--parse surfaces a tracker/issue back-link"
+      (let ((f (orgspec-commands--change-file "with-backlink")))
+        (orgspec-mcp-call "orgspec_new" `((id . "with-backlink") (root . ,root)))
+        (with-temp-file f
+          (insert "#+PROPERTY: TRACKER github\n"
+                  "#+PROPERTY: ISSUE gbastkowski/mcp-emacs#63\n"
+                  "* Tasks\n- [ ] a\n* Delta\n"
+                  "** Login required :ADDED:\n:PROPERTIES:\n:AREA: auth\n:END:\n"
+                  "The system SHALL require login.\n*** happy\n- GIVEN x\n"))
+        (let ((s (orgspec-mcp--parse '((id . "with-backlink")))))
+          (it "names the tracker in the rendered change"
+            (check-that (string-match-p "(from github" s)))
+          (it "names the issue in the rendered change"
+            (check-that (string-match-p ":gbastkowski/mcp-emacs#63" s))))))
+
     (describe "orgspec-mcp--advance"
       (it "moves a requirement to the active todo keyword"
         (check (orgspec-mcp--advance
