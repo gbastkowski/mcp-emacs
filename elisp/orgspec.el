@@ -56,6 +56,17 @@ routing metadata, not durable spec content.")
 (defconst orgspec-from-property "FROM"
   "Org property giving a renamed requirement's previous name.")
 
+(defconst orgspec-tracker-property "TRACKER"
+  "Org buffer property naming the external issue tracker a change came from.
+The tracker is where a change is discussed (GitHub, GitLab, Jira, ...);
+this property (plus `orgspec-issue-property') is the change's back-link to
+that discussion.  Written as a buffer-level `#+PROPERTY:' keyword.")
+
+(defconst orgspec-issue-property "ISSUE"
+  "Org buffer property naming the external tracker issue a change came from.
+Read together with `orgspec-tracker-property'; either may be absent.  The
+value is the tracker's own issue reference (e.g. `gbastkowski/mcp-emacs#63').")
+
 (defconst orgspec-impl-drawer "IMPL"
   "Org drawer holding requirement->code traceability links.
 Kept when a requirement is folded into a spec -- durable provenance.")

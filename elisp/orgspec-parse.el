@@ -96,11 +96,31 @@ drawer, the body prose, and the child scenarios."
             (org-element-property :begin headline)
             (org-element-property :end headline))))
 
+(defun orgspec-parse--buffer-property (keyword)
+  "Return the value of a buffer-level `#+PROPERTY:' KEYWORD, or nil.
+Reads org's native file-scoped property keywords (e.g. `#+PROPERTY:
+TRACKER github') via `org-element', with no cache dependency so it works in
+batch and in a live session.  The value is the keyword text after the
+property name; nil when the keyword is absent."
+  (let ((tree (org-element-parse-buffer))
+        val)
+    (org-element-map tree 'keyword
+      (lambda (k)
+        (when (and (equal (org-element-property :key k) "PROPERTY")
+                   (string-prefix-p (concat keyword " ")
+                                    (org-element-property :value k)))
+          (setq val
+                (string-trim
+                 (substring (org-element-property :value k)
+                            (length keyword)))))))
+    val))
+
 (defun orgspec-parse-change (&optional id)
   "Parse the current buffer's `* Delta' subtree into an `orgspec-change'.
 ID names the change (its directory).  Delta requirements are the level-2
 headlines under the top-level `Delta' headline; their scenarios are the
-level-3 children."
+level-3 children.  The change's TRACKER/ISSUE back-link (buffer-level
+`#+PROPERTY:' keywords) is carried on the result."
   (let ((tree (org-element-parse-buffer))
         requirements)
     (org-element-map tree 'headline
@@ -110,8 +130,11 @@ level-3 children."
           (dolist (child (org-element-contents hl))
             (when (eq (org-element-type child) 'headline)
               (push (orgspec-parse--requirement child) requirements))))))
-    (orgspec-change-create :id id
-                           :requirements (nreverse requirements))))
+    (orgspec-change-create
+     :id id
+     :tracker (orgspec-parse--buffer-property orgspec-tracker-property)
+     :issue (orgspec-parse--buffer-property orgspec-issue-property)
+     :requirements (nreverse requirements))))
 
 (defun orgspec-parse-spec ()
   "Parse the current buffer as a spec into a list of `orgspec-requirement'.

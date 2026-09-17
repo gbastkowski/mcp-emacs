@@ -1,0 +1,80 @@
+#+TITLE: issue-63
+#+PROPERTY: TRACKER github
+#+PROPERTY: ISSUE gbastkowski/mcp-emacs#63
+
+* Intent
+orgspec is Org-native and Emacs-resident, which is right for Gunnar and wrong
+as a boundary: a change that exists only as ~orgspec/changes/<id>/change.org~
+in a git checkout is reachable by nothing but an Emacs with orgspec loaded.
+Issues on a tracker (~gh~, GitLab, Jira) are queryable, linkable, scriptable,
+and open to collaborators who never open Emacs.
+
+The tracker is where a change is *discussed*; the Org file is what the
+discussion compiles down to. The Org file stays authoritative for codegen and
+validation, but it must point back at the discussion — a back-link —
+so a stakeholder who reads a spec can find how the change happened. That is
+the minimal, backend-agnostic first slice: record which tracker and issue a
+change came from, and let the existing parser surface it. The fold, the
+scaffolding trigger, and the fetch/post-comment protocol are separate,
+later slices (see Scope/Out of scope).
+
+* Scope
+In scope:
+- A TRACKER/ISSUE buffer-level property convention on a change file
+  (~orgspec/changes/<id>/change.org~), written as ~#+PROPERTY: TRACKER ~ and
+  ~#+PROPERTY: ISSUE ~ keywords — org's native way to attach file-scoped
+  properties, no new file format.
+- A reader in ~elisp/orgspec-parse.el~ that reads those two properties from a
+  change buffer and carries them on the ~orgspec-change~ struct.
+- Surface the back-link in the parser's output so an agent reading a change
+  (~orgspec_parse~, the MCP tool) sees which tracker/issue it came from.
+- A test in ~test/orgspec-parse-test.el~ covering the reader.
+
+Out of scope (later slices, issue #63's open questions):
+- The tracker protocol (fetch-issue / fetch-comments / post-comment / update)
+  — that is a separate cl-defgeneric slice.
+- Auto-folding an issue thread into ~change.org~.
+- Scaffolding trigger (which issues spawn a change) and closing issues on
+  archive.
+
+* Approach
+- Define the property keys once in ~elisp/orgspec.el~ (the marker table) so
+  nothing hardcodes a string, matching the existing ~AREA~/~FROM~ convention.
+- Read them from the change buffer's top-level ~#+PROPERTY:~ keywords with
+  ~org-element~ (the parser's existing engine) — no cache dependency, works in
+  batch. Values are the raw keyword values after the property name.
+- Extend ~orgspec-change~ with ~tracker~/~issue~ slots (nil by default), fill
+  them in ~orgspec-parse-change~, and render them in
+  ~orgspec-mcp--format-change~ so the MCP surface reports the link.
+
+* Tasks
+- [ ] Add ~orgspec-tracker-property~/~orgspec-issue-property~ constants
+- [ ] Add ~tracker~/~issue~ slots to ~orgspec-change~
+- [ ] Read buffer-level TRACKER/ISSUE properties in ~orgspec-parse-change~
+- [ ] Surface the link in ~orgspec-mcp--format-change~
+- [ ] Tests for the reader and the rendered output
+
+* Delta
+** Change files can point back at a tracker issue :ADDED:
+:PROPERTIES:
+:AREA: orgspec
+:END:
+orgspec SHALL read a tracker and issue back-link from a change buffer's
+top-level ~#+PROPERTY:~ keywords (as the buffer-file properties the issue came
+from) and SHALL carry both on the parsed ~orgspec-change~, so a change's
+origin discussion on an external issue tracker is discoverable from the Org
+file alone.
+*** The parser surfaces the tracker/issue back-link
+- GIVEN a change buffer whose top-level keywords carry ~#+PROPERTY: TRACKER github~
+  and ~#+PROPERTY: ISSUE gbastkowski:mcp-emacs-63~
+- WHEN the change is parsed
+- THEN the resulting ~orgspec-change~ carries tracker ~github~ and issue
+  ~gbastkowski:mcp-emacs-63~
+*** A change with no back-link parses without one
+- GIVEN a change buffer with no TRACKER or ISSUE property
+- WHEN the change is parsed
+- THEN the resulting ~orgspec-change~ carries nil tracker and nil issue
+*** The MCP surface reports the back-link
+- GIVEN a parsed change that carries a tracker and issue
+- WHEN ~orgspec_parse~ renders it
+- THEN the rendered text names the tracker and issue
