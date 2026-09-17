@@ -289,6 +289,25 @@ additive: the existing settings are read, one entry is appended to
           (insert (json-encode settings*) "\n"))
         t))))
 
+;;;; Session allow-all
+
+;; The scope between "allow once" and the durable "always allow" rule: a
+;; blanket allow that lives only as long as this Emacs session.  The
+;; mode's boolean is the flag `agent-permission-request' consults, the
+;; mode line shows it in every buffer while set, and toggling the mode
+;; back off is the mid-session stop.
+
+(define-minor-mode agent-permission-session-allow-all-mode
+  "Answer each agent permission request `allow' for the rest of this session.
+With the mode on, `agent-permission-request' resolves every gated call to
+`allow' immediately without raising a decision buffer -- the scope in
+between \"allow once\" and the durable \"always allow\" rule.  The flag
+lives in memory only: it dies with this Emacs session and no settings
+file is written, so the next session starts gated again.  Turn it back
+off any time with `M-x agent-permission-session-allow-all-mode'."
+  :global t
+  :lighter " A-A")
+
 ;;;; Commands
 
 
@@ -346,6 +365,17 @@ rule's `*' reaches past `&&' into a second command."
          (agent-permission--answer
           'allow "Allowed by the human in Emacs (the allowlist could not be updated)."))))))
 
+(defun agent-permission-allow-all-session ()
+  "Allow the call this buffer is asking about, and every later one this session.
+Turns on `agent-permission-session-allow-all-mode', so the rest of this
+session's gated calls are answered `allow' without asking, then answers
+the current decision `allow' -- the call that prompted the human is not
+left hanging."
+  (interactive)
+  (agent-permission-session-allow-all-mode 1)
+  (agent-permission--answer
+   'allow "Allowed by the human in Emacs for the rest of this session."))
+
 (defvar agent-permission-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "a") #'agent-permission-allow)
@@ -354,12 +384,15 @@ rule's `*' reaches past `&&' into a second command."
     (define-key map (kbd "n") #'agent-permission-deny)
     (define-key map (kbd "q") #'agent-permission-deny)
     (define-key map (kbd "A") #'agent-permission-always-allow)
+    (define-key map (kbd "z") #'agent-permission-allow-all-session)
     map)
   "Keymap for `agent-permission-mode'.
 `q' denies rather than dismissing: there is no such thing as closing
 this buffer without answering it, because something is blocked waiting.
 `A' is capital on purpose: it writes to a settings file shared with the
-terminal CLI, so it should not sit under the same finger as `a'.")
+terminal CLI, so it should not sit under the same finger as `a'.
+`z' is the session scope: it answers this call `allow' and every later
+one this session -- in memory only, no settings file is written.")
 
 (define-derived-mode agent-permission-mode special-mode "Permission"
   "Major mode for answering one agent permission decision.
@@ -381,7 +414,8 @@ compose."
                     (kbd "d") #'agent-permission-deny
                     (kbd "n") #'agent-permission-deny
                     (kbd "q") #'agent-permission-deny
-                    (kbd "A") #'agent-permission-always-allow)
+                    (kbd "A") #'agent-permission-always-allow
+                    (kbd "z") #'agent-permission-allow-all-session)
   (evil-set-initial-state 'agent-permission-mode 'normal))
 
 ;;;; Entry point
@@ -396,12 +430,15 @@ compose."
    (concat "\\<agent-permission-mode-map>"
            "\\[agent-permission-allow] allow once  "
            "\\[agent-permission-deny] deny  "
-           "\\[agent-permission-always-allow] always allow")))
+           "\\[agent-permission-always-allow] always allow  "
+           "\\[agent-permission-allow-all-session] allow all this session")))
 
 (defun agent-permission-request (id tool input &rest options)
   "Raise a permission decision for TOOL with INPUT, identified by ID.
 Show a buffer naming the call and wait for the human to answer it with
-one key.  Return the decision buffer.
+one key.  Return the decision buffer; with
+`agent-permission-session-allow-all-mode' on, no buffer is raised and
+the decision is answered `allow' immediately, returning non-nil.
 
 OPTIONS is a plist:
 
@@ -420,32 +457,44 @@ signals: two callers waiting on one id could not both be told the
 answer."
   (when (assoc id agent-permission--pending)
     (error "A decision for %s is already pending" id))
-  (let* ((buffer (get-buffer-create (agent-permission--buffer-name id)))
-         (entry (list :tool tool
-                      :input input
-                      :cwd (plist-get options :cwd)
-                      :resolve (plist-get options :resolve)
-                      :buffer buffer)))
-    (push (cons id entry) agent-permission--pending)
-    (with-current-buffer buffer
-      (agent-permission-mode)
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (agent-permission--render entry)))
-      (goto-char (point-min))
-      (setq agent-permission--id id)
-      (setq-local header-line-format (agent-permission--header)))
-    (agent-permission--display buffer (or (plist-get options :window)
-                                          (selected-window)))
-    (when-let* ((seconds (plist-get options :timeout)))
-      (run-at-time
-       seconds nil
-       (lambda ()
-         (agent-permission--resolve
-          id 'timeout
-          (format "No answer within %ss; denied. The human may not have been at the keyboard."
-                  seconds)))))
-    buffer))
+  (if agent-permission-session-allow-all-mode
+      ;; Session allow-all is on: answer without asking.  The decision
+      ;; never enters `agent-permission--pending', so it cannot be
+      ;; answered twice, and the continuation runs from a timer exactly
+      ;; as a normal answer would -- which is what holds the server
+      ;; connection open for the reply.  Return non-nil so the
+      ;; `/permission-gate' endpoint treats the request as handled.
+      (progn
+        (when-let* ((resolve (plist-get options :resolve)))
+          (run-at-time 0 nil resolve 'allow
+                       "Allowed by the human in Emacs for the rest of this session."))
+        t)
+    (let* ((buffer (get-buffer-create (agent-permission--buffer-name id)))
+           (entry (list :tool tool
+                        :input input
+                        :cwd (plist-get options :cwd)
+                        :resolve (plist-get options :resolve)
+                        :buffer buffer)))
+      (push (cons id entry) agent-permission--pending)
+      (with-current-buffer buffer
+        (agent-permission-mode)
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert (agent-permission--render entry)))
+        (goto-char (point-min))
+        (setq agent-permission--id id)
+        (setq-local header-line-format (agent-permission--header)))
+      (agent-permission--display buffer (or (plist-get options :window)
+                                            (selected-window)))
+      (when-let* ((seconds (plist-get options :timeout)))
+        (run-at-time
+         seconds nil
+         (lambda ()
+           (agent-permission--resolve
+            id 'timeout
+            (format "No answer within %ss; denied. The human may not have been at the keyboard."
+                    seconds)))))
+      buffer)))
 
 (provide 'agent-permission)
 ;;; agent-permission.el ends here

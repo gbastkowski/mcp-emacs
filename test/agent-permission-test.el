@@ -20,10 +20,13 @@
 (require 'agent-permission)
 
 (defun agent-permission-test--reset ()
-  "Drop any decision left pending by an earlier expectation."
+  "Drop any decision left pending by an earlier expectation.
+Session allow-all is turned off too, so the flag cannot leak from one
+expectation into the next."
   (dolist (id (agent-permission-pending-ids))
     (agent-permission--resolve id 'deny "test cleanup"))
-  (setq agent-permission--pending nil))
+  (setq agent-permission--pending nil)
+  (agent-permission-session-allow-all-mode 0))
 
 (defun agent-permission-test--tempdir ()
   "Return a fresh directory for a settings-file expectation."
@@ -128,6 +131,67 @@ while checking nothing."
     (check-that (condition-case nil
                     (progn (agent-permission-request "req-dup" "Bash" nil) nil)
                   (error t))))
+  (agent-permission-test--reset))
+
+;;;; Session allow-all
+
+(describe "the session allow-all key"
+  (agent-permission-test--reset)
+  (let ((answers nil))
+    (agent-permission-request
+     "req-session" "Bash" '((command . "git push"))
+     :resolve (lambda (d r) (push (cons d r) answers)))
+    (with-current-buffer "*agent-permission: req-session*"
+      (agent-permission-allow-all-session))
+    (agent-permission-test--wait-for (lambda () answers))
+    (it "answers the current decision `allow'"
+      (check (caar answers) 'allow))
+    (it "names the session scope in the reason"
+      (check-that (string-match-p "rest of this session" (or (cdar answers) ""))))
+    (it "turns the session flag on"
+      (check agent-permission-session-allow-all-mode t)))
+  (agent-permission-test--reset))
+
+(describe "a gated call while session allow-all is on"
+  (agent-permission-test--reset)
+  (agent-permission-session-allow-all-mode 1)
+  (let ((answers nil))
+    (agent-permission-request
+     "req-swift" "Bash" '((command . "ls -la"))
+     :resolve (lambda (d r) (push (cons d r) answers)))
+    (agent-permission-test--wait-for (lambda () answers))
+    (it "answers `allow' without asking"
+      (check (caar answers) 'allow))
+    (it "creates no decision buffer"
+      (check (get-buffer "*agent-permission: req-swift*") nil))
+    (it "leaves the pending registry empty"
+      (check (agent-permission-pending-ids) nil)))
+  (agent-permission-test--reset))
+
+(describe "turning session allow-all off"
+  (agent-permission-test--reset)
+  (agent-permission-session-allow-all-mode 1)
+  (agent-permission-session-allow-all-mode 0)
+  (let ((answers nil))
+    (agent-permission-request
+     "req-again" "Bash" '((command . "echo again"))
+     :resolve (lambda (d _r) (push d answers)))
+    (it "raises a real decision buffer again"
+      (check-that (member "req-again" (agent-permission-pending-ids))))
+    (with-current-buffer "*agent-permission: req-again*"
+      (agent-permission-deny))
+    (agent-permission-test--wait-for (lambda () answers))
+    (it "delivers the answer as before"
+      (check answers '(deny))))
+  (agent-permission-test--reset))
+
+(describe "the session allow-all lighter"
+  (agent-permission-test--reset)
+  (agent-permission-session-allow-all-mode 1)
+  (it "shows a lighter while the mode is on"
+    (check-that (member " A-A"
+                        (cdr (assq 'agent-permission-session-allow-all-mode
+                                   minor-mode-alist)))))
   (agent-permission-test--reset))
 
 ;;;; Rendering
