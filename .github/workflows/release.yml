@@ -1,11 +1,14 @@
 name: Release
 
-# Every merge to main yields a new release. The loop never merges (that is the
-# human's gate), so the trigger is the push itself, however it happened.
+# A release is cut once per *batch*, not per merge: the loop works through all
+# doable agent-loop issues, the human reviews and merges them, and only when
+# every batch PR is merged to main and no eligible issue remains does the loop
+# fire this workflow (via `gh workflow run release.yml`). The trigger is
+# therefore explicit (workflow_dispatch), decided by the loop's release.py
+# batch gate -- never an automatic per-merge push. See the mcp-emacs-issue-loop
+# skill for how release.py decides "batch is ready".
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -33,15 +36,15 @@ jobs:
             | head -n1 || true)
           latest=${latest:-v0.0.0}
 
-          # Bump the patch number on every merge. Minor/major bumps stay a
-          # deliberate, manual tag (git tag v2.0.0 && git push --tags).
+          # Bump the patch number on every batch release. Minor/major bumps stay
+          # a deliberate, manual tag (git tag v2.0.0 && git push --tags).
           base=${latest#v}
           IFS=. read -r maj min pat <<< "$base"
           ver="v$maj.$min.$((10#$pat + 1))"
 
-          # If the tag already exists, nothing new to release on this push.
+          # If the tag already exists, nothing new to release on this run.
           if git rev-parse -q --verify "refs/tags/$ver" >/dev/null; then
-            echo "Tag $ver already exists; nothing to release on this push."
+            echo "Tag $ver already exists; nothing to release on this run."
             exit 0
           fi
 
@@ -61,7 +64,7 @@ jobs:
             notes=$(gh pr list --state merged --search "merged:>=$since" \
               --limit 50 --json number,title --jq '.[] | "- #\(.number) \(.title)"' || true)
           fi
-          printf '## What changed\n\n%s\n\n_Generated from the merge to main._\n' \
+          printf '## What changed\n\n%s\n\n_Generated on batch completion._\n' \
             "$notes" > /tmp/release-notes.md
 
           gh release create "$ver" \

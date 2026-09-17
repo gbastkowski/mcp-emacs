@@ -210,7 +210,9 @@ Issues and pull requests are welcome. By contributing you agree that your
 contributions are licensed under the project's GPL-3.0-or-later license.
 
 Something in mcp-emacs misbehaving? The `report_tooling_issue` tool and the
-`report-issue` skill file it as a GitHub issue from inside your assistant.
+`report-issue` skill file it as a GitHub issue from inside your assistant, and
+`M-x mcp-emacs-report-bug` / `M-x mcp-emacs-report-feature` do the same straight
+from Emacs — first line is the title, `C-c C-c` files it.
 
 ## License
 

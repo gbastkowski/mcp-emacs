@@ -159,6 +159,7 @@ beyond what was shown.
 - GIVEN a proposed allowlist rule
 - WHEN the human declines it
 - THEN the settings file is unchanged
+<<<<<<< HEAD
 * Claude maps its stream to the shared vocabulary
 The claude-client backend SHALL implement ~agent-backend-turn-state~ and
 ~agent-backend-turn-elapsed~ from its stream-derived state
@@ -171,3 +172,40 @@ and cleared when it ends
 ** Idle and finished from process liveness
 - WHEN the claude-client process is alive but no turn is in flight
 - THEN ~agent-backend-turn-state~ returns ~idle~ and elapsed is nil; when the process has exited it returns ~finished~
+
+* Conversation re-display reuses its window
+When the Claude conversation buffer is displayed again while it already has a
+window, the system SHALL reuse that existing window and MUST NOT create a
+second, duplicate window for the buffer.
+** Buffer already displayed
+- WHEN ~claude-client--display~ is asked to display a conversation buffer
+  that some window already shows
+- THEN that existing window is reused and no additional window for the buffer
+  is created
+** Reshow after a review leaves one window
+- WHEN ~claude-client--reshow-after-review~ re-displays a conversation whose
+  window was restored away by an ediff review
+- THEN after the re-show at most one window shows the conversation buffer
+* The effective Claude allowlist is visible, with its sources
+The Claude client SHALL provide a command `claude-client-show-allowlist` that
+shows the effective permission allowlist for the current project, reading each
+of the settings files the CLI layers -- user, user-local, project and
+project-local -- and SHALL label every allow entry with the file it came from,
+so a rule can be traced to its source.  An existing file that contributes no
+allow entries SHALL be reported as contributing none rather than omitted, so a
+rule missing from the effective set is visible.
+** Every entry is shown with its source file
+- WHEN `claude-client-show-allowlist` runs for a project whose layered settings
+  contribute allow entries
+- THEN each entry appears labelled with the scope of the file it came from
+  (user, user-local, project, or project-local)
+** A file with rules and a file without are both accounted for
+- GIVEN one settings file holds allow entries and another exists with none
+- WHEN `claude-client-show-allowlist` runs
+- THEN the first is listed with its entries and the second is reported as
+  contributing none, so an absent rule is visible rather than silently dropped
+** The command is reachable from a conversation
+- WHEN a `claude-client-mode` buffer is focused
+- THEN `claude-client-show-allowlist` is bound to a `C-c`-prefixed key and
+  listed by the buffer's `?` help
+>>>>>>> origin/main

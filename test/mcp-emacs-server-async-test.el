@@ -63,6 +63,15 @@
     (it "keeps apply_diff's synchronous handler as a direct-dispatch fallback"
       (check-that (functionp (plist-get tool :handler)))))
 
+  ;; A wait can occupy the process filter for its whole 300-second cap, so
+  ;; it is deferred too -- while its synchronous handler stays for callers
+  ;; that dispatch directly.
+  (let ((tool (mcp-emacs-server--find-tool "org_task_wait_for_change")))
+    (it "gives the change wait an async handler"
+      (check-that (functionp (plist-get tool :async-handler))))
+    (it "keeps the change wait's synchronous handler as a direct-dispatch fallback"
+      (check-that (functionp (plist-get tool :handler)))))
+
   ;; Ordinary tools must stay synchronous: deferring them would hold a
   ;; connection open for a reply that is already available.
   (let ((tool (mcp-emacs-server--find-tool "project_info")))
@@ -248,6 +257,75 @@
       (check (alist-get 'path seen) "/tmp/x"))
     (it "reaches the handler with numeric arguments unchanged"
       (check (alist-get 'timeout seen) 30))))
+
+;;;; Direct dispatch honours :async-handler (issue #88)
+;; The non-HTTP "direct" path -- `mcp-emacs-server--dispatch' -- used to
+;; funcall the registered `:handler' unconditionally, so a tool declaring
+;; `:async-handler' (apply_diff and friends) was sent to its blocking sync
+;; handler there.  It now speaks the same completion-callback contract as
+;; the HTTP path: supply a completion, get the `deferred' marker back, and
+;; the tool's text arrives via that callback.
+
+(describe "the direct dispatch with a synchronous tool"
+  (let* ((tool (list :name "stub_sync_direct"
+                     :description "test stub"
+                     :schema (mcp-emacs-server--no-args)
+                     :handler (lambda (_args) "sync result")))
+         (mcp-emacs-server-extra-tools (list tool)))
+    (let ((response (mcp-emacs-server--dispatch
+                     (list (cons 'jsonrpc "2.0") (cons 'id 1)
+                           (cons 'method "tools/call")
+                           (cons 'params (list (cons 'name "stub_sync_direct")
+                                               (cons 'arguments nil)))))))
+      (it "still returns the synchronous text result"
+        (check (mcp-srv--text response) "sync result"))
+      (it "carries the request id"
+        (check (mcp-srv--id response) 1)))))
+
+(describe "the direct dispatch with an async tool and a completion"
+  (let* ((done-cb nil)
+         (received nil)
+         (tool (list :name "stub_async_direct"
+                     :description "test stub"
+                     :schema (mcp-emacs-server--no-args)
+                     :async-handler (lambda (_args done)
+                                      (setq done-cb done))))
+         (mcp-emacs-server-extra-tools (list tool)))
+    (let ((response (mcp-emacs-server--dispatch
+                     (list (cons 'jsonrpc "2.0") (cons 'id 2)
+                           (cons 'method "tools/call")
+                           (cons 'params (list (cons 'name "stub_async_direct")
+                                               (cons 'arguments nil))))
+                     (lambda (text) (setq received text)))))
+      (it "returns a response carrying the deferred marker"
+        (check (cdr (assoc "result" response)) 'deferred))
+      (it "does not answer synchronously"
+        (check received nil))
+      (funcall done-cb "Status: applied\nnew\n")
+      (it "delivers the text through the completion callback"
+        (check received "Status: applied\nnew\n")))))
+
+(describe "mcp-emacs-server--tools-call without a completion on an async tool"
+  (let* ((blocking-called nil)
+         (tool (list :name "stub_async_refuse"
+                     :description "test stub"
+                     :schema (mcp-emacs-server--no-args)
+                     :handler (lambda (_args)
+                                (setq blocking-called t)
+                                "should never run")
+                     :async-handler (lambda (_args _done) nil)))
+         (mcp-emacs-server-extra-tools (list tool)))
+    (it "refuses loudly with an error"
+      (check (condition-case err
+                 (progn (mcp-emacs-server--tools-call
+                         (list (cons 'name "stub_async_refuse")
+                               (cons 'arguments nil)))
+                        :called)
+               (error (and (string-match-p "completion" (error-message-string err))
+                           :refused)))
+             :refused))
+    (it "never starts the blocking synchronous handler"
+      (check blocking-called nil))))
 
 ;;;; Body decoding (UTF-8)
 ;; web-server reads the socket with :coding no-conversion, so the body slot

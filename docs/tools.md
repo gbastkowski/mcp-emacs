@@ -111,6 +111,16 @@ confirm, file, report the URL — and prefers the `github` MCP server when one i
 connected. The target repo is fixed: this reports issues about mcp-emacs
 itself, not arbitrary repositories.
 
+To file without an assistant in the loop, `M-x mcp-emacs-report-bug` and `M-x
+mcp-emacs-report-feature` open a composition buffer: the first line is the issue
+title, the rest is the body, `C-c C-c` files it and `C-c C-k` abandons it
+(`ZZ`/`ZQ` under evil). The buffer is seeded with a few prompting headings —
+what happened, what you expected — and any heading left unanswered is stripped
+before filing, so a one-line note stays a one-line issue. An active region goes
+in too. Filing happens once the buffer closes and the URL arrives in the echo
+area; when it fails the text is kept in `*mcp-emacs-report*` and in
+`mcp-emacs-report-last-text` rather than lost.
+
 ## Resources
 
 | Resource            | Description                                                                               |

@@ -1,0 +1,118 @@
+#+TITLE: issue-96
+
+* Intent
+~apply_diff~ lies about its own effect, in two ways.
+
+*Fault 1 -- `applied' does not mean written.* On accept,
+~mcp-emacs--apply-diff-accept~ copies the proposal into Buffer A and sets the
+result to ~applied~, but nothing ever saves Buffer A. The file on disk keeps
+its old content while the tool answers ~Status: applied~ with the new content
+echoed back. An agent that trusts the return value -- as the tool's contract
+invites it to -- reports a file changed that was not, and only notices on an
+unrelated ~git status~. The documented workaround (switch_buffer + save_buffer
+after every apply) is the tool asking its caller to finish its job.
+
+*Fault 2 -- a timeout is reported as a rejection.* In the async path the
+timeout timer force-quits the ediff session with ~ediff-really-quit~ and then
+calls ~finish "Status: timeout"~. The force-quit runs the ediff quit hook
+first, which sets the result to ~rejected~ (any quit without an explicit
+accept is a rejection) and calls the same ~finish~; the single-delivery guard
+is already set, so the timeout's own call is a no-op. The caller is told the
+human rejected a proposal the human never saw, which is the opposite of the
+truth and hides a wedged review behind a decision.
+
+* Scope
+In scope:
+- Accepting a proposal saves the file, so ~applied~ means the content is on
+  disk, not merely in a dirty buffer.
+- An unanswered review ends as ~timeout~, distinguishable from ~rejected~,
+  and leaves the file on disk unchanged.
+
+Out of scope:
+- The IDE ~openDiff~ flow: Claude Code writes the file itself on
+  ~FILE_SAVED~, so its accepting path is unchanged.
+- Rejecting, the window-configuration restore, the placement defcustom, and
+  the event-loop yielding behaviour are unchanged.
+- Why a review occasionally does not reach the human (the retry story in the
+  issue) is not diagnosed here; the fix is that the *outcome* of such a run
+  is reported honestly.
+
+* Approach
+- *Save on accept.* In ~mcp-emacs--apply-diff-accept~, after the proposal (or
+  the human's edit) is in Buffer A, call ~save-buffer~ when Buffer A visits a
+  file and is modified. This is the single accept path shared by the sync and
+  async callers, so one change covers both.
+- *A timeout must win its own race.* In the async timeout timer, record the
+  timeout decision before forcing the quit, so the quit hook's implicit
+  ~rejected~ cannot pre-empt it. Concretely: set the ~done~ guard (or an
+  explicit outcome) in the timer before ~ediff-really-quit~, so the hook's
+  ~finish~ is the no-op and ~timeout~ is what is delivered.
+- *Tests.* Pin both behaviours in the repo's ~describe/it/check~ style: an
+  accept leaves the visited file written; a timeout reports ~timeout~ and
+  leaves the file untouched.
+
+* Tasks
+- [x] ~mcp-emacs--apply-diff-accept~ saves the accepted content to the file
+  when Buffer A is modified and visits a file
+- [x] Update the ~mcp-emacs-apply-diff~ docstring: accepting writes the file
+- [x] Async timeout timer records the timeout before force-quitting, so the
+  outcome is ~timeout~ not ~rejected~
+- [x] Add tests: accepted content reaches disk; timeout is reported as
+  ~timeout~ and the file is unchanged
+- [x] Byte-compile clean
+
+* Delta
+** An interactive diff/apply tool presents a proposal via ediff   :MODIFIED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The system SHALL expose an MCP tool that accepts a file path and proposed new
+content, opens an ediff session comparing the file's current content against
+the proposal, and lets the human review, edit, accept, or reject it
+interactively before the tool returns.
+The outcome SHALL be determined by an explicit human accept or reject action
+during the session, not by whether the buffer content changed; accepting SHALL
+apply the proposal (or the human's edited version of it) to the file and SHALL
+write it to disk, so a returned status of ~applied~ means the file on disk
+holds that content; rejecting SHALL leave the file unchanged, and quitting
+without an explicit accept SHALL be treated as a rejection.
+*** An accepted proposal is applied
+- GIVEN a diff call with a path and new content
+- WHEN the human accepts the proposal without editing it
+- THEN the proposed content is written to the file on disk and a status of
+  ~applied~ is returned with the final content
+*** A rejected proposal changes nothing
+- GIVEN a diff review in progress
+- WHEN the human rejects the proposal
+- THEN the file's buffer is left unchanged and a status of ~rejected~ is
+  returned
+*** A human edit wins over the proposal
+- GIVEN a diff review in progress
+- WHEN the human edits the proposed content and then accepts
+- THEN the file on disk holds the human-edited content, not the original
+  proposal, and a status of ~applied~ is returned
+*** Quitting without accepting is a rejection
+- GIVEN a diff review in progress
+- WHEN the human quits the ediff session without explicitly accepting
+- THEN the file's buffer is left unchanged and a status of ~rejected~ is
+  returned
+** The diff/apply wait is bounded by a timeout   :MODIFIED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The diff tool SHALL apply a default timeout when none is given and MUST cap
+the timeout at a defined maximum, so the call cannot hang indefinitely. When
+the timeout elapses the tool SHALL report a status of ~timeout~ -- distinct
+from ~rejected~ -- and MUST leave the file on disk unchanged.
+*** An unanswered review times out
+- WHEN the timeout elapses for a review the human neither accepts nor rejects
+- THEN the ediff session is abandoned, the file on disk is left unchanged,
+  and a status of ~timeout~ is returned
+*** An excessive timeout is capped
+- GIVEN a requested timeout above the maximum
+- WHEN the diff tool runs
+- THEN it waits no longer than the maximum
+*** A timeout is not reported as a rejection
+- GIVEN a review the human did not answer and a timeout that elapses
+- WHEN the ediff session is force-quit to end the wait
+- THEN the reported status is ~timeout~, not ~rejected~

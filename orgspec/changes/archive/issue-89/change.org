@@ -1,0 +1,110 @@
+#+TITLE: issue-89
+
+* Intent
+~org_task_wait_for_change~ is registered with ~:handler~ only
+(~elisp/mcp-emacs-server.el:418~).  Over HTTP it is therefore dispatched by
+the synchronous path, which ~mcp-emacs-server--handler~ runs inline inside
+~ws-filter~.  A wait can last up to its 300-second cap, so that call blocks
+the process filter for its whole duration and Emacs serves nothing else.  The
+wait's ~mcp-emacs--wait-tick~ yields with ~sit-for~, which improves on a busy
+spin, but the handler still occupies the filter — the pinned-core catastrophe
+filed from 6325845 and logged in ~test/mcp-emacs-wait-tick-test.el~ is a
+symptom of the same design gap, not a different one.
+
+~apply_diff~ already solved this class of problem: it carries an
+~:async-handler~ (~elisp/mcp-emacs-server.el:337~) shaped as
+~mcp-emacs-apply-diff-async~, which starts the work and returns to the event
+loop, then answers the deferred request from a callback.  A wait on a
+file-change token is *more* suited to that shape than a human-answered ediff
+is, because it needs no interactive panel at all — a timer can poll the token
+and a timeout timer bounds it, both without occupying the filter.
+
+The fix is to give ~org_task_wait_for_change~ the same ~:async-handler~
+treatment, implemented with a polling timer for the change and a bounding
+timer for the timeout, so an HTTP wait never blocks the filter.
+
+* Scope
+In scope:
+- Add an ~:async-handler~ for ~org_task_wait_for_change~
+  (~elisp/mcp-emacs-server.el~), shaped like the ~apply_diff~ one
+  (~mcp-emacs-apply-diff-async~ at ~elisp/mcp-emacs.el:1154~): start the wait
+  and return to the event loop immediately; answer the deferred request from
+  a timer callback.
+- Implement a timer-driven ~mcp-emacs-org-task-wait-for-change-async~ (new, in
+  ~elisp/mcp-emacs.el~) that polls the change token at the existing
+  ~mcp-emacs-org-task-wait-poll-interval~ and cancels on change or on the
+  bounded timeout, calling the ~done~ callback exactly once with the same
+  result text the synchronous function returns ("Changed: yes/no\n…" plus the
+  session view).
+- Keep the synchronous ~:handler~ as the direct-dispatch fallback, mirroring
+  how ~apply_diff~ keeps both.
+- Tests in ~test/mcp-emacs-server-async-test.el~ (registry + deferral) and a
+  timer-driven test in ~test/mcp-emacs-wait-tick-test.el~ covering: async
+  registration, immediate return to the event loop, single delivery on
+  change, single delivery on timeout, and the not-org-file friendly error.
+
+Out of scope:
+- Rewriting ~mcp-emacs--wait-tick~ or the synchronous handler's semantics.
+- ~:async-handler~ dispatch outside HTTP (~#88~ is its own issue; the
+  synchronous ~:handler~ stays as that direct-dispatch path).
+- The shared sync/async factoring of other tools.
+
+* Approach
+- ~elisp/mcp-emacs.el~: add ~mcp-emacs-org-task-wait-for-change-async~
+  (path token timeout on-done).  Resolve the same baseline, default/timeout
+  caps and not-org-file check as the sync function; for the wait itself do
+  not loop — instead register a ~run-with-timer~ at
+  ~mcp-emacs-org-task-wait-poll-interval~ that re-checks the token and, when
+  it changed past baseline, cancels both timers and calls ~on-done~ with the
+  formatted result; register a second timer at ~secs~ that, if the change
+  timer has not fired, cancels it and calls ~on-done~ with the "Changed: no"
+  result.  A ~done~-list guard (like ~mcp-emacs-apply-diff-async~'s) ensures
+  single delivery whichever timer wins.
+- Factor the "Changed: …\n<view>" formatting into a helper shared by the sync
+  and async paths so the two cannot drift in output format.
+- ~elisp/mcp-emacs-server.el~: add ~:async-handler ~ to the
+  ~org_task_wait_for_change~ tool descriptor, mirroring the ~apply_diff~ one:
+  ~(lambda (args done) (mcp-emacs-org-task-wait-for-change-async
+  (alist-get 'path args) (alist-get 'token args) (alist-get 'timeout args)
+  done))~.
+- Tests: extend ~test/mcp-emacs-server-async-test.el~ to assert
+  ~org_task_wait_for_change~ now carries a function ~:async-handler~ and
+  still its synchronous ~:handler~; add a timer-based case (drive the wait in
+  a short timeout with a prepared buffer) that resolves through
+  ~mcp-emacs--tools-call-async~ exactly once.  In
+  ~test/mcp-emacs-wait-tick-test.el~ add the timeout single-delivery and
+  change-wakes-it timer cases.
+- Verify with the repository's own entry point on a separate Emacs:
+  ~bin/test-emacs.sh --compile --strict~ and the full suite in the work tree
+  (see AGENTS.md).
+
+* Tasks
+- [ ] Add ~mcp-emacs-org-task-wait-for-change-async~ (timer-driven) and share the result formatting with the sync function in ~elisp/mcp-emacs.el~
+- [ ] Add ~:async-handler~ to the ~org_task_wait_for_change~ descriptor in ~elisp/mcp-emacs-server.el~
+- [ ] Tests: async registration, immediate return, single delivery on change and on timeout, friendly error in ~test/mcp-emacs-server-async-test.el~ and ~test/mcp-emacs-wait-tick-test.el~
+- [ ] ~bin/test-emacs.sh --compile~ clean (no new warnings) and full suite green in a separate Emacs
+- [ ] orgspec change validated and the fold archived into ~specs/org-task.org~ / ~specs/mcp-tools.org~ when green
+
+* Delta
+** A session file change wait is served without blocking the process filter    :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The ~org_task_wait_for_change~ tool SHALL be registered with an
+~:async-handler~ alongside its synchronous ~:handler~, shaped like
+~apply_diff~'s: over HTTP the wait SHALL start and return to the Emacs event
+loop immediately rather than occupy the process filter, and the deferred
+request SHALL be answered from a timer callback.
+*** Returns without occupying the filter over HTTP
+- WHEN ~org_task_wait_for_change~ is called over HTTP for a session file that has not changed past its baseline
+- THEN the handler returns to the event loop immediately and the response is written later, once the change is observed or the timeout elapses
+*** Single delivery when the change is observed
+- GIVEN an async wait in progress with a baseline token
+- WHEN the session buffer is edited past that token before the timeout
+- THEN the deferred response carries the change flag and current session view exactly once
+*** Single delivery when the timeout elapses
+- GIVEN an async wait in progress with a baseline token
+- WHEN no edit occurs before the bounded timeout
+- THEN the deferred response carries the no-change flag and current session view exactly once
+*** The synchronous fallback stays
+- THEN ~org_task_wait_for_change~ SHALL keep its ~:handler~ so callers that dispatch directly (outside HTTP) are served synchronously, exactly as ~apply_diff~ does

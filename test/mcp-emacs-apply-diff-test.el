@@ -56,6 +56,58 @@
             (check (car result) 'applied)))
       (kill-buffer a) (kill-buffer b))))
 
+;; Accepting must persist: "applied" promises the file on disk holds the
+;; accepted content, not merely a dirty Buffer A.  These use a real file so
+;; the write is observable.
+(describe "accepting a proposal writes it to disk"
+  ;; Unedited accept -> the proposal itself lands on disk.
+  (let ((file (make-temp-file "mcp-accept-" nil ".txt" "old\n")))
+    (unwind-protect
+        (let ((buffer-a (find-file-noselect file))
+              (buffer-b (generate-new-buffer " *accept-b*")))
+          (unwind-protect
+              (progn
+                (with-current-buffer buffer-b (insert "new\n"))
+                (mcp-emacs--apply-diff-accept
+                 buffer-a buffer-b "old\n" (list nil))
+                (it "writes the accepted proposal to the file on disk"
+                  (check (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string))
+                         "new\n"))
+                (it "marks buffer A saved rather than leaving it dirty"
+                  (check (buffer-modified-p buffer-a) nil)))
+            (when (buffer-live-p buffer-b) (kill-buffer buffer-b))
+            (when (buffer-live-p buffer-a)
+              (with-current-buffer buffer-a (set-buffer-modified-p nil))
+              (kill-buffer buffer-a))))
+      (delete-file file)))
+
+  ;; The human's edit wins the accept, so it -- not the proposal -- reaches disk.
+  (let ((file (make-temp-file "mcp-accept-edit-" nil ".txt" "old\n")))
+    (unwind-protect
+        (let ((buffer-a (find-file-noselect file))
+              (buffer-b (generate-new-buffer " *accept-b2*")))
+          (unwind-protect
+              (progn
+                (with-current-buffer buffer-b (insert "new\n"))
+                (with-current-buffer buffer-a
+                  (erase-buffer) (insert "hand-edited\n"))
+                (mcp-emacs--apply-diff-accept
+                 buffer-a buffer-b "old\n" (list nil))
+                (it "writes the human's edit to the file on disk"
+                  (check (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string))
+                         "hand-edited\n"))
+                (it "marks buffer A saved rather than leaving it dirty"
+                  (check (buffer-modified-p buffer-a) nil)))
+            (when (buffer-live-p buffer-b) (kill-buffer buffer-b))
+            (when (buffer-live-p buffer-a)
+              (with-current-buffer buffer-a (set-buffer-modified-p nil))
+              (kill-buffer buffer-a))))
+      (delete-file file))))
+
 (describe "mcp-emacs--apply-diff-reject"
   ;; 4.2 Reject -> rejected, A unchanged.
   (let* ((s (mcp--make-session "old\n" "new\n"))
@@ -307,6 +359,50 @@ and `control' is the fake control buffer."
               (check (length calls) 1))
             (it "cancels the timeout timer once the review resolves"
               (check (length timer-list) before))))
+      (let ((buf (find-buffer-visiting file)))
+        (when buf (with-current-buffer buf (set-buffer-modified-p nil))
+              (kill-buffer buf)))
+      (delete-file file))))
+
+(describe "mcp-emacs-apply-diff-async timeout beats the quit hook"
+  ;; The timeout must win its own race against the force-quit's quit hook.
+  ;; A real `ediff-really-quit' runs the ediff quit hook, and that hook
+  ;; treats any quit without an explicit accept as a rejection -- so when the
+  ;; guard was claimed only after the force-quit, the caller was told
+  ;; "rejected" for a session nobody answered.  Model the sequence by running
+  ;; the real setup (installing the quit hook via the setup lambda) and by
+  ;; making the stubbed force-quit run that hook, just as ediff would.
+  (let ((file (mcp--async-fixture)))
+    (unwind-protect
+        (let* ((control (generate-new-buffer " *fake-async-control*"))
+               (calls nil)
+               (mcp-emacs-ediff-window-direction 'plain))
+          (cl-letf (((symbol-function 'ediff-buffers)
+                     (lambda (_a _b setup-hooks &rest _)
+                       (let ((ediff-control-buffer control))
+                         (dolist (fn setup-hooks) (funcall fn)))
+                       control))
+                    ((symbol-function 'set-window-configuration)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'ediff-really-quit)
+                     (lambda (&rest _)
+                       ;; The real force-quit runs the quit hook, whose
+                       ;; implicit default is a rejection.
+                       (with-current-buffer control
+                         (run-hooks 'ediff-quit-hook)))))
+            (mcp-emacs-apply-diff-async
+             file "new\n" 1 (lambda (out) (push out calls)))
+            (sleep-for 2)
+            (it "reports timeout rather than the quit hook's rejection"
+              (check (car calls) "Status: timeout"))
+            (it "answers exactly once when the timeout races the quit hook"
+              (check (length calls) 1))
+            (it "leaves the file on disk unchanged on timeout"
+              (check (with-temp-buffer
+                       (insert-file-contents file)
+                       (buffer-string))
+                     "old\n")))
+          (when (buffer-live-p control) (kill-buffer control)))
       (let ((buf (find-buffer-visiting file)))
         (when buf (with-current-buffer buf (set-buffer-modified-p nil))
               (kill-buffer buf)))
