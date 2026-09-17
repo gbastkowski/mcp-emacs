@@ -1,4 +1,4 @@
-#+TITLE: issue-76
+#+TITLE: stand-on-conversation-turn-state
 
 * Intent
 Whether the model is mid-turn is tracked (~claude-client--turn-active~) but
