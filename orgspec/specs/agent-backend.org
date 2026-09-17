@@ -349,3 +349,20 @@ rather than silently doing nothing. When a spawned agent reaches ~done~ or
 ** A finish is noticed without a refresh
 - WHEN the list is on screen and a running agent reaches ~done~ or ~failed~
 - THEN its row updates by itself
+* A question is answered through a menu of proposed options
+The system SHALL present a pending agent question in a dedicated answer-menu
+buffer that lists the options the agent proposed, one keystroke per option,
+and resolves the pending question with the chosen answer; a free-form answer
+SHALL be available as an escape hatch when the agent did not anticipate an
+option.
+** An offered option is chosen
+- WHEN the answer menu for a question with proposed options is displayed
+- THEN pressing the key bound to an option resolves the question with that
+  option's text
+** A free-form answer is accepted
+- WHEN the answer menu is displayed
+- THEN the free-form escape lets the human type an answer the agent did not
+  propose, and that text resolves the question
+** The menu clears exactly once
+- WHEN an answer (option or free-form) is chosen
+- THEN the menu closes and a second answer to the same question does nothing
