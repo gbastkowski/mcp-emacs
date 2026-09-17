@@ -221,3 +221,63 @@ buffer it is invoked from — a running conversation is joined, not restarted.
 ** Exposed in the conversation and overview keymaps
 - WHEN a ~claude-client-mode~ or ~agent-session-overview-mode~ buffer is focused
 - THEN ~agent-backend-start-another~ is bound in that mode's keymap
+* Background-agent lifecycle is part of the shared vocabulary
+The =agent-backend-event-functions= ~:kind~ vocabulary SHALL cover background-agent
+lifecycle with at least ~agent-started~, ~agent-update~, ~agent-finished~, and
+~agent-killed~. ~agent-started~ SHALL carry an ~:agent~ identity, the ~:name~
+of the tool that spawned the agent, and the ~:task~ the agent was asked to do;
+~agent-update~ SHALL carry ~:agent~ and ~:text~; ~agent-finished~ SHALL carry
+~:agent~, a ~:status~ of ~done~ or ~failed~, and ~:result~ text. A backend that
+cannot attribute an event SHALL omit the key rather than invent it, and
+subscribers SHALL ignore unknown kinds (existing rule).
+** A fanned-out agent appears as agent-started
+- WHEN a conversation's turn fans out to a background agent via a spawn tool
+- THEN the seam publishes ~agent-started~ with the agent's identity, the spawn
+  tool name, and the task it was asked to do
+** An agent's output flows as agent-update
+- WHEN a running background agent produces output attributable to it
+- THEN the seam publishes ~agent-update~ carrying the text
+** A completing agent leaves running via agent-finished
+- WHEN a background agent's result arrives
+- THEN the seam publishes ~agent-finished~ with ~:status~ ~done~ (or ~failed~
+  on error) and the result text
+* A conversation tracks the agents it spawned
+The agent-backend module SHALL maintain a per-conversation (buffer-local)
+registry of the background agents that conversation spawned, recording each
+agent's identity, spawn tool, task, status (running / done / failed), its
+isolated-output buffer, and start/finish markers. The registry SHALL be
+buffer-local with no global session store, and SHALL be derived from the ~tool-use~
+and ~tool-result~ (or backend completion) events already on the seam — a spawn
+tool (~:name~ in =agent-backend-spawn-tool-names=) opens an agent, its result
+closes it.
+** A spawn tool opens a running agent
+- WHEN the conversation publishes a ~tool-use~ whose ~:name~ is in =agent-backend-spawn-tool-names=
+- THEN its registry holds a ~running~ entry whose task is that tool's input
+** A result closes the agent it opened
+- WHEN a ~running~ agent's matching ~tool-result~ (or backend completion) arrives
+- THEN the entry becomes ~done~ (or ~failed~ on error) and records the result
+** Every conversation keeps its own agents
+- WHEN two conversations each spawn agents
+- THEN each holds only its own, because the registry is buffer-local
+* Spawned agents are visible and actionable
+Emacs SHALL provide a command listing the background agents a conversation
+spawned — identity, status, and task — and SHALL let the human open one
+agent's output in its own buffer and ask to stop one. Opening an agent SHALL
+show the task and the agent's accumulated output in an isolated buffer.
+Stopping one SHALL raise the intent to the backend via =agent-backend-kill-agent=,
+and a backend with no way to stop a single background agent SHALL say so
+rather than silently doing nothing. When a spawned agent reaches ~done~ or
+~failed~, the list SHALL reflect it without a manual refresh.
+** The list shows identity, status, and task
+- WHEN the list for a conversation with spawned agents is opened
+- THEN each agent appears as a row with its identity, status, and task
+** An agent's output opens on its own
+- WHEN the human opens a listed agent
+- THEN an isolated buffer shows the task it was asked to do and its output
+** Stopping is honest about what a backend can do
+- WHEN the human asks to stop an agent on a backend that cannot stop a single
+  background agent
+- THEN the command reports that the backend cannot rather than pretending
+** A finish is noticed without a refresh
+- WHEN the list is on screen and a running agent reaches ~done~ or ~failed~
+- THEN its row updates by itself

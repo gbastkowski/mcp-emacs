@@ -27,13 +27,17 @@
 ;; backend has to queue mid-turn text itself.
 ;;
 ;; Every optional capability has a default on the base class -- a no-op,
-;; nil, or, for `agent-backend-resume', a `user-error' -- so a minimal
-;; subclass compiles against the defaults without stubs.
+;; nil, or, for `agent-backend-resume' and `agent-backend-kill-agent', a
+;; `user-error' -- so a minimal subclass compiles against the defaults
+;; without stubs.
 
 ;;; Code:
 
 (require 'eieio)
 (require 'cl-lib)
+(require 'seq)
+(require 'subr-x)
+(require 'tabulated-list)
 
 ;;;; The base class
 
@@ -158,6 +162,12 @@ even though the transport is not.  The default refuses, naming the
 backend, so a backend that can do neither says so rather than pretending
 \(issue #56).  CALLBACK is called with the answer text, on success only.")
 
+(cl-defgeneric agent-backend-kill-agent (backend agent)
+  "Ask BACKEND to stop the background AGENT.
+Optional: the default signals a `user-error' explaining BACKEND cannot
+stop a single background agent, so the intent is raised honestly even
+where no backend honours it.")
+
 ;;;; Default implementations
 
 (cl-defmethod agent-backend-input ((backend agent-backend) text)
@@ -191,6 +201,14 @@ only backends that have to queue locally override this."
   "Default resume: refuse."
   (ignore backend session)
   (user-error "This agent backend cannot resume past sessions"))
+
+(cl-defmethod agent-backend-kill-agent ((backend agent-backend) agent)
+  "Default kill: refuse, since BACKEND cannot stop a single background agent.
+A backend that can stop one subagent without its parent turn overrides
+this; a backend that cannot says so rather than silently doing nothing."
+  (ignore agent)
+  (user-error "%s cannot stop a single background agent"
+              (or (eieio-object-class-name backend) "This agent backend")))
 
 (cl-defmethod agent-backend-seed-history ((backend agent-backend))
   "No-op default: BACKEND has no stored history to seed from."
@@ -242,6 +260,10 @@ EVENT is a plist whose `:kind' is one of:
   `permission-request' the backend asks for a decision
   `question-request'   the backend asks a question
   `error'              something failed; :text
+  `agent-started'      a background agent was spawned; :agent, :name, :task
+  `agent-update'       a background agent's output; :agent and :text
+  `agent-finished'     a background agent's result; :agent, :status, :result
+  `agent-killed'       a background agent was stopped; :agent
 
 Backends may emit kinds beyond this list; subscribers MUST ignore
 unknown kinds (guard their own `pcase' with a catch-all), so a
@@ -252,6 +274,335 @@ publisher never has to know who is listening.")
 Publishing is decoupled from rendering: this only notifies subscribers
 and never touches BUFFER's contents or display."
   (run-hook-with-args 'agent-backend-event-functions buffer event))
+
+;;;; Background agents (issue #74)
+
+;; A turn can fan out to several background agents, and nothing on the
+;; seam used to say so: the fan-out shows up only as a spawn-tool call
+;; by the main agent.  This module derives the agents a conversation
+;; spawned from the `tool-use'/`tool-result' events it already publishes
+;; (see `agent-backend-spawn-tool-names'), keeps a buffer-local registry
+;; of them, isolates each one's output in its own buffer, and offers a
+;; live list over the registry.
+
+(defcustom agent-backend-spawn-tool-names '("task" "delegate_task" "developer")
+  "Tool names whose calls fan out to a background agent.
+A `tool-use' event whose `:name' is in this list opens a running entry in
+the conversation's spawned-agent registry (see `agent-backend--track-agent');
+its `tool-result' closes it.  Defaults to the names the bundled clients
+use to spawn agents; extend for other fan-out tools."
+  :type '(repeat string)
+  :group 'agent-backend)
+
+(defvar-local agent-backend--spawned-agents nil
+  "Background agents this conversation spawned, oldest first.
+Each entry is a plist with `:agent' (identity), `:name' (the spawn tool),
+`:task' (the tool input), `:status' (`running', `done', or `failed'),
+`:buffer' (the agent's isolated output buffer), `:started'/`:finished'
+timestamps, and `:result' once the agent is closed.  Buffer-local on
+purpose: every conversation keeps only the agents it spawned, with no
+global session store -- the same no-registry stance
+`agent-session-overview' takes for sessions.")
+
+(defvar-local agent-backend--agent-counter 0
+  "Counter naming this conversation's next spawned agent (`agent-1', ...).")
+
+(defun agent-backend--find-agent-entry (buffer id)
+  "Return BUFFER's registry entry for agent ID, or nil."
+  (with-current-buffer buffer
+    (seq-find (lambda (entry) (equal (plist-get entry :agent) id))
+              agent-backend--spawned-agents)))
+
+(defun agent-backend--running-agent-for-result (buffer event)
+  "Return the running agent in BUFFER that EVENT's result closes, or nil.
+When EVENT carries the spawn tool's `:name', a running agent spawned by
+that tool is preferred; otherwise, or among several of the same name, the
+oldest running agent wins -- tool results arrive on the seam in the order
+the tools were called, so FIFO is the honest attribution."
+  (let ((name (plist-get event :name)))
+    (with-current-buffer buffer
+      (or (and name
+               (seq-find (lambda (entry)
+                           (and (eq (plist-get entry :status) 'running)
+                                (equal (plist-get entry :name) name)))
+                         agent-backend--spawned-agents))
+          (seq-find (lambda (entry) (eq (plist-get entry :status) 'running))
+                    agent-backend--spawned-agents)))))
+
+(defun agent-backend--agent-append-output (entry text)
+  "Append TEXT to ENTRY's isolated output buffer."
+  (when text
+    (let ((buffer (plist-get entry :buffer)))
+      (when (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (save-excursion
+            (goto-char (point-max))
+            (unless (bobp) (insert "\n"))
+            (insert text)))))))
+
+(defun agent-backend--agent-open (buffer event)
+  "Open a running agent in BUFFER's registry from spawn tool-use EVENT.
+Records the agent with its task and an isolated output buffer seeded with
+that task, then publishes `agent-started' so subscribers see the fan-out.
+A repeat `tool-use' for the same spawn tool and task -- opencode streams a
+tool part across states and re-publishes each update -- is the same
+sighting, not a second agent, so it opens nothing new."
+  (let* ((name (plist-get event :name))
+         (task (plist-get event :input)))
+    (when (with-current-buffer buffer
+            (not (seq-find (lambda (entry)
+                             (and (eq (plist-get entry :status) 'running)
+                                  (equal (plist-get entry :name) name)
+                                  (equal (plist-get entry :task) task)))
+                           agent-backend--spawned-agents)))
+      (let* ((id (with-current-buffer buffer
+                   (setq agent-backend--agent-counter
+                         (1+ agent-backend--agent-counter))
+                   (format "agent-%d" agent-backend--agent-counter)))
+             (output-buffer (generate-new-buffer (format "*agent:%s*" id))))
+        (with-current-buffer output-buffer
+          (insert (format "Task: %S\n\n" task)))
+        (with-current-buffer buffer
+          (setq agent-backend--spawned-agents
+                (append agent-backend--spawned-agents
+                        (list (list :agent id :name name :task task
+                                    :status 'running :buffer output-buffer
+                                    :started (current-time) :finished nil)))))
+        (agent-backend--publish
+         buffer (list :kind 'agent-started :agent id :name name :task task))))))
+
+(defun agent-backend--agent-close (buffer entry event)
+  "Close ENTRY in BUFFER's registry from its tool-result EVENT.
+The status is `failed' when EVENT says so, else `done'; the result text
+(empty when the event carries none) is recorded in the entry, appended to
+the agent's output buffer, and published as `agent-finished'."
+  (let* ((id (plist-get entry :agent))
+         (status (if (eq (plist-get event :status) 'failed) 'failed 'done))
+         (result (or (plist-get event :text) "")))
+    (with-current-buffer buffer
+      (setq agent-backend--spawned-agents
+            (mapcar (lambda (e)
+                      (if (equal (plist-get e :agent) id)
+                          (plist-put (plist-put (plist-put e :status status)
+                                                :finished (current-time))
+                                     :result result)
+                        e))
+                    agent-backend--spawned-agents)))
+    (agent-backend--agent-append-output entry (format "\n[%s]\n%s" status result))
+    (agent-backend--publish
+     buffer (list :kind 'agent-finished :agent id :status status :result result))))
+
+(defun agent-backend--agent-update (buffer event)
+  "Forward agent-update EVENT into its agent's isolated output buffer."
+  (when-let* ((id (plist-get event :agent))
+              (entry (agent-backend--find-agent-entry buffer id)))
+    (agent-backend--agent-append-output entry (plist-get event :text))))
+
+(defun agent-backend--agent-killed (buffer event)
+  "Forward agent-killed EVENT into its agent's entry and output buffer.
+The registry keeps only `running', `done', and `failed' statuses, so a
+stopped agent is recorded as `failed': it did not complete its task."
+  (when-let* ((id (plist-get event :agent))
+              (entry (agent-backend--find-agent-entry buffer id)))
+    (agent-backend--agent-append-output entry (plist-get event :text))
+    (with-current-buffer buffer
+      (setq agent-backend--spawned-agents
+            (mapcar (lambda (e)
+                      (if (equal (plist-get e :agent) id)
+                          (plist-put (plist-put e :status 'failed)
+                                     :finished (current-time))
+                        e))
+                    agent-backend--spawned-agents)))))
+
+(defun agent-backend--track-agent (buffer event)
+  "Keep BUFFER's spawned-agent registry in step with EVENT.
+Subscriber for `agent-backend-event-functions': a spawn tool's
+`tool-use' opens a running agent (publishing `agent-started'), the
+matching `tool-result' closes it `done'/`failed' (publishing
+`agent-finished'), and `agent-update'/`agent-killed' events are forwarded
+into their agent's isolated output buffer.  Unknown kinds are ignored, as
+every subscriber must."
+  (when (buffer-live-p buffer)
+    (pcase (plist-get event :kind)
+      ('tool-use
+       (when (member (plist-get event :name) agent-backend-spawn-tool-names)
+         (agent-backend--agent-open buffer event)))
+      ('tool-result
+       (when-let* ((entry (agent-backend--running-agent-for-result buffer event)))
+         (agent-backend--agent-close buffer entry event)))
+      ('agent-update (agent-backend--agent-update buffer event))
+      ('agent-killed (agent-backend--agent-killed buffer event))
+      (_ nil))))
+
+;;;;; The agent list
+
+(defcustom agent-backend-agent-list-buffer-name "*ai-agents*"
+  "Name of the spawned-agent list buffer."
+  :type 'string
+  :group 'agent-backend)
+
+(defvar-local agent-backend--agent-list-conversation nil
+  "Conversation buffer whose spawned agents this list buffer shows.")
+
+(defconst agent-backend--agent-list-help-buffer-name "*ai-agents help*"
+  "Name of the buffer `agent-backend-agent-list-help' writes to.")
+
+(defconst agent-backend--agent-list-help
+  '(("RET" "visit the agent's output")
+    ("k"   "ask the backend to stop the agent")
+    ("g"   "refresh")
+    ("?"   "toggle this help")
+    ("q"   "bury the list"))
+  "The bindings, as (KEY DESCRIPTION).
+One list drives the mode-line hint, the `?' buffer, and the keymap, so a
+new action cannot be documented in one place and missing from another.")
+
+(defun agent-backend--agent-list-entries (conversation)
+  "Return `tabulated-list-entries' for CONVERSATION's spawned agents."
+  (mapcar (lambda (entry)
+            (list (list :conversation conversation :entry entry)
+                  (vector (plist-get entry :agent)
+                          (symbol-name (plist-get entry :status))
+                          (prin1-to-string (plist-get entry :task)))))
+          (with-current-buffer conversation
+            agent-backend--spawned-agents)))
+
+(defun agent-backend--agent-list-refresh ()
+  "Recompute the list's rows from its conversation's registry.
+Installed as this buffer's `tabulated-list-revert-hook', so `g' works."
+  (when (buffer-live-p agent-backend--agent-list-conversation)
+    (setq tabulated-list-entries
+          (agent-backend--agent-list-entries
+           agent-backend--agent-list-conversation))))
+
+(defun agent-backend--agent-list-key-hint ()
+  "Return the persistent key hint, naming each key."
+  (mapconcat (lambda (binding)
+               (propertize (car binding) 'face 'help-key-binding))
+             agent-backend--agent-list-help
+             "  "))
+
+(defun agent-backend--agent-list-entry-at-point ()
+  "Return the agent entry on the current line, or signal."
+  (or (tabulated-list-get-id)
+      (user-error "No agent on this line")))
+
+(defun agent-backend-agent-list-visit ()
+  "Open the output buffer of the agent on the current line."
+  (interactive)
+  (let* ((entry (plist-get (agent-backend--agent-list-entry-at-point) :entry))
+         (buffer (plist-get entry :buffer)))
+    (unless (buffer-live-p buffer)
+      (user-error "That agent's output buffer is gone"))
+    (pop-to-buffer buffer)))
+
+(defun agent-backend-agent-list-kill ()
+  "Ask the backend to stop the agent on the current line.
+A backend that cannot stop a single background agent says so in the echo
+area rather than failing silently."
+  (interactive)
+  (let* ((row (agent-backend--agent-list-entry-at-point))
+         (entry (plist-get row :entry))
+         (conversation (plist-get row :conversation)))
+    (unless (buffer-live-p conversation)
+      (user-error "That conversation is gone"))
+    (condition-case err
+        (agent-backend-kill-agent
+         (buffer-local-value 'agent-backend--instance conversation)
+         (plist-get entry :agent))
+      (user-error (message "%s" (error-message-string err))))))
+
+(defun agent-backend-agent-list-help ()
+  "Toggle the help describing the agent list's keys."
+  (interactive)
+  (if-let* ((window (get-buffer-window agent-backend--agent-list-help-buffer-name)))
+      (progn (unless (ignore-errors (delete-window window) t)
+               (quit-window nil window))
+             (bury-buffer agent-backend--agent-list-help-buffer-name))
+    (with-help-window agent-backend--agent-list-help-buffer-name
+      (princ "AI agent list\n\n")
+      (princ "The background agents this conversation spawned, kept live.\n\n")
+      (dolist (binding agent-backend--agent-list-help)
+        (princ (format "  %-5s %s\n" (car binding) (cadr binding))))
+      (princ "\nEach agent's output lives in its own buffer: the task it was\n")
+      (princ "asked to do, then the updates and result attributed to it.\n"))
+    (when-let* ((window (get-buffer-window agent-backend--agent-list-help-buffer-name)))
+      (fit-window-to-buffer window))))
+
+(defvar agent-backend-agent-list-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'agent-backend-agent-list-visit)
+    (define-key map (kbd "k") #'agent-backend-agent-list-kill)
+    (define-key map (kbd "?") #'agent-backend-agent-list-help)
+    map)
+  "Keymap for `agent-backend-agent-list-mode'.
+`g' (revert) and `q' (bury) come from `tabulated-list-mode'.")
+
+(define-derived-mode agent-backend-agent-list-mode tabulated-list-mode "ai-agents"
+  "Major mode listing the background agents a conversation spawned."
+  (setq tabulated-list-format
+        [("Agent" 12 t)
+         ("Status" 10 t)
+         ("Task" 40 t)])
+  (setq tabulated-list-padding 2)
+  (setq tabulated-list-sort-key '("Agent" . nil))
+  ;; The column headers keep the header-line -- only `tabulated-list-print'
+  ;; aligns them with the data.  The key hint goes in the mode line instead,
+  ;; as with `agent-session-overview-mode'.
+  (setq mode-line-format
+        (append mode-line-format
+                '("  " (:eval (agent-backend--agent-list-key-hint)))))
+  (add-hook 'tabulated-list-revert-hook #'agent-backend--agent-list-refresh nil t)
+  (tabulated-list-init-header))
+
+;;;###autoload
+(defun agent-backend-agent-list ()
+  "List the background agents of the current conversation.
+Shows each spawned agent's identity, status, and task; RET visits an
+agent's isolated output, `k' asks the backend to stop it, `?' shows the
+keys, `g' refreshes.  The list is live: it re-renders from
+`agent-backend-event-functions' when a listed agent is spawned, finishes,
+or fails, so a result is visible without a manual refresh."
+  (interactive)
+  (let* ((conversation (if (buffer-local-value 'agent-backend--instance (current-buffer))
+                           (current-buffer)
+                         (agent-backend--resolve-conversation)))
+         (buffer (get-buffer-create agent-backend-agent-list-buffer-name)))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'agent-backend-agent-list-mode)
+        (agent-backend-agent-list-mode))
+      (setq-local agent-backend--agent-list-conversation conversation)
+      (agent-backend--agent-list-refresh)
+      (tabulated-list-print)
+      (when (null tabulated-list-entries)
+        (let ((inhibit-read-only t))
+          (save-excursion
+            (goto-char (point-max))
+            (insert "\n  No spawned agents in this conversation.  Press ? for help.\n")))))
+    (pop-to-buffer buffer)))
+
+(defun agent-backend--agent-list-on-event (buffer event)
+  "Re-render the agent list when EVENT changes one of its conversation's agents.
+Errors are swallowed on purpose: this runs on
+`agent-backend-event-functions', inside the publishing session's own call
+stack, so a rendering failure here must not reach that session."
+  (when (memq (plist-get event :kind)
+              '(agent-started agent-update agent-finished agent-killed))
+    (when-let* ((list-buffer (get-buffer agent-backend-agent-list-buffer-name)))
+      (when (eq (buffer-local-value 'agent-backend--agent-list-conversation list-buffer)
+                buffer)
+        (condition-case err
+            (with-current-buffer list-buffer
+              (let ((point (point)))
+                (agent-backend--agent-list-refresh)
+                (tabulated-list-print)
+                (goto-char (min point (point-max)))))
+          (error
+           (message "agent-backend-agent-list: render failed: %s"
+                    (error-message-string err))))))))
+
+(add-hook 'agent-backend-event-functions #'agent-backend--track-agent)
+(add-hook 'agent-backend-event-functions #'agent-backend--agent-list-on-event)
 
 ;;;; Sharing what the human is looking at
 
