@@ -207,3 +207,23 @@ rule missing from the effective set is visible.
 - WHEN a `claude-client-mode` buffer is focused
 - THEN `claude-client-show-allowlist` is bound to a `C-c`-prefixed key and
   listed by the buffer's `?` help
+* A conversation can rewind to an earlier turn
+The Claude client SHALL provide a rewind command that picks one of the
+conversation's own past user turns and continues the conversation from there
+in a forked session: the on-disk transcript MUST be truncated at the chosen
+turn and resumed under a new session id, and the original transcript MUST be
+left unchanged.  A rewind MUST refuse while a turn is in flight, and MUST NOT
+roll back file edits made by the discarded turns.
+** Rewind continues from the chosen turn
+- GIVEN a finished conversation with a recorded transcript
+- WHEN the human rewinds to an earlier turn
+- THEN a new conversation is launched whose session context ends at that turn,
+  and the original session transcript is unchanged
+** Rewind refuses an in-flight turn
+- GIVEN a turn is running in the conversation
+- WHEN the rewind is invoked
+- THEN it errors rather than starting a fork
+** Rewind leaves the file tree alone
+- GIVEN the discarded turns called edit tools
+- WHEN the human rewinds past them
+- THEN those edits remain applied in the working tree

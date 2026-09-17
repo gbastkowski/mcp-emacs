@@ -11,6 +11,7 @@
 (require 'cl-lib)
 (require 'json)
 (require 'claude-client)
+(require 'mcp-emacs-run-resume)
 
 (defun claude-test--buffer ()
   "Return a fresh conversation buffer in `claude-client-mode'."
@@ -2389,6 +2390,113 @@ list at all, so the file exists but contributes nothing."
         (kill-buffer claude-client--allowlist-buffer-name))
       (kill-buffer buf)
       (delete-other-windows))))
+
+;;;; Rewind (issue #77)
+;;
+;; The CLI has no native rewind: `--resume' reopens a session at its leaf
+;; and `--fork-session' only copies the leaf, neither accepting a
+;; mid-session pointer.  So the rewind is built on the store: truncate the
+;; transcript at the chosen turn into a NEW file and resume that under a
+;; fresh session id.  The original file is never modified.
+
+(describe "claude-client--rewind-prompts"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--events
+                (list '(:kind started)
+                      '(:kind prompt :text "first question")
+                      '(:kind text :text "an answer")
+                      '(:kind note :text "a note, not a turn")
+                      '(:kind prompt :text "second question")))
+          (it "collects the conversation's own human turns in log order"
+            (check (claude-client--rewind-prompts)
+                   '("first question" "second question")))
+          (it "ignores notes and the model's own events"
+            (check (memq "a note, not a turn"
+                         (claude-client--rewind-prompts))
+                   nil)))
+      (kill-buffer buf))))
+
+(describe "claude-client-rewind while a turn is running"
+  (let ((buf (claude-test--buffer)))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq claude-client--session-id "abc-123"
+                claude-client--turn-active t)
+          (it "refuses rather than forking a conversation mid-turn"
+            (check (condition-case _ (progn (claude-client-rewind) nil)
+                     (user-error t))
+                   t)))
+      (kill-buffer buf))))
+
+(describe "claude-client-rewind outside a conversation"
+  (with-temp-buffer
+    (it "refuses rather than forking someone else's transcript"
+      (check (condition-case _ (progn (claude-client-rewind) nil)
+               (user-error t))
+             t))))
+
+;; Truncation over a synthetic transcript in a temp store: the first user
+;; line is injected noise, then two genuine turns, each prompt followed by
+;; an answer.  Rewinding to turn 2 cuts at that turn's own user message,
+;; so its answer and everything after it go.
+(describe "claude-client--rewind-fork"
+  (let* ((proj (make-temp-file "claude-test-rewind-proj" t))
+         (mcp-emacs-run-resume-projects-root
+          (make-temp-file "claude-test-rewind-store" t))
+         (dir (mcp-emacs-run-resume--store-dir proj))
+         (file (expand-file-name "sess-orig.jsonl" dir))
+         (fork (expand-file-name "fork-1.jsonl" dir))
+         (noise "{\"type\":\"user\",\"message\":{\"content\":\"<command-message>opsx:new</command-message>\"}}\n")
+         (first "{\"type\":\"user\",\"message\":{\"content\":\"first real prompt\"}}\n")
+         (answer "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"first answer\"}]}}\n")
+         (second "{\"type\":\"user\",\"message\":{\"content\":\"second real prompt\"}}\n")
+         (tail "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"second answer\"}]}}\n")
+         (launched nil))
+    (make-directory dir t)
+    (with-temp-file file (insert noise first answer second tail))
+    (let ((original (with-temp-buffer
+                      (insert-file-contents file)
+                      (buffer-string))))
+      (cl-letf (((symbol-function 'claude-client--rewind-launch)
+                 (lambda (new-id) (setq launched new-id)))
+                ((symbol-function 'claude-client--rewind-session-id)
+                 (lambda () "fork-1")))
+        (claude-client--rewind-fork file 2))
+      (it "writes a new fork file rather than truncating in place"
+        (check (file-exists-p fork) t))
+      (it "leaves the original transcript byte-identical"
+        (check (with-temp-buffer
+                 (insert-file-contents file)
+                 (buffer-string))
+               original))
+      (it "keeps every line through the chosen turn's user message"
+        (check (with-temp-buffer
+                 (insert-file-contents fork)
+                 (buffer-string))
+               (concat noise first answer second)))
+      (it "drops the discarded turns from the fork"
+        (check (with-temp-buffer
+                 (insert-file-contents fork)
+                 (string-match-p "second answer" (buffer-string)))
+               nil))
+      (it "resumes the fork under the fresh session id"
+        (check launched "fork-1")))))
+
+(describe "claude-client--rewind-launch"
+  (let ((started nil))
+    (cl-letf (((symbol-function 'claude-client-start)
+               (lambda (prompt resume-id)
+                 (setq started (list prompt resume-id)))))
+      (claude-client--rewind-launch "fork-9"))
+    (it "launches the fork through `claude-client-start', the shared machinery"
+      (check (cadr started) "fork-9"))
+    (it "sends only a short marker as the resumed prompt, not a real turn"
+      (check (car started) "[rewound here]"))
+    (it "carries --resume with the fork's session id in the launched command"
+      (check (cadr (member "--resume" (claude-client--command "fork-9")))
+             "fork-9"))))
 
 (test-helper-summary)
 
