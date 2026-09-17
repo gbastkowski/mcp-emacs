@@ -2,7 +2,7 @@
 title: "mcp-emacs — Source Reference"
 subtitle: "A guided tour of the code, its structure, and the Emacs Lisp it leans on"
 author: "Gunnar Bastkowski"
-date: "v1.12.4+37"
+date: "v1.12.4+38"
 ---
 
 # About This Document {-}
@@ -55,9 +55,18 @@ of writing; treat them as signposts rather than as guarantees.
 
 ## The one-sentence version
 
-`mcp-emacs` runs a Model Context Protocol server *inside a live Emacs session*,
-so that an AI coding agent can see and manipulate the same buffers, windows,
-Org state, and diagnostics that the human is looking at.
+`mcp-emacs` turns a live Emacs session into a workspace the human and an AI
+agent share: the agent talks to a Model Context Protocol server running
+*inside Emacs*, so it sees the same buffers, windows, Org state, and
+diagnostics the human is looking at — and every change it proposes is one the
+human accepts or rejects in the editor.
+
+That sentence has grown. "An MCP server in Emacs" was the whole of it once,
+and it is now the mechanism rather than the point: the project has since
+become somewhere agents are *run* as well as served — two chat backends, a
+terminal-free runner, a cross-backend session view — and every one of those
+surfaces exists to keep the human in the loop rather than to get them out of
+it.
 
 ## What that actually means
 
@@ -90,7 +99,10 @@ to matter a great deal — see Chapter 3 and Chapter 6.
 
 The README and `docs/VISION.md` frame this as a step away from the chatbot
 request/response loop and toward an environment in which the human and the AI
-work the same live artifacts concurrently. Several design choices only make
+work the same live artifacts concurrently. The shared workspace of §1.1 is
+the part of that which exists today; what is still ahead is the
+*concurrency* — the two of you working without taking turns, which the event
+model in Chapter 26 is the groundwork for. Several design choices only make
 sense in that light:
 
 - The Org task-session tools (Chapter 7) let the human and the agent edit the
