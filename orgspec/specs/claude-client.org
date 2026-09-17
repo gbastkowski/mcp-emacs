@@ -159,7 +159,6 @@ beyond what was shown.
 - GIVEN a proposed allowlist rule
 - WHEN the human declines it
 - THEN the settings file is unchanged
-<<<<<<< HEAD
 * Claude maps its stream to the shared vocabulary
 The claude-client backend SHALL implement ~agent-backend-turn-state~ and
 ~agent-backend-turn-elapsed~ from its stream-derived state
@@ -208,4 +207,3 @@ rule missing from the effective set is visible.
 - WHEN a `claude-client-mode` buffer is focused
 - THEN `claude-client-show-allowlist` is bound to a `C-c`-prefixed key and
   listed by the buffer's `?` help
->>>>>>> origin/main
