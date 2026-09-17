@@ -390,4 +390,3 @@ request SHALL be answered from a timer callback.
 - THEN the deferred response carries the no-change flag and current session view exactly once
 ** The synchronous fallback stays
 - THEN ~org_task_wait_for_change~ SHALL keep its ~:handler~ so callers that dispatch directly (outside HTTP) are served synchronously, exactly as ~apply_diff~ does
->>>>>>> origin/main
