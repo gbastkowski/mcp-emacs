@@ -287,6 +287,13 @@ stays alive after emitting `result' (it waits on stdin for a follow-up
 turn), so `process-live-p' reports `run' long after the turn is over
 and cannot answer \"is the model working right now?\".")
 
+(defvar-local claude-client--turn-started nil
+  "Float timestamp (from `float-time') of when the current turn began.
+Set wherever `claude-client--turn-active' is set to t and cleared
+wherever it is reset to nil, so the two always move together.  Nil
+while no turn is in flight; `agent-backend-turn-elapsed' reads it to
+answer \"how long has this turn been working?\" (issue #76).")
+
 (defvaralias 'claude-client-event-functions 'agent-backend-event-functions)
 (make-obsolete-variable 'claude-client-event-functions
                         'agent-backend-event-functions "1.7.0")
@@ -687,7 +694,9 @@ subscribers on either name see every event."
       ;; Drained after `finished' so the log reads in the order things
       ;; actually happened.
       (when (buffer-live-p buffer)
-        (with-current-buffer buffer (setq claude-client--turn-active nil)))
+        (with-current-buffer buffer
+          (setq claude-client--turn-active nil
+                claude-client--turn-started nil)))
       (claude-client--drain-notes buffer))
      (t nil))))
 
@@ -765,7 +774,8 @@ Returns the drained notes, oldest first, and clears the queue."
           (when (and claude-client-deliver-notes
                      (not claude-client--turn-active)
                      (process-live-p claude-client--process))
-            (setq claude-client--turn-active t)
+            (setq claude-client--turn-active t
+                  claude-client--turn-started (float-time))
             (claude-client--send-turn
              claude-client--process
              (concat
@@ -824,7 +834,8 @@ Returns the drained notes, oldest first, and clears the queue."
           ;; The process dying ends any turn with it; leaving the flag set
           ;; would wedge the buffer against ever starting another.
           (setq claude-client--process nil
-                claude-client--turn-active nil))
+                claude-client--turn-active nil
+                claude-client--turn-started nil))
         ;; A turn cut short by the process dying has to say so in the log.
         ;; The render model is the event list, so clearing the flag alone
         ;; leaves the transcript ending on whatever the model was doing --
@@ -1266,6 +1277,7 @@ with the one being answered."
       (claude-client--push-event (current-buffer)
                                  (list :kind 'prompt :text prompt))
       (setq claude-client--turn-active t
+            claude-client--turn-started (float-time)
             claude-client--interrupted nil)
       (claude-client--send-turn claude-client--process text)))))
 
@@ -1375,7 +1387,8 @@ file change opens an ediff for the human to accept or reject."
                    :sentinel (lambda (p c)
                                (claude-client--sentinel buffer p c)))))
         (setq claude-client--process proc
-              claude-client--turn-active t)
+              claude-client--turn-active t
+              claude-client--turn-started (float-time))
         (when resume-id
           (claude-client--push-event buffer (list :kind 'resumed
                                                   :session resume-id)))
@@ -1388,6 +1401,9 @@ file change opens an ediff for the human to accept or reject."
 (declare-function mcp-emacs-run-resume--session-files "mcp-emacs-run-resume" (root))
 (declare-function mcp-emacs-run-resume--session-id "mcp-emacs-run-resume" (file))
 (declare-function mcp-emacs-run-resume--label "mcp-emacs-run-resume" (file))
+(declare-function mcp-emacs-run-resume--store-dir "mcp-emacs-run-resume" (root))
+(declare-function mcp-emacs-run-resume--content-text "mcp-emacs-run-resume" (content))
+(declare-function mcp-emacs-run-resume--noise-p "mcp-emacs-run-resume" (text))
 
 ;;;###autoload
 (defun claude-client-resume ()
@@ -1417,6 +1433,161 @@ either runner can be resumed in this one."
                (with-current-buffer buffer
                  (claude-client-start text session))))
            nil (buffer-name buffer) window))))))
+
+;;;; Rewind (issue #77)
+
+;; The CLI has no native rewind: `--resume <session-id>' reopens a session
+;; at its leaf and `--fork-session' only copies the leaf, so neither can
+;; continue from a mid-session turn.  A rewind is built on the store
+;; instead: truncate the transcript at the chosen turn into a new
+;; fork-session file and resume that under a fresh id.  The original file
+;; is never modified.
+
+(defconst claude-client--rewind-marker "[rewound here]"
+  "Prompt sent to the CLI when a rewind resumes a truncated fork.
+The point of a rewind is the *context* -- the fork's history already ends
+at the chosen turn.  This marker only gives the CLI a turn to answer, so
+the model picks up from the truncated history and the log shows where the
+fork resumed.")
+
+(defun claude-client--transcript-file ()
+  "Return this conversation's transcript file, or nil.
+Resolved with the `mcp-emacs-run-resume' store mapping: the project root
+becomes a slug under `mcp-emacs-run-resume-projects-root', with the
+session id as the file-name stem.  Nil without a session id, since a
+rewind needs a recorded transcript."
+  (when claude-client--session-id
+    (expand-file-name
+     (concat claude-client--session-id ".jsonl")
+     (mcp-emacs-run-resume--store-dir (claude-client--project-root)))))
+
+(defun claude-client--rewind-prompts ()
+  "Return this conversation's own past prompts, oldest first.
+Every `:prompt' event's text, in log order -- the turns a rewind can
+return to."
+  (delq nil
+        (mapcar (lambda (event)
+                  (when (eq (plist-get event :kind) 'prompt)
+                    (plist-get event :text)))
+                claude-client--events)))
+
+(defun claude-client--rewind-label (n text)
+  "Return the `completing-read' label for the N-th past prompt TEXT.
+The turn number disambiguates prompts whose first line is the same, and
+the text stays a single, readable line."
+  (format "%d  %s"
+          n
+          (truncate-string-to-width
+           (car (split-string (string-trim text) "\n"))
+           80 nil nil "…")))
+
+(defun claude-client--rewind-cut (lines n)
+  "Return the 0-based index in LINES of the N-th genuine user turn.
+LINES is a transcript's lines, in order.  A genuine user turn is a
+`type:user' line carrying a human prompt rather than an injected wrapper
+or a tool result -- the same test `mcp-emacs-run-resume--first-prompt'
+makes.  Nil when LINES holds fewer than N such turns."
+  (let ((json-object-type 'alist)
+        (json-array-type 'vector)
+        (index 0)
+        (seen 0)
+        cut)
+    (while (and (null cut) (< index (length lines)))
+      (let* ((line (nth index lines))
+             (obj (unless (string-empty-p (string-trim line))
+                    (ignore-errors (json-read-from-string line)))))
+        (when (and obj (equal (alist-get 'type obj) "user"))
+          (let* ((msg (alist-get 'message obj))
+                 (text (mcp-emacs-run-resume--content-text
+                        (and (listp msg) (alist-get 'content msg)))))
+            (when (and text (not (mcp-emacs-run-resume--noise-p text)))
+              (setq seen (1+ seen))
+              (when (= seen n) (setq cut index))))))
+      (setq index (1+ index)))
+    cut))
+
+(defun claude-client--rewind-truncate (file cut dest)
+  "Write transcript FILE's lines through 0-based line CUT to DEST.
+Lines after CUT are dropped; the result is a valid prefix transcript.
+Returns DEST.  FILE is only read, so the original stays byte-identical."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (forward-line (1+ cut))
+    (write-region (point-min) (point) dest nil 'silent))
+  dest)
+
+(defun claude-client--rewind-session-id ()
+  "Return a fresh session-id stem for a forked transcript.
+Only needs to be a unique file-name stem, so a timestamp plus a little
+randomness is enough."
+  (format "%s-%s"
+          (format-time-string "%Y%m%d%H%M%S")
+          (substring (md5 (format "%s-%s" (float-time) (random 1000000)))
+                     0 8)))
+
+(defun claude-client--rewind-launch (new-id)
+  "Start a new conversation resuming forked session NEW-ID.
+Reuses `claude-client-start', which replaces this buffer's process and
+log and passes `--resume NEW-ID' to the CLI."
+  (claude-client-start claude-client--rewind-marker new-id))
+
+(defun claude-client--rewind-fork (file turn)
+  "Fork transcript FILE at past TURN and launch the resumed fork.
+TURN is 1-based, counting the genuine user turns in FILE.  The prefix
+through that turn's user message is written to a new `<new-id>.jsonl'
+beside FILE and resumed under the new id.  Returns the new session id;
+FILE itself is left untouched."
+  (let* ((lines (with-temp-buffer
+                  (insert-file-contents file)
+                  (split-string (buffer-substring-no-properties
+                                 (point-min) (point-max))
+                                "\n")))
+         (cut (claude-client--rewind-cut lines turn))
+         (new-id (claude-client--rewind-session-id))
+         (dest (expand-file-name (concat new-id ".jsonl")
+                                 (file-name-directory file))))
+    (unless cut
+      (user-error "Transcript has no turn %d to rewind to" turn))
+    (claude-client--rewind-truncate file cut dest)
+    (claude-client--rewind-launch new-id)
+    new-id))
+
+;;;###autoload
+(defun claude-client-rewind ()
+  "Continue this conversation from an earlier turn.
+Pick one of this conversation's own past prompts; the on-disk transcript
+is truncated at that turn into a new fork-session file, which is then
+resumed under a fresh session id.  The discarded turns are gone from the
+model's context -- but the original transcript is left untouched, and
+file edits those turns made stay applied.
+
+Refuses while a turn is in flight, and when the conversation has no
+recorded transcript to fork."
+  (interactive)
+  (unless (derived-mode-p 'claude-client-mode)
+    (user-error "Not in a Claude conversation buffer"))
+  (when claude-client--turn-active
+    (user-error "A turn is running; wait for it to end before rewinding"))
+  (unless (or claude-client--session-id
+              (process-live-p claude-client--process))
+    (user-error "Nothing to rewind: no session and no live Claude process"))
+  (require 'mcp-emacs-run)
+  (require 'mcp-emacs-run-resume)
+  (let ((file (claude-client--transcript-file)))
+    (unless (and file (file-readable-p file))
+      (user-error "No recorded transcript to rewind"))
+    (let ((prompts (claude-client--rewind-prompts)))
+      (when (< (length prompts) 2)
+        (user-error "Nothing to rewind to: only one past prompt"))
+      (let ((alist nil) (n 0))
+        (dolist (text prompts)
+          (setq n (1+ n))
+          (push (cons (claude-client--rewind-label n text) n) alist))
+        (setq alist (nreverse alist))
+        (let* ((pick (completing-read "Rewind to: " alist nil t))
+               (turn (cdr (assoc pick alist))))
+          (claude-client--rewind-fork file turn))))))
 
 (defun claude-client--label (buffer)
   "Return a `completing-read' label for conversation BUFFER.
@@ -1503,7 +1674,8 @@ on a frame you are not looking at is worse than surprising."
   (when (process-live-p claude-client--process)
     (delete-process claude-client--process))
   (setq claude-client--process nil
-        claude-client--turn-active nil))
+        claude-client--turn-active nil
+        claude-client--turn-started nil))
 
 ;;;; agent-backend methods
 
@@ -1615,6 +1787,33 @@ silently decided whether typing abandoned the model's work; stopping a
 turn is now only ever `claude-client-interrupt' (issue #69)."
   :queue)
 
+(cl-defmethod agent-backend-turn-state ((backend claude-client-backend))
+  "Return BACKEND's turn state from its buffer's stream-derived flags.
+`working' while a turn is in flight (`claude-client--turn-active'),
+`idle' when the CLI process is alive with no turn, `finished' otherwise
+-- the same reading `claude-client--label' gives the picker.  Read from
+the buffer, never the process alone: a live `--print' process that
+already emitted `result' is idle, not working (issue #76)."
+  (let ((buffer (oref backend buffer)))
+    (cond
+     ((not (buffer-live-p buffer)) 'finished)
+     ((buffer-local-value 'claude-client--turn-active buffer) 'working)
+     ((process-live-p (buffer-local-value 'claude-client--process buffer))
+      'idle)
+     (t 'finished))))
+
+(cl-defmethod agent-backend-turn-elapsed ((backend claude-client-backend))
+  "Return the seconds BACKEND's current turn has been running, or nil.
+The difference between now and BACKEND's buffer's
+`claude-client--turn-started' timestamp, non-nil only while a turn is in
+flight -- so a settled or idle conversation reads nil, never a stale
+count (issue #76)."
+  (let ((buffer (oref backend buffer)))
+    (when (and (buffer-live-p buffer)
+               (buffer-local-value 'claude-client--turn-active buffer))
+      (let ((started (buffer-local-value 'claude-client--turn-started buffer)))
+        (and started (- (float-time) started))))))
+
 ;; Claude never emits permission or question requests: its gate is the
 ;; ediff review (mcp-emacs-ide), not a stream-json request.  The base
 ;; no-op defaults for reply-permission / reply-question apply.
@@ -1663,6 +1862,7 @@ turn is now only ever `claude-client-interrupt' (issue #69)."
     ("?"       "toggle this help")
     ("C-c C-q" "kill the CLI process for this buffer")
     ("C-c C-r" "resume, by session id")
+    ("C-c C-w" "rewind: continue this conversation from an earlier turn")
     ("C-c C-p" "show the effective permission allowlist and where each rule lives")
     ("q"       "bury the conversation"))
   "The bindings, as (KEY DESCRIPTION).
@@ -1734,6 +1934,7 @@ window behind to clean up by hand."
     (define-key map (kbd "?") #'claude-client-help)
     (define-key map (kbd "TAB") #'claude-client-toggle-tool-result)
     (define-key map (kbd "C-c C-p") #'claude-client-show-allowlist)
+    (define-key map (kbd "C-c C-w") #'claude-client-rewind)
     map)
   "Keymap for `claude-client-mode'.
 The single-letter keys are only reachable in plain Emacs; under evil they

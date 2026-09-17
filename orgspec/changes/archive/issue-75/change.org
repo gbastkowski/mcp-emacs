@@ -1,0 +1,144 @@
+#+TITLE: session-scoped-allow-all
+
+* Intent
+A stretch of agentic work — many shell calls in a row, none worth a
+keystroke — makes the permission gate's two-way choice a tax, not a guard.
+The human is sitting and watching; they want the agent to run without
+approving each call, but do not want a durable rule in
+`.claude/settings.local.json` that leaks into other sessions and the
+terminal CLI. The gate already has "allow once" and "always allow"
+(durable, written to settings); the missing option is a *session* scope:
+allow everything until Emacs — or the human — says stop, in memory only,
+untouched by the next session.
+
+This depends on the gate existing (issue #73), which has landed: gated
+calls travel through `agent-permission-request`, the one choke point both
+the Claude `/permission-gate` endpoint and the opencode permission stream
+share. Putting the session flag check in that single function is what makes
+the option backend-agnostic — the shared `agent-permission` menu (per
+`agent-backend.org`: "One permission UI serves every backend") is exactly
+where a third scope belongs.
+
+The waiving is scoped on purpose. A blanket allow that *also* unlocked
+structurally-closed tools (`apply_diff`, `--disallowedTools`) would turn
+the guardrail itself into a back door, so this change waives the asking,
+not the closure: whatever the matcher still distinguishes stays
+distinguished, the gate just stops asking before any of it.
+
+* Scope
+In scope:
+- A third key in the permission menu, `z` (session allow-all), alongside
+  `a` (allow once) and `A` (always allow). It answers the current decision
+  as `allow` and sets a per-Emacs-session flag so every later gated call is
+  answered `allow` without a buffer.
+- The flag lives in `agent-permission.el` and is checked at the top of
+  `agent-permission-request` — the single entry point the Claude
+  `/permission-gate` HTTP endpoint and the opencode permission stream both
+  call — so the short-circuit is backend-agnostic and needs no per-backend
+  code.
+- A command to turn the session allow-all off mid-session (toggle), and a
+  visible indication that it is active: a global minor mode
+  `agent-permission-session-allow-all-mode` whose mode-line lighter shows
+  in every buffer while set.
+- The menu header line names the new key so it is discoverable, matching
+  how the existing keys are documented.
+- Tests in `test/agent-permission-test.el` covering: the key answers the
+  current decision as `allow` and flips the flag; a later `agent-permission-request`
+  resolves the pending decision immediately without raising a buffer
+  (nothing enters the pending registry); turning the mode off restores a
+  real decision buffer; the lighter is present while the mode is on.
+
+Out of scope:
+- The durable "always allow" rule writer (`agent-permission-always-allow`)
+  and the settings files it touches: unchanged, deliberately.
+- Structurally-closed tools (`apply_diff`, `--disallowedTools`): the
+  session scope waives *asking*, never the closure; the matcher's
+  distinction still stands.
+- Anything per-backend: no changes in `claude-client.el`,
+  `opencode-client.el` or `mcp-emacs-server.el` — the single check inside
+  `agent-permission-request` covers the `/permission-gate` endpoint, the
+  opencode stream handler, and the manual `opencode-client-answer-permission`
+  escape hatch alike.
+- Persisting the flag: it is in-memory by design and dies with the Emacs
+  session; the next session starts gated again.
+
+* Approach
+- Add a global minor mode `agent-permission-session-allow-all-mode`
+  (`:global t`, `:lighter` e.g. " A-A") whose boolean is the session flag.
+  A global minor mode gives the visible mode-line indication for free and a
+  toggle command (`M-x agent-permission-session-allow-all-mode`) that turns
+  it back off mid-session — no separate off-command needed.
+- Add `agent-permission-allow-all-session` (interactive), bound to `z` in
+  `agent-permission-mode-map` (and the evil binding): it enables the mode
+  and answers the current decision as `allow` with a reason naming the
+  session scope, so the call that prompted the human is not left hanging.
+- Guard at the top of `agent-permission-request`: when the mode is set,
+  resolve the decision to `allow` immediately — through the same `:resolve`
+  continuation the raised decision would have used, run from a timer so the
+  server connection and window state behave exactly as a normal answer —
+  and return without creating a buffer or entering `agent-permission--pending`.
+  Return a truthy value so the `/permission-gate` endpoint still treats the
+  request as handled and holds the connection for the reply, matching the
+  async-tool path.
+- Update `agent-permission--header` to list the new key, and add `z` to
+  both the standard keymap and the evil `normal` bindings.
+- Tests add to `test/agent-permission-test.el` using the existing
+  `agent-permission-test--wait-for` helper (the resolution takes two timer
+  rounds; `sleep-for` never fires timers). Fixtures enable/disable the mode
+  with a `cl-letf` or by toggling and restoring, so the session flag can
+  never leak into another expectation.
+- Verify with `bin/test-emacs.sh --compile --strict` and the full suite on
+  akiko; CI (Emacs 29.4) is the second, independent gate.
+
+* Tasks
+- [ ] Add `agent-permission-session-allow-all-mode` (global minor mode, lighter, toggle command)
+- [ ] Add `agent-permission-allow-all-session` answering the current decision as `allow` and enabling the mode
+- [ ] Guard at the top of `agent-permission-request`: when the mode is set, resolve `allow` immediately with no buffer and no pending entry
+- [ ] Bind `z` in `agent-permission-mode-map` and the evil `normal` bindings; list it in the header
+- [ ] Tests: key answers current decision + flips flag; later request resolves immediately without a buffer; toggle off restores a real decision; lighter visible while set
+- [ ] `bin/test-emacs.sh --compile` clean and the full suite green in a separate Emacs
+- [ ] orgspec change validated and the fold archived into `specs/agent-backend.org` when green
+
+* Delta
+** A session scope answers every gated call without asking, until turned off   :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+The permission menu SHALL offer a session-scoped option, alongside allow-once
+and the durable always-allow rule, that answers the current decision `allow`
+and records a per-Emacs-session flag so every later gated call is answered
+`allow` without raising a decision buffer.  The flag SHALL live in memory only
+and MUST NOT be written to any settings file, so a new session starts gated
+again.  It SHALL be possible to turn the session scope off mid-session, and its
+active state SHALL be visible.  The session scope MUST NOT loosen tools that
+are structurally closed (`apply_diff`, `--disallowedTools`): it waives the
+asking, never the closure.  Because the check lives in the shared
+`agent-permission-request` entry point, it SHALL apply to every backend that
+asks through the shared menu -- the Claude hook, the opencode permission
+stream, and the manual escape hatch alike.
+*** The menu offers a session-scope key
+- GIVEN a pending permission decision in an `agent-permission` buffer
+WHEN the session-scope key (`z`) is pressed
+THEN the current decision is answered `allow` and the session flag is set
+AND no settings file is written
+*** A gated call while the session scope is on resolves without a buffer
+- GIVEN the session-scope flag is set
+WHEN `agent-permission-request` is called for a gated tool
+THEN the decision is answered `allow` immediately
+AND no decision buffer is created and nothing enters the pending registry
+*** The session scope can be turned off mid-session
+- GIVEN the session-scope flag is set
+WHEN `agent-permission-session-allow-all-mode` is invoked with argument 0
+THEN the flag clears and a later gated call raises a real decision buffer again
+*** The active session scope is visible
+- WHEN the session-scope flag is set
+THEN a mode-line lighter indicating it is active appears in buffers
+*** The closure of structurally-closed tools is unchanged
+- WHEN the session-scope flag is set
+THEN a tool that is structurally closed (`apply_diff`, a `--disallowedTools`
+entry) is still not callable; only the asking about it is waived
+*** Every backend answers through the same session scope
+- GIVEN the session-scope flag is set
+WHEN a permission request arrives from any backend that uses the shared menu
+(Claude hook, opencode stream, manual escape hatch)
+THEN it is answered `allow` without a buffer, by the same code path

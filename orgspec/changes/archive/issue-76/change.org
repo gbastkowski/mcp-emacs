@@ -1,0 +1,127 @@
+#+TITLE: stand-on-conversation-turn-state
+
+* Intent
+Whether the model is mid-turn is tracked (~claude-client--turn-active~) but
+almost never surfaced. The only readers are ~claude-client--label~
+(~claude-client.el:1327~), which feeds ~claude-client-list~ and the
+conversation picker, and the session overview (~agent-session-overview~).
+Sitting in the conversation buffer — or anywhere else in Emacs — there is no
+standing indication that a turn is in flight, so the answer to "is it still
+going, or did it finish while I was in another window?" is to scroll the log
+and guess. The state is knowable, just not visible.
+
+opencode has the same underlying notion but exposes it differently (an SSE
+stream with ~step-start~/~step-finish~ that it currently discards,
+~opencode-client.el:548~), so the vocabulary must not live on either client:
+it belongs on ~agent-backend~ as a generic, with each client mapping its own
+stream. This is the coarse analogue of #74 (per-subagent status).
+
+* Scope
+In scope:
+- A backend-agnostic turn-state generic on ~agent-backend~, returning one of
+  ~working~ / ~idle~ / ~finished~ for a conversation buffer, plus an elapsed
+  time for the current turn while it is working. Defaults that never over-claim
+  (a backend that tracks no turn state reads ~finished~, elapsed nil).
+- A standing mode-line indicator in every conversation buffer (installed in
+  ~agent-backend-mode~) showing the state and, while working, the elapsed time,
+  refreshed on the transitions that change the turn state.
+- ~claude-client~ implementing the generic from its existing stream-derived
+  state (~claude-client--turn-active~, ~claude-client--process~) and tracking a
+  turn-started timestamp so elapsed time is real, cleared when the turn ends.
+- Tests in ~test/agent-backend-test.el~ (and ~test/claude-client-test.el~ where
+  the timestamp lives) covering the state mapping and the mode-line element.
+
+Out of scope:
+- Changing ~claude-client--label~, ~claude-client-list~ or the picker; they
+  already carry the state to their surfaces.
+- Promoting opencode to working/idle by wiring ~step-finish~ as a ~finished~
+  event (the overview spec already notes this separately); opencode keeps the
+  liveness-only default here.
+- Per-subagent status (#74) or the finer-grained surface that is that issue.
+- The overview buffer itself; it already classifies the states.
+
+* Approach
+- ~agent-backend.el~: add ~cl-defgeneric agent-backend-turn-state~ (backend) ->
+  ~working~/~idle~/~finished~, default ~finished~, and
+  ~cl-defgeneric agent-backend-turn-elapsed~ (backend) -> seconds or nil,
+  default nil (compute from the backend instance, never from the process —
+  a long-lived ~--print~ process is idle, not working). Add a helper
+  ~agent-backend--turn-mode-line~ that reads the buffer's instance and returns
+  a string ("working 0:42" / "idle" / "finished"), and install it as a
+  ~mode-line-format~ element (a ~(:eval ...)~ slot) in ~agent-backend-mode~.
+- Publishing already happens on every state change
+  (~agent-backend--publish~); have it force a mode-line refresh
+  (~force-mode-line-update~) so the standing indicator follows the log.
+- ~claude-client.el~: ~cl-defmethod agent-backend-turn-state~ for
+  ~claude-client-backend~ reads ~claude-client--turn-active~ /
+  ~claude-client--process~ in its buffer; ~cl-defmethod
+  agent-backend-turn-elapsed~ subtracts a new ~claude-client--turn-started~
+  timestamp (set with ~float-time~ where ~--turn-active~ is set to t in
+  ~claude-client-start~ and ~claude-client--drain-notes~; cleared where it is
+  reset to nil in ~--handle-message~ result handling, ~--sentinel~ and
+  ~--interrupt~).
+- Tests assert the generic mapping under claude (working/idle/finished from the
+  buffer's flags and process), the mode-line string for each state and for a
+  running elapsed timer, and that the mode-line element is present in
+  ~agent-backend-mode~.
+- Verify with the repository's own entry point on a separate Emacs (akiko):
+  ~bin/test-emacs.sh --compile --strict~ and the full suite.
+
+* Tasks
+- [ ] Add ~agent-backend-turn-state~ and ~agent-backend-turn-elapsed~ generics with honest defaults in ~elisp/agent-backend.el~
+- [ ] Add the ~(:eval ...)~ mode-line element to ~agent-backend-mode~ and force a refresh on ~agent-backend--publish~
+- [ ] Implement both generics for ~claude-client-backend~ and track ~claude-client--turn-started~ (set/cleared with ~--turn-active~)
+- [ ] Tests for the state mapping, the mode-line string per state, and the elapsed timer
+- [ ] ~bin/test-emacs.sh --compile~ clean and full suite green in a separate Emacs
+- [ ] orgspec change validated and the fold archived into ~specs/agent-backend.org~ when green
+
+* Delta
+** Standing turn-state indicator on a conversation buffer       :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+The agent-backend module SHALL expose a conversation's turn state through a
+generic ~agent-backend-turn-state~ returning one of ~working~, ~idle~, or
+~finished~, and its current-turn elapsed time through ~agent-backend-turn-elapsed~
+(seconds, or nil when no turn is working). The default MUST NOT over-claim: a
+backend that tracks no turn state reads ~finished~ and elapsed nil.
+*** Reports a mid-turn conversation as working
+- WHEN ~agent-backend-turn-state~ is called on a conversation whose model is working on a turn \\
+  THEN it returns ~working~
+*** Reports a live-but-idle conversation as idle
+- WHEN ~agent-backend-turn-state~ is called on a conversation whose process is alive but no turn is in flight \\
+  THEN it returns ~idle~
+*** Reports a settled conversation as finished
+- WHEN ~agent-backend-turn-state~ is called on a conversation whose process has exited or which never started \\
+  THEN it returns ~finished~
+*** Elapsed time tracks only a working turn
+- WHEN ~agent-backend-turn-elapsed~ is called on a working conversation \\
+  THEN it returns the seconds since that turn started; when no turn is working it returns nil
+** The conversation mode line shows the state                 :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+Every ~agent-backend-mode~ conversation buffer SHALL carry a standing
+mode-line indicator of its turn state, updated from the transitions that change
+the state, and SHALL show the elapsed time while working.
+*** Mode line reflects the turn state
+- WHEN a conversation buffer derived from ~agent-backend-mode~ is displayed and its turn state changes \\
+  THEN its mode line shows the new state (working / idle / finished)
+*** Mode line shows elapsed time while working
+- WHEN a ~working~ conversation's mode line is rendered \\
+  THEN it includes the seconds the current turn has been running
+** Claude maps its stream to the shared vocabulary             :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The claude-client backend SHALL implement ~agent-backend-turn-state~ and
+~agent-backend-turn-elapsed~ from its stream-derived state
+(~claude-client--turn-active~ and ~claude-client--process~), keeping a
+turn-started timestamp alongside ~--turn-active~ that is set when a turn begins
+and cleared when it ends
+*** Working from the in-flight flag
+- WHEN a claude-client turn is in flight \\
+  THEN ~agent-backend-turn-state~ on its backend returns ~working~ and ~agent-backend-turn-elapsed~ returns the seconds since the turn began
+*** Idle and finished from process liveness
+- WHEN the claude-client process is alive but no turn is in flight \\
+  THEN ~agent-backend-turn-state~ returns ~idle~ and elapsed is nil; when the process has exited it returns ~finished~

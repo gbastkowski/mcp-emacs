@@ -1,0 +1,105 @@
+#+TITLE: rewind-conversation
+
+* Intent
+A Claude conversation runs one long session: the model's context is the whole
+~.jsonl~ transcript grown turn by turn, and there is no way to go back and say
+"start from there instead".  The human's only escape when a conversation goes
+down a wrong path is to kill it and open a brand-new one -- losing every
+earlier turn that was good.
+
+This change adds ~claude-client-rewind~: pick one of this conversation's past
+turns, and the conversation is continued from there in a forked session whose
+context ends at that turn.  The turns after the chosen point are discarded
+from the running context, but the original transcript is left intact on disk.
+
+The CLI offers no native rewind.  Verified against ~claude@2.1.274~:
+~--resume <session-id>~ reopens a session at its *leaf* (the whole transcript
+is the context) and ~--fork-session~ only copies the leaf onward -- neither
+accepts a mid-session message pointer to resume from.  So the rewind is built
+on the store instead: a transcript is a line-per-event file whose later turns
+are reachable only through the earlier ones, so truncating it at a chosen turn
+yields a valid prefix; resuming that prefix under a new session id continues
+the conversation exactly as if the discarded turns never happened.
+
+* Scope
+In scope, ~claude-client.el~ only:
+- ~claude-client-rewind~: pick a past user turn from the conversation's own
+  rendered log (~:prompt~ events), truncate the on-disk transcript to that
+  turn, and launch a new conversation resuming the truncated prefix.
+- A backing-lineno-to-session-store mapping that turns a chosen turn into a
+  cut point in the transcript file.
+
+Out of scope, deliberately:
+- Rolling back *file edits* from the discarded turns.  A rewind changes the
+  model's context, not the working tree -- edits already applied stay applied
+  (a separate issue; matches the issue's own inclination for Claude-only).
+- ~opencode-client~ and the eat runner.  OpenCode manages its own session
+  store; the runner has its own path.
+- Folding the rewind into the shared ~agent-backend~ generic (that stays with
+  issue #56).
+- The interactive picker UI details; a ~completing-read~ over the past prompts
+  is the surface, as everywhere else in the client.
+
+* Approach
+- A rewind needs the transcript file.  The client already knows the session id
+  (~claude-client--session-id~) and the project root, and
+  ~mcp-emacs-run-resume~ already resolves those to a store path
+  (~mcp-emacs-run-resume--store-dir~ + slug).  Use that mapping, requiring the
+  resume helper the way ~claude-client-resume~ already does.
+- The chosen turn: ~claude-client--events~ already carries every ~:prompt~
+  event with its :text.  Collect those, present a ~completing-read~ labelled by
+  the prompt text, and pick the associated event index.
+- The cut point: scan the transcript's lines in order; a transcript is the
+  tree of the conversation, and the turn chosen corresponds to the last line
+  whose message's ancestry reaches it.  In a single-conversation transcript
+  the lines are written in order, so the cut is simply the line of the chosen
+  turn's user message -- keep every line up to and including it and drop the
+  rest.  Rewrite the store as a *new* file (a fresh session id) holding that
+  prefix.
+- Resume the truncated file under its new id with ~--resume <new-id>~.  The
+  original ~<session-id>.jsonl~ is never touched, so the pre-rewind history
+  stays recoverable -- the fork is a copy, matching ~--fork-session~ semantics
+  ("when resuming, create a new session ID instead of reusing the original")
+  without needing the flag.
+- Refuse while a turn is running: a rewind replaces the live process, exactly
+  as ~claude-client-start~ already refuses a second turn mid-flight.  Kill the
+  current process only after the user has committed, in the new launch.
+- Keep it a small diff.  Reuse ~claude-client-start~'s rendering path by
+  launching the resumed fork through the existing machinery rather than
+  duplicating buffer setup.
+
+* Tasks
+- [ ] Build the list of past user prompts from the buffer's ~:prompt~ events
+- [ ] Resolve the current session's transcript file via the ~mcp-emacs-run-resume~ store mapping
+- [ ] Truncate the transcript at the chosen turn into a new fork-session file
+- [ ] Launch a new conversation resuming the truncated fork
+- [ ] Leave the original transcript untouched
+- [ ] Refuse the rewind while a turn is in flight
+- [ ] Add ~rewind~ to the keymap and the ~claude-client-mode~ help
+- [ ] Tests: prompt collection, cut-point selection, truncation into a fork,
+      original preserved, in-flight refusal, launch through resume
+
+* Delta
+** A conversation can rewind to an earlier turn               :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The Claude client SHALL provide a rewind command that picks one of the
+conversation's own past user turns and continues the conversation from there
+in a forked session: the on-disk transcript MUST be truncated at the chosen
+turn and resumed under a new session id, and the original transcript MUST be
+left unchanged.  A rewind MUST refuse while a turn is in flight, and MUST NOT
+roll back file edits made by the discarded turns.
+*** Rewind continues from the chosen turn
+- GIVEN a finished conversation with a recorded transcript
+- WHEN the human rewinds to an earlier turn
+- THEN a new conversation is launched whose session context ends at that turn,
+  and the original session transcript is unchanged
+*** Rewind refuses an in-flight turn
+- GIVEN a turn is running in the conversation
+- WHEN the rewind is invoked
+- THEN it errors rather than starting a fork
+*** Rewind leaves the file tree alone
+- GIVEN the discarded turns called edit tools
+- WHEN the human rewinds past them
+- THEN those edits remain applied in the working tree

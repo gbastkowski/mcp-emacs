@@ -26,6 +26,9 @@ Org state of the running session.
 
 ## Pick your entry point
 
+- **"I want a ten-minute guided tour first."**
+  → `M-x mcp-emacs-tutor` opens a read-only side window that walks through
+  the whole flow, step by step.
 - **"I want my existing Claude Code / opencode to see my Emacs."**
   → Install the Emacs side, start the server, point your client at it.
   [Quickstart](#quickstart).
@@ -99,6 +102,23 @@ The port is configurable via `M-x customize` (`mcp-emacs-server-port`) or
 ```
 /plugin marketplace add /path/to/mcp-emacs
 /plugin install mcp-emacs@mcp-emacs
+```
+
+## What's new
+
+`M-x mcp-emacs-whats-new` shows the release notes for every release since the
+last version whose notes you saw — one Org headline per release — read from the
+`news/release-*.org` files shipped with the checkout, so it works offline. The
+last-seen version is kept in `.mcp-emacs-last-seen`; with no stamp yet it shows
+every shipped release rather than none.
+
+mcp-emacs does not depend on Doom, so surfacing it on Doom's home screen is a
+one-liner in your `config.el`:
+
+```elisp
+(after! doom-dashboard
+  (add-to-list '+doom-dashboard-menu-sections
+               '("mcp-emacs what's new" :action mcp-emacs-whats-new)))
 ```
 
 ## Architecture
