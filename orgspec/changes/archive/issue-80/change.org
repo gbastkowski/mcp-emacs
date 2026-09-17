@@ -1,0 +1,120 @@
+#+TITLE: issue-80
+
+* Intent
+Committing from a session means asking the human to run ~git commit~
+themselves or handing them a message to paste. Neither is the shape the
+rest of this project uses: ~apply_diff~ proposes a change and the human
+accepts or rejects it in ediff, and the permission gate proposes a decision
+and the human answers it in a menu buffer. A commit is the same kind of
+thing — a proposal that wants a human yes.
+
+The wanted tool opens magit's commit dialog with a proposed message already
+in the commit buffer; the human confirms (~C-c C-c~), edits it first, or
+aborts (~C-c C-k~); the tool reports which happened and the resulting commit
+SHA when there is one. It follows the ~:async-handler~ deferral ~apply_diff~
+uses (a human answers it, so it must not block the process filter), commits
+only what is already staged and refuses an empty index (the human stays in
+charge of the change's boundaries), fails closed (an abort is not a commit —
+no silent background ~git commit~), and says so when magit is absent rather
+than half-working.
+
+* Scope
+In scope:
+- A helper ~mcp-emacs-git-commit-async~ in ~elisp/mcp-emacs.el~: returns
+  immediately and answers ~ON-DONE~ from magit's commit flow once the human
+  confirms or aborts, with the same guard-and-timeout shape as
+  ~mcp-emacs-apply-diff-async~.
+- Guards: refuse clearly when magit is not loadable; refuse clearly when
+  nothing is staged; fail closed on abort (no background commit); a timeout
+  that leaves the dialog to the human and reports the deferral.
+- A new MCP tool ~git_commit~ registered in
+  ~elisp/mcp-emacs-server.el~ with ~:schema~ (~message~, ~timeout~) and an
+  ~:async-handler~ dispatching to the helper, keeping a synchronous
+  ~:handler~ fallback for callers that dispatch directly.
+- Tests in ~test/mcp-emacs-test.el~ (and/or the server tool-registry suite)
+  covering the guard clauses and the tool registration/shape.  The live magit
+  dialog itself is standard magit behaviour and is verified by code, the
+  full-suite compile gate, and CI; the guard paths are what the suite can
+  pin.
+
+Out of scope:
+- Staging by the tool: the human stages; the tool commits what is staged and
+  refuses an empty index.
+- Reverting working-tree changes made by the model outside the commit.
+- Anything beyond a single commit (amend, push) — the tool commits and
+  returns; pushing stays separate.
+- The runner-specific ~mcp-emacs-run*~ commit path; this is the
+  ~agent-backend~ / MCP surface.
+
+* Approach
+- ~mcp-emacs.el~: implement ~mcp-emacs-git-commit-async (message timeout
+  on-done)~ modelled on ~mcp-emacs-apply-diff-async~: (1) refuse when magit
+  is unavailable (~on-done~ with a clear status, not an error); (2) refuse an
+  empty index via the staged-file list; (3) open magit's commit dialog in the
+  current project with the proposed message prefilled in the commit buffer;
+  (4) answer ~ON-DONE~ exactly once from magit's commit / abort completion,
+  guarded by a single-delivery latch and a timeout timer, returning the
+  outcome and, on a commit, the new SHA.  Magit's own log-edit keymap already
+  binds ~C-c C-c~ (commit) and ~C-c C-k~ (abort), so the human action needs
+  no new keys.
+- ~mcp-emacs-server.el~: append a ~git_commit~ entry to
+  ~mcp-emacs-server--tools~ after ~apply_diff~, with ~:name~, ~:description~
+  (propose → human confirms/edits/aborts → outcome+SHA), ~:schema~
+  (~message~ string required, ~timeout~ integer defaulting like
+  ~apply_diff~), ~:async-handler~ calling ~mcp-emacs-git-commit-async~ with
+  ~done~, and a synchronous ~:handler~ calling the blocking variant.
+- Tests: assert (a) the helper refuses with a clear status when magit is not
+  loaded; (b) it refuses an empty index without committing when nothing is
+  staged; (c) the ~git_commit~ tool is registered with the right name,
+  schema, and an ~:async-handler~ that resolves through the helper; (d) an
+  abort path returns aborted, not a commit.
+- Verify with ~bin/test-emacs.sh --compile --strict~ and the full suite on a
+  separate Emacs (akiko, via the loop's ~verify.sh~ before delivery).
+
+* Tasks
+- [ ] Add ~mcp-emacs-git-commit-async~ to ~elisp/mcp-emacs.el~ with magit-absence and empty-index guards, the prefilled dialog, single-delivery latch, SHA capture, and timeout
+- [ ] Register the ~git_commit~ tool in ~elisp/mcp-emacs-server.el~ with ~:schema~, ~:async-handler~, and a synchronous ~:handler~ fallback
+- [ ] Tests: magit-absence refusal, empty-index refusal, tool registration/shape, abort not a commit
+- [ ] ~bin/test-emacs.sh --compile --strict~ clean and full suite green on akiko
+- [ ] Fold the change into ~specs/mcp-tools.org~ (spec.sh archive) and commit in repo style
+* Delta
+** Commit is proposed, not executed                                      :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The MCP server SHALL expose a ~git_commit~ tool that opens magit's commit
+dialog with a proposed commit message and lets the human confirm (magit's
+~C-c C-c~), edit it first, or abort (~C-c C-k~). The tool SHALL defer via
+~:async-handler~ like ~apply_diff~, since a human answers it, and SHALL
+return which of those happened plus the resulting commit SHA when a commit
+was made. It SHALL fail closed: an abort is an abort, never a fallback to a
+background ~git commit~, and when magit is not available it SHALL say so
+rather than half-working.
+*** A commit is proposed in magit's dialog
+- WHEN ~git_commit~ is called with a proposed message
+- THEN magit's commit dialog opens with that message prefilled, and the
+  request is deferred until the human resolves it
+*** Confirming commits and returns the SHA
+- WHEN the human commits from the dialog
+- THEN the tool reports the confirmation and the new commit's SHA
+*** Aborting fails closed
+- WHEN the human aborts the dialog
+- THEN the tool reports the abort and does not run a commit behind the
+  human's back
+*** magit absent is a refusal, not a half-result
+- WHEN magit is not loaded
+- THEN the tool reports that it cannot open the commit dialog rather than
+  returning a made-up result
+** Staging stays the human's call                                          :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The ~git_commit~ tool SHALL commit only what is already staged and SHALL
+refuse an empty index with a clear message; it SHALL NOT stage on the
+human's behalf.
+*** An empty index is refused
+- WHEN ~git_commit~ is called with nothing staged
+- THEN it reports that no changes are staged and makes no commit
+*** Staged changes are what get committed
+- WHEN some changes are staged
+- THEN the commit contains exactly those staged changes
