@@ -1,0 +1,156 @@
+#+TITLE: issue-81
+#+PROPERTY: TRACKER
+#+PROPERTY: ISSUE
+
+* Intent
+Every diff review goes through ediff today: the ~apply_diff~ tool and the
+deferred IDE ~openDiff~ flow both land in `mcp-emacs--ediff-review`, which
+opens a dedicated ediff session the human resolves with accept/reject keys.
+A small change — a typo, a one-line fix — pulls up the full ediff machinery:
+a window-layout capture/restore, a control panel on screen, side windows
+torn down. For a change you can read in two seconds that is disproportionate.
+
+This change makes small diffs render *inline* instead: the review appears in
+the conversation buffer itself (the ~*claude-client*~ window for the Claude
+client), where the human can read it as text, accept, or reject — and jump
+into a real ediff with one keypress when they want the full compare view.
+Ediff is not removed; it stays reachable as the opt-in jump (Gunnar,
+issue #81) and as the automatic path for diffs too large to show inline.
+
+Decisions locked in from the issue thread:
+1. Inline where: the review renders in the ~*claude-client*~ conversation
+   buffer itself.
+2. Ediff stays reachable by a keypress from the inline view (opt-in jump).
+
+The size cutoff that gates inline-vs-ediff is a defcustom; a sensible
+default covers "small" (short unified diff) while keeping ediff for large
+rewrites.
+
+* Scope
+In scope:
+- A size gate applied before the review starts: when the diff between the
+  file's current content and the proposal is small (unified-diff line count
+  at or below a defcustom threshold), render the review inline; otherwise
+  keep the existing ediff path untouched.
+- An inline review surface in the conversation buffer (~*claude-client*~):
+  it shows the unified diff as text with the file path, and binds keys to
+  accept (~C-c C-c~), reject (~C-c C-k~), and jump to ediff (~C-c C-e~,
+  say). Accept applies the proposal to the file exactly as ediff accept does
+  (Buffer A untouched → copy Buffer B in; hand-edited → keep the edit) and
+  reports the same outcome format (~~Status: applied~~ + final content);
+  reject reports ~~Status: rejected~~.
+- The jump key opens `mcp-emacs--ediff-review` against the same two buffers
+  so the human can do the full compare/merge and reach the same accept/reject
+  outcome.
+- The shared result cell and the single-delivery guard used by the async
+  path must still hold: whichever surface (inline here, ediff via jump) the
+  human resolves first is the only answer, and resolve-at-least-once
+  (inline accept then timeout) must not double-deliver.
+- The inline path must respect the same refuse-under-filter rule as the
+  synchronous apply_diff (no command loop under a process filter).
+- The deferred async caller (HTTP ~apply_diff~) and the synchronous caller
+  both get the inline-or-ediff gate, so the behaviour is consistent.
+- Tests in the repo's describe/it/check style covering: size gate picks
+  inline for a small diff and ediff for a large one; inline accept applies
+  and reports ~~Status: applied~~; inline reject reports ~~Status: rejected~~;
+  the jump key opens ediff and the ediff accept is the single resolution; the
+  inline surface is reachable from a ~*claude-client*~ conversation buffer.
+- The orgspec change folded into a spec file (~mcp-tools.org~, and the
+  review placement line in ~ediff-review.org~ touched only if the inline rule
+  is placed there) and archived (ends `Closes #81` per repo style).
+
+Out of scope:
+- Replacing ediff for large diffs; ediff remains the automatic path above
+  the cutoff and the opt-in jump below it.
+- Changing the diff itself, the accept/reject semantics, or the timeout
+  cap logic.
+- The IDE ~openDiff~ surface renders inline too (out of scope unless trivial);
+  this change targets the ~apply_diff~ review the Claude client reaches.
+- Any change to the skip labels or to how the review restores window layout.
+
+* Approach
+- Add defcustom `mcp-emacs-apply-diff-inline-limit` (default a small number,
+  e.g. 40 lines of unified diff) to `elisp/mcp-emacs.el`; a diff whose
+  unified-diff line count is at or below this renders inline, above it ediff.
+- Add an inline review entry point, e.g. `mcp-emacs--inline-review`, sharing
+  the accept/reject helpers `mcp-emacs--apply-diff-accept` /
+  `mcp-emacs--apply-diff-reject` and the same single-delivery `finish`
+  discipline as `mcp-emacs-apply-diff-async`. It renders the unified diff
+  (computed from BUFFER-A's entry content against BUFFER-B) read-only in the
+  conversation buffer (derived from the caller's current buffer, which for a
+  Claude turn is the ~*claude-client*~ buffer), with accept/reject/jump keys
+  bound locally. The jump binding calls `mcp-emacs--ediff-review` on the same
+  two buffers with the same result cell.
+- Gate `mcp-emacs-apply-diff` and `mcp-emacs-apply-diff-async`: build the
+  diff, compare against the limit, dispatch inline or to
+  `mcp-emacs--ediff-review`. Both keep their "refuse under process filter"
+  and single-delivery invariants.
+- The inline view is text favours minimal new rendering machinery: render
+  the diff with diff-mode or a simple unified-diff insertion, local keys,
+  and a mode. Prefer whatever the conversation buffer already provides.
+- Tests in `test/mcp-emacs-test.el` (or a focused new suite) per the gate and
+  resolve scenarios above.
+- Verify with `bin/test-emacs.sh --compile --strict` and the full suite on a
+  separate Emacs (akiko, via the loop's `verify.sh`) before delivery.
+- `spec.sh archive issue-81` to fold into specs and END the change `Closes #81`.
+
+* Tasks
+- [ ] Add `mcp-emacs-apply-diff-inline-limit` defcustom with a sensible default
+- [ ] Add the inline review surface (unified diff text, accept/reject/jump keys) in the conversation buffer
+- [ ] Wire the size gate into `mcp-emacs-apply-diff` and `mcp-emacs-apply-diff-async`, keeping the refuse-under-filter and single-delivery invariants
+- [ ] Add the jump-to-ediff key and confirm the ediff accept is the single resolution
+- [ ] Tests: size gate, inline accept/reject, jump-to-ediff, no double-delivery, conversation-buffer reachability
+- [ ] `bin/test-emacs.sh --compile --strict` clean and full suite green on akiko
+- [ ] Fold the change into specs (`spec.sh archive issue-81`) and commit in repo style
+
+* Delta
+** Small diff reviews render inline in the conversation buffer     :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+The ~apply_diff~ review SHALL render a small diff inline in the conversation
+buffer (~*claude-client*~ for the Claude client) instead of opening ediff,
+and SHALL open ediff for a diff larger than the inline limit. A diff is small
+when its unified-diff line count is at or below
+= mcp-emacs-apply-diff-inline-limit =. Ediff SHALL remain reachable from the
+inline view with one keypress.
+*** A small diff appears inline
+- GIVEN an ~apply_diff~ whose diff fits the inline limit
+- WHEN the review starts
+- THEN it renders as text in the conversation buffer rather than opening ediff
+*** A large diff stays in ediff
+- GIVEN an ~apply_diff~ whose diff exceeds the inline limit
+- WHEN the review starts
+- THEN it opens ediff as before
+*** Ediff is reachable from the inline view
+- GIVEN an inline diff review is on screen
+- WHEN the human presses the jump key
+- THEN a real ediff session against the same buffers opens
+** Inline accept and reject record the same outcome                      :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+Accepting an inline review SHALL apply the proposal to the file and report
+the same outcome format the ediff accept returns (~~Status: applied~~ plus
+the final content); rejecting SHALL leave the file unchanged and report
+~~Status: rejected~~. A hand-edit made to the file's buffer before accepting
+SHALL be kept, exactly as with the ediff accept path. Whichever surface the
+human resolves first — inline or the jumped-to ediff — SHALL be the only
+outcome delivered.
+*** Inline accept applies the change
+- GIVEN an inline diff review whose proposal is untouched beyond the diff
+- WHEN the human accepts it
+- THEN the proposal replaces the file content and the outcome reads
+  ~~Status: applied~~
+*** Inline reject leaves the file alone
+- GIVEN an inline diff review
+- WHEN the human rejects it
+- THEN the file is unchanged and the outcome reads ~~Status: rejected~~
+*** A hand edit survives an inline accept
+- GIVEN the file's buffer was edited away from the original before accept
+- WHEN the human accepts the inline review
+- THEN the file keeps the hand-edit, matching the ediff accept rule
+*** One surface answers once
+- GIVEN an inline review that the human jump-starts into ediff
+- WHEN the human resolves it in ediff
+- THEN the inline view does not deliver a second, competing outcome
