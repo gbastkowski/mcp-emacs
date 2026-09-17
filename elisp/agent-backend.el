@@ -30,6 +30,12 @@
 ;; nil, or, for `agent-backend-resume' and `agent-backend-kill-agent', a
 ;; `user-error' -- so a minimal subclass compiles against the defaults
 ;; without stubs.
+;;
+;; `seq', `subr-x', and `tabulated-list' round out the stdlib floor for
+;; the agent surface: the `seq-' functions search the spawned-agent
+;; registry and the session lists, `when-let*' from `subr-x' keeps the
+;; plist handling branchy code flat, and `tabulated-list-mode' backs the
+;; live agent list buffer.
 
 ;;; Code:
 

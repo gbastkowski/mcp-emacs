@@ -1,4 +1,4 @@
-#+TITLE: issue-74
+#+TITLE: surface-background-agents-in-emacs
 
 * Intent
 A turn can fan out to several background agents (a security review and a
