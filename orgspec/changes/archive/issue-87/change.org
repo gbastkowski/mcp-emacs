@@ -1,0 +1,125 @@
+#+TITLE: agent-question-menu
+
+* Intent
+When an agent asks the human a question, the answer currently has to be
+typed free-form out of the conversation buffer -- even when the agent offered a
+numbered list of options -- and in the Claude case nothing surfaces at all
+~claude-client.el~ notes Claude never emits question requests. The permission
+flow already has the UI the question flow should have: a real menu buffer that
+renders the request, binds one key per choice, and resolves the pending request
+when the human picks one (~agent-permission.el~), and every backend that can be
+asked already models the seam: ~agent-backend-reply-question~ with a
+~question-request~ event kind (~agent-backend.el~), implemented by opencode
+against its question reply endpoint (~opencode-client.el~). opencode's server
+broadcasts a ~question.asked~ SSE event (~{requestID, sessionID, questions}~,
+each question carrying ~question~, ~header~, ~options~ [{label description}],
+~multiple~, ~custom~) and posts replies to
+~/api/session/<id>/question/<request-id>/reply~.
+
+We want the question flow to get a menu like the permission menu: list the
+answers the agent proposed, one keystroke per option, plus an escape hatch for a
+free-form answer the agent did not anticipate. This first delivery wires the
+opencode side end to end (SSE ~question.asked~ -> shared answer menu -> reply),
+since that is the backend that actually emits a request event. Claude's
+~AskUserQuestion~ tool passing through as ordinary tool traffic stays out of
+scope (there is no request event to hook; how to intercept it is a design
+question documented as a follow-up, not guessed here).
+
+* Scope
+In scope:
+- A shared, permission-independent answer menu that lists proposed options and
+  resolves a pending question with the chosen answer, or a free-form one.
+- opencode handling of the ~question.asked~ SSE event: publish a
+  ~question-request~ event and raise the answer menu for the active session.
+- A public command so the human can still answer a pending question by
+  request-id when no menu surfaced (mirrors the existing
+  ~opencode-client-answer-question~ but completes the interactive escape hatch).
+
+Out of scope:
+- Claude's ~AskUserQuestion~ interception (no request event exists; design
+  follow-up).
+- Multi-select questions: single-choice per question to start, matching the
+  issue's stated "single-choice is enough to start".
+- Refactoring ~agent-permission~'s internal registry/window helpers out for
+  shared reuse (the answer menu reuses the proven window-split pattern inline).
+- ~agent-backend-query~ (one-shot, session-less questions) -- untouched.
+
+* Approach
+- Build the answer menu as a small new file ~elisp/agent-question.el~,
+  modelled on ~agent-permission.el~ but general: enter the first pending
+  question, render its text plus one line per option, bind a key per option
+  (and one for free-form), resolve via a ~:resolve~ continuation with the
+  chosen answer string, close on resolve. Keep a pending registry keyed by
+  request-id so an answered question resolves exactly once.
+- In ~elisp/opencode-client.el~, extend ~opencode-client--apply-sync-event~ to
+  handle the ~question.asked~ event type: parse request-id and the
+  questions list, publish ~:kind 'question-request~ on the shared hook, and
+  raise the answer menu (blocking nothing -- opencode holds the question open
+  until a reply arrives). The resolve continuation replies through the existing
+  ~agent-backend-reply-question~ -> ~opencode-client--reply-question~ path.
+- Keep ~opencode-client-answer-question~ working as a manual fallback that
+  answers by request-id (read-string id), but route its answer through the menu
+  too when the pending question is registered, so the two surfaces agree.
+- ~custom~ (free-form) options map to the menu's free-form escape; a question
+  with no options offers only the free-form answer.
+
+* Tasks
+- [ ] Add ~elisp/agent-question.el~: pending registry, answer menu buffer,
+      per-option keys + free-form escape, ~:resolve~ continuation, resolve-
+      once semantics, window split modelled on ~agent-permission.el~
+- [ ] Add ~agent-question-request~ entry point (id, question text, option
+      list, ~:resolve~, ~:window~)
+- [ ] Extend ~opencode-client--apply-sync-event~ to handle ~question.asked~:
+      publish ~question-request~ event and raise the answer menu; resolve via
+      ~agent-backend-reply-question~
+- [ ] Route ~opencode-client-answer-question~ through the menu when the
+      request-id is pending, else fall back to read-string
+- [ ] Byte-compile ~elisp/agent-question.el~ and ~elisp/opencode-client.el~
+      clean
+- [ ] Tests in the describe/it/check style: a ~question.asked~ SSE event
+      publishes a ~question-request~ event and raises a buffer; choosing an
+      option resolves once and posts the reply endpoint; free-form answer posts
+      the custom text
+- [ ] Run the full suite via ~bin/test-emacs.sh --quiet~ on akiko, green
+
+* Delta
+** A question is answered through a menu of proposed options            :ADDED:
+:PROPERTIES:
+:AREA: agent-backend
+:END:
+The system SHALL present a pending agent question in a dedicated answer-menu
+buffer that lists the options the agent proposed, one keystroke per option,
+and resolves the pending question with the chosen answer; a free-form answer
+SHALL be available as an escape hatch when the agent did not anticipate an
+option.
+*** An offered option is chosen
+- WHEN the answer menu for a question with proposed options is displayed
+- THEN pressing the key bound to an option resolves the question with that
+  option's text
+*** A free-form answer is accepted
+- WHEN the answer menu is displayed
+- THEN the free-form escape lets the human type an answer the agent did not
+  propose, and that text resolves the question
+*** The menu clears exactly once
+- WHEN an answer (option or free-form) is chosen
+- THEN the menu closes and a second answer to the same question does nothing
+** opencode surfaces question.asked through the shared menu               :ADDED:
+:PROPERTIES:
+:AREA: opencode-client
+:END:
+The system SHALL, when the opencode client receives a ~question.asked~ SSE
+event for the active session, publish a ~question-request~ event on the shared
+hook and raise the answer menu offering the proposed options; the chosen
+answer SHALL be sent to the opencode question reply endpoint.
+*** A question.asked event raises the menu
+- WHEN the opencode SSE stream delivers ~question.asked~ with a request-id and
+  questions
+- THEN a ~question-request~ event is published and an answer menu is shown for
+  the active session
+*** The reply reaches the endpoint
+- WHEN an answer is chosen in the answer menu for an opencode question
+- THEN the answer is posted to the question reply endpoint for the session and
+  request-id
+*** A manually-asked question still works
+- WHEN the human invokes the manual answer command with a pending request-id
+- THEN the answer is delivered through the same reply path

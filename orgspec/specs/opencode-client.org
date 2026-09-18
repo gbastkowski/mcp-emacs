@@ -219,3 +219,20 @@ an empty buffer.
 - THEN each part is rendered the same way the equivalent live streamed part
   would be
 
+* opencode surfaces question.asked through the shared menu
+The system SHALL, when the opencode client receives a ~question.asked~ SSE
+event for the active session, publish a ~question-request~ event on the shared
+hook and raise the answer menu offering the proposed options; the chosen
+answer SHALL be sent to the opencode question reply endpoint.
+** A question.asked event raises the menu
+- WHEN the opencode SSE stream delivers ~question.asked~ with a request-id and
+  questions
+- THEN a ~question-request~ event is published and an answer menu is shown for
+  the active session
+** The reply reaches the endpoint
+- WHEN an answer is chosen in the answer menu for an opencode question
+- THEN the answer is posted to the question reply endpoint for the session and
+  request-id
+** A manually-asked question still works
+- WHEN the human invokes the manual answer command with a pending request-id
+- THEN the answer is delivered through the same reply path
