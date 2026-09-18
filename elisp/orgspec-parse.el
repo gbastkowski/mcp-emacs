@@ -115,12 +115,26 @@ property name; nil when the keyword is absent."
                             (length keyword)))))))
     val))
 
+(defun orgspec-parse--buffer-title ()
+  "Return the buffer's `#+TITLE:' keyword value, or nil.
+A change file may carry a human-readable title alongside the id, so the
+render can lead with the title rather than the machine-facing directory
+name (see issue #114)."
+  (let ((tree (org-element-parse-buffer))
+        title)
+    (org-element-map tree 'keyword
+      (lambda (k)
+        (when (equal (org-element-property :key k) "TITLE")
+          (setq title (string-trim (org-element-property :value k))))))
+    title))
+
 (defun orgspec-parse-change (&optional id)
   "Parse the current buffer's `* Delta' subtree into an `orgspec-change'.
 ID names the change (its directory).  Delta requirements are the level-2
 headlines under the top-level `Delta' headline; their scenarios are the
-level-3 children.  The change's TRACKER/ISSUE back-link (buffer-level
-`#+PROPERTY:' keywords) is carried on the result."
+level-3 children.  The change's human title (buffer-level `#+TITLE:') and
+its TRACKER/ISSUE back-link (buffer-level `#+PROPERTY:' keywords) are
+carried on the result."
   (let ((tree (org-element-parse-buffer))
         requirements)
     (org-element-map tree 'headline
@@ -132,6 +146,7 @@ level-3 children.  The change's TRACKER/ISSUE back-link (buffer-level
               (push (orgspec-parse--requirement child) requirements))))))
     (orgspec-change-create
      :id id
+     :title (orgspec-parse--buffer-title)
      :tracker (orgspec-parse--buffer-property orgspec-tracker-property)
      :issue (orgspec-parse--buffer-property orgspec-issue-property)
      :requirements (nreverse requirements))))

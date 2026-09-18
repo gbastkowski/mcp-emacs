@@ -49,3 +49,27 @@ file alone.
 - GIVEN a parsed change that carries a tracker and issue
 - WHEN ~orgspec_parse~ renders it
 - THEN the rendered text names the tracker and issue
+* Parse renders the change title, not the id
+`orgspec_parse` SHALL render a change leading with its human title (the
+change file's `#+TITLE:` value), and SHALL fall back to the change id when
+no title is set.  The id-prefix preamble SHALL no longer be shown.
+** Title is the leading line
+- WHEN a change has a `#+TITLE:`
+- THEN the rendered change leads with that title
+- AND the change id is not the leading line
+** Falls back to the id when untitled
+- WHEN a change has no `#+TITLE:`
+- THEN the rendered change leads with the change id
+* Back-link rendered as a quiet line
+When a change has a back-link, `orgspec_parse` SHALL render it as a quiet
+second line of the form `↳ <tracker>#<issue>` instead of an inline
+`(from …)` preamble.  When the change has no back-link, SHALL render no
+back-link line at all.
+** Back-link present
+- WHEN a change has a TRACKER or ISSUE buffer property
+- THEN the rendered change shows a `↳ <tracker>#<issue>` line under the
+  title
+- AND no inline `(from …)` preamble is shown
+** No back-link
+- WHEN a change has neither a TRACKER nor an ISSUE property
+- THEN the rendered change shows no back-link line
