@@ -742,6 +742,112 @@ and `control' is the fake control buffer."
       (when (buffer-live-p conv) (kill-buffer conv))
       (delete-file file))))
 
+;;;; Force-quit scratch reclaim (issue #126)
+
+;; A forced review close must reclaim the ediff scratch buffers ediff
+;; created, not just the control buffer; otherwise a timeout strands the
+;; stacked panel set and blocks the next review.  Stub `ediff-really-quit'
+;; to close the control buffer the way the real one closes its session,
+;; and check the panels are gone afterwards.
+(describe "mcp-emacs--apply-diff-force-quit on a plain ediff handle"
+  (let* ((control (generate-new-buffer " *fake-force-quit-control*"))
+         (diff-buf (generate-new-buffer "*ediff-diff*"))
+         (fine-buf (generate-new-buffer "*ediff-fine-diff*"))
+         (errors-buf (generate-new-buffer "*ediff-errors*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ediff-really-quit)
+                   (lambda (&rest _) (kill-buffer control))))
+          (mcp-emacs--apply-diff-force-quit control)
+          (it "closes the ediff control buffer"
+            (check (buffer-live-p control) nil))
+          (it "reclaims the diff scratch buffer"
+            (check (buffer-live-p diff-buf) nil))
+          (it "reclaims the fine-diff scratch buffer"
+            (check (buffer-live-p fine-buf) nil))
+          (it "reclaims the errors scratch buffer"
+            (check (buffer-live-p errors-buf) nil)))
+      (dolist (b (list control diff-buf fine-buf errors-buf))
+        (when (buffer-live-p b) (kill-buffer b))))))
+
+;; A review the human jumped from inline to ediff must not strand the
+;; panels when the inline timeout fires: the dismiss lambda force-quits
+;; the jumped-to control buffer and reclaims its scratch buffers.
+(describe "the inline timeout reclaims a jumped-to ediff's scratch buffers"
+  (let ((file (mcp--async-fixture))
+        (conv (mcp--conversation-buffer))
+        (control (generate-new-buffer " *fake-jump-timeout-control*"))
+        (diff-buf (generate-new-buffer "*ediff-diff*"))
+        (fine-buf (generate-new-buffer "*ediff-fine-diff*"))
+        (errors-buf (generate-new-buffer "*ediff-errors*")))
+    (unwind-protect
+        (let ((calls nil))
+          (cl-letf (((symbol-function 'mcp-emacs--ediff-review)
+                     (lambda (_a _b _entry _result &optional _on-resolve _tab)
+                       control))
+                    ((symbol-function 'ediff-really-quit)
+                     (lambda (&rest _) (kill-buffer control)))
+                    ((symbol-function 'set-window-configuration)
+                     (lambda (&rest _) nil)))
+            (let ((mcp-emacs-apply-diff-inline-limit 40))
+              (with-current-buffer conv
+                (mcp-emacs-apply-diff-async file "new\n" 1
+                                            (lambda (out) (push out calls)))))
+            (with-current-buffer conv
+              (mcp-emacs--apply-diff-inline-jump))
+            (it "leaves the panels up while the review is still live"
+              (check (buffer-live-p diff-buf) t))
+            (sleep-for 2)
+            (it "reclaims the diff scratch buffer on timeout"
+              (check (buffer-live-p diff-buf) nil))
+            (it "reclaims the fine-diff scratch buffer on timeout"
+              (check (buffer-live-p fine-buf) nil))
+            (it "reclaims the errors scratch buffer on timeout"
+              (check (buffer-live-p errors-buf) nil))
+            (it "closes the jumped-to control buffer on timeout"
+              (check (buffer-live-p control) nil))))
+      (dolist (b (list control diff-buf fine-buf errors-buf))
+        (when (buffer-live-p b) (kill-buffer b)))
+      (let ((buf (find-buffer-visiting file)))
+        (when buf (with-current-buffer buf (set-buffer-modified-p nil))
+              (kill-buffer buf)))
+      (when (buffer-live-p conv) (kill-buffer conv))
+      (delete-file file))))
+
+;;;; Foreign-session host resolution (issue #126)
+
+;; A foreign (non-agent-backend) request must prefer a visible
+;; conversation over the selected window's buffer; only with no
+;; conversation visible does window focus decide.
+(describe "a foreign-session review prefers a visible conversation buffer"
+  (let* ((from (generate-new-buffer " *foreign-from*"))
+         (focus (generate-new-buffer " *focused-buffer*"))
+         (conv (mcp--conversation-buffer)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-backend--visible-conversation)
+                   (lambda () conv))
+                  ((symbol-function 'mcp-emacs--current-buffer)
+                   (lambda () focus)))
+          (it "renders into the visible conversation, not the focused window"
+            (check (mcp-emacs--apply-diff-conversation-buffer from) conv))
+          (it "does not use the selected window's buffer when a conversation is visible"
+            (check (eq (mcp-emacs--apply-diff-conversation-buffer from) focus)
+                   nil)))
+      (dolist (b (list from focus conv))
+        (when (buffer-live-p b) (kill-buffer b))))))
+
+(describe "window focus stays the fallback with no visible conversation"
+  (let* ((from (generate-new-buffer " *foreign-from-2*"))
+         (focus (generate-new-buffer " *focused-buffer-2*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-backend--visible-conversation)
+                   (lambda () nil))
+                  ((symbol-function 'mcp-emacs--current-buffer)
+                   (lambda () focus)))
+          (it "falls back to the selected window's buffer"
+            (check (mcp-emacs--apply-diff-conversation-buffer from) focus)))
+      (dolist (b (list from focus))
+        (when (buffer-live-p b) (kill-buffer b))))))
+
 ;; A diff above the inline limit renders folded while it reviews: each
 ;; unified-diff hunk header becomes an outline heading the human can
 ;; collapse, and the scaffolding is reverted when the review resolves,

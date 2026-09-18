@@ -1,0 +1,111 @@
+#+TITLE: issue-126
+#+PROPERTY: TRACKER
+#+PROPERTY: ISSUE
+
+* Intent
+~apply_diff~ reviews can fail to reach the human and then leak their
+surface. For a non-claude-client (MCP-over-HTTP) session the review host
+resolution is a blind window-focus guess, so the review can be misrouted
+into an unreachable ediff and, when nobody answers, time out with the
+ediff panel stack still stranded. The report names two concrete harms:
+
+1. ~mcp-emacs--apply-diff-conversation-buffer~ (elisp/mcp-emacs.el:1304)
+   falls back to the currently selected window buffer when ~from~ is not
+   an ~agent-backend-mode~ buffer — and at HTTP dispatch time ~from~ is
+   not the requesting conversation at all, so the review lands in an
+   arbitrary buffer or, when window focus is a file, in an ediff that
+   never becomes visible; and
+2. ~mcp-emacs--apply-diff-force-quit~ only closes the ediff control
+   buffer, so a timeout leaves the stacked Control Panels (and their
+   scratch buffers) behind to block the next review.
+
+This change ships the conservative fix chosen with Gunnar: (a) force-quit
+reclaims the ediff scratch buffers so a timeout cannot strand a panel
+stack, and (b) a conservative host-buffer resolution change so the inline
+review prefers a conversation a foreign session can be associated with
+(without the full session-binding refactor, which is deliberately out of
+scope here).
+
+* Scope
+In scope:
+- Reclaiming the ediff scratch buffers when force-closing a review, for
+  both the inline timeout path and the plain ediff handle, so a timeout
+  cannot strand a panel stack.
+- A conservative host-buffer resolution change to
+  ~mcp-emacs--apply-diff-conversation-buffer~: for a foreign (non
+  ~agent-backend-mode~) request, prefer a live conversation buffer that
+  is visible on screen over blindly trusting the selected window's
+  buffer, and only fall back to window focus when no conversation is
+  available.
+
+Out of scope:
+- Plumbing a session id through apply_diff dispatch and binding the
+  review host to the exact requesting session (the deep/structural fix;
+  filed separately).
+- Refusing the review outright when no surface can be presented.
+- The unified/inline fallback sizing or any other apply-diff behaviour.
+
+* Approach
+- In the force-quit path (~mcp-emacs--apply-diff-force-quit~ and the
+  inline timeout lambda at elisp/mcp-emacs.el:1460-1470), after quitting
+  the control buffer, also reclaim the ediff scratch buffers that ediff
+  created for the session — the diff, fine-diff and errors panels — so a
+  timed-out review cannot strand a stacked panel set. Guard on buffer
+  liveness; killing a missing buffer is a no-op.
+- In ~mcp-emacs--apply-diff-conversation-buffer~, when ~from~ is not an
+  agent conversation buffer, prefer ~agent-backend--visible-conversation~
+  (a live conversation on screen, same-project first) before falling
+  back to the currently selected window buffer. This associates a foreign
+  HTTP session's review with a real conversation the human can actually
+  see, instead of a blind window-focus guess.
+
+* Tasks
+- [ ] force-quit (inline timeout path) reclaims the ediff scratch buffers
+- [ ] force-quit (plain ediff handle) reclaims the ediff scratch buffers
+- [ ] ~mcp-emacs--apply-diff-conversation-buffer~ prefers a visible
+      conversation over window focus for a foreign request
+- [ ] regression tests in test/mcp-emacs-apply-diff-test.el for both
+- [ ] orgspec validate passes (PROBLEMS: nil)
+- [ ] suite green on akiko; PR delivered, CI green
+
+* Delta
+** A timed-out review reclaims its ediff panels                 :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+Force-closing an ~apply_diff~ review SHALL reclaim every ediff surface
+it opened — the control buffer and the ediff scratch buffers (diff,
+fine-diff and errors panels) — so a review that times out can never
+leave a stacked panel set behind to block the next review. This holds
+for both the plain ediff handle and the inline timeout path.
+*** Force-quit reclaims the ediff scratch buffers
+- GIVEN an ~apply_diff~ review that opened an ediff session
+- WHEN the review is force-closed on timeout (inline path or plain ediff handle)
+- THEN the ediff control buffer is closed
+- AND the ediff diff, fine-diff and errors scratch buffers are reclaimed
+*** Inline timeout reclaims the panels it may have started
+- GIVEN an inline ~apply_diff~ review from which the human jumped to ediff
+- WHEN the review times out while that ediff is still open
+- THEN the jumped-to ediff control buffer is closed
+- AND its scratch buffers are reclaimed
+** A foreign-session review prefers a visible conversation        :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+For a request that cannot be tied to an agent conversation (a
+non-~agent-backend-mode~ ~from~, as with an MCP-over-HTTP session), the
+inline review SHALL prefer a conversation buffer that is visible on
+screen over the currently selected window's buffer, and SHALL fall back
+to window focus only when no conversation buffer is available.
+*** Foreign-session reviews prefer a visible conversation
+- GIVEN an ~apply_diff~ review started from a non-conversation ~from~
+- AND a live conversation buffer is visible on screen
+- WHEN the review renders inline
+- THEN it renders into that visible conversation buffer
+- AND it does not use the currently selected window's buffer unless that
+  buffer is itself the chosen conversation
+*** Window focus is the last resort
+- GIVEN an ~apply_diff~ review started from a non-conversation ~from~
+- AND no live conversation buffer is visible on screen
+- WHEN the review renders inline
+- THEN it falls back to the currently selected window's buffer as today
