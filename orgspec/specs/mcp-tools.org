@@ -601,3 +601,42 @@ to window focus only when no conversation buffer is available.
 - AND no live conversation buffer is visible on screen
 - WHEN the review renders inline
 - THEN it falls back to the currently selected window's buffer as today
+* A negative inline limit never opens ediff by default
+A negative ~mcp-emacs-apply-diff-inline-limit~ SHALL render every ~apply_diff~
+review inline in the conversation buffer regardless of diff size, so ediff is
+not opened by default; ~0~ and positive values SHALL keep their current
+meaning, and the two forced-ediff fallbacks — an unresolvable conversation
+buffer and a conversation that cannot take the review — SHALL still open ediff
+rather than lose the review.
+** Any producible diff renders inline under a negative limit
+- GIVEN an ~apply_diff~ whose diff exceeds every positive inline limit
+- AND ~mcp-emacs-apply-diff-inline-limit~ is ~-1~
+- WHEN the review starts
+- THEN it renders as text in the conversation buffer rather than opening ediff
+** A diff that could not be produced still falls back to ediff
+- GIVEN an ~apply_diff~ whose unified diff cannot be produced (nil text)
+- AND the inline limit is ~-1~
+- WHEN the review starts
+- THEN it opens ediff as before, so the review is never lost
+** Ediff stays the forced fallback when no conversation buffer resolves
+- GIVEN an ~apply_diff~ whose conversation buffer cannot be resolved
+- AND the inline limit is ~-1~
+- WHEN the review starts
+- THEN it opens ediff as before rather than rendering into an arbitrary buffer
+** Ediff stays reachable from an inline view under -1
+- GIVEN an inline diff review on screen with a negative inline limit
+- WHEN the human presses the jump key
+- THEN a real ediff session against the same buffers opens
+* A large inline diff renders folded and navigable
+When ~apply_diff~ renders inline a diff larger than ~mcp-emacs-apply-diff-inline-limit~,
+the review SHALL render it folder/navigable hunk by hunk rather than as an
+unusable paste, and SHALL revert any fold scaffolding when the review resolves
+so the conversation buffer is left as it was.
+** Large inline hunks can be collapsed
+- GIVEN an inline diff review showing a diff above the inline limit
+- WHEN the human runs the fold command on a hunk header
+- THEN that hunk collapses and the review remains answerable
+** Fold scaffolding is reverted on resolve
+- GIVEN an inline diff review with fold scaffolding active
+- WHEN the human accepts, rejects, jumps to ediff, or the review times out
+- THEN the conversation buffer's outline state returns to what it was before

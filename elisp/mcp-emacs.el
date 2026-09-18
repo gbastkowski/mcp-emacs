@@ -1130,8 +1130,11 @@ layout — including side windows such as Treemacs — comes back."
 A diff whose unified-diff output has at most this many lines is shown as
 text in the conversation buffer, with accept/reject/jump keys bound
 locally, instead of opening a full ediff session; a larger diff keeps
-the ediff path.  Set to 0 to force ediff for everything."
-  :type 'integer
+the ediff path.  Set to 0 to force ediff for everything.  A negative
+value (use -1) renders every producible diff inline, whatever its size;
+ediff stays the forced fallback when no conversation buffer can take the
+review, and stays reachable per diff via the jump key (C-c C-e)."
+  :type '(choice (const :tag "Always inline (any size)" -1) integer)
   :group 'mcp-emacs)
 
 (defun mcp-emacs--apply-diff-accept (buffer-a buffer-b entry-content result)
@@ -1297,12 +1300,14 @@ empty string means the buffers are identical."
 (defun mcp-emacs--apply-diff-inline-p (diff-text)
   "Return non-nil when DIFF-TEXT fits the inline review limit.
 `mcp-emacs-apply-diff-inline-limit' holds the cutoff: a unified diff
-with at most that many lines renders inline.  Nil DIFF-TEXT (the diff
-could not be produced) is treated as too large, so ediff stays the
-fallback."
+with at most that many lines renders inline.  A negative limit makes
+every producible diff render inline, whatever its size.  Nil DIFF-TEXT
+\(the diff could not be produced) is treated as too large, so ediff
+stays the fallback."
   (and diff-text
-       (<= (length (split-string diff-text "\n" t))
-           mcp-emacs-apply-diff-inline-limit)))
+       (or (< mcp-emacs-apply-diff-inline-limit 0)
+           (<= (length (split-string diff-text "\n" t))
+               mcp-emacs-apply-diff-inline-limit))))
 
 (defun mcp-emacs--apply-diff-conversation-buffer (from)
   "Return the conversation buffer an inline review renders into.
@@ -1348,6 +1353,14 @@ review; a no-op when no inline review is active here."
   (let ((st mcp-emacs--apply-diff-inline-data))
     (when st
       (setcar (plist-get st :claimed) t)
+      ;; Revert the fold scaffolding a large inline diff set up: restore the
+      ;; pre-review `outline-regexp' and minor-mode state so the conversation
+      ;; buffer is left as it was.
+      (let ((outline-state (plist-get st :outline)))
+        (when outline-state
+          (setq-local outline-regexp (nth 1 outline-state))
+          (unless (car outline-state)
+            (outline-minor-mode -1))))
       (mcp-emacs--apply-diff-inline-mode -1)
       (setq-local mcp-emacs--apply-diff-inline-data nil))))
 
@@ -1412,22 +1425,36 @@ only outcome delivered."
 
 (define-minor-mode mcp-emacs--apply-diff-inline-mode
   "Minor mode active while an inline apply-diff review is on screen.
-Turned on by `mcp-emacs--inline-review' when a small diff renders in a
+Turned on by `mcp-emacs--inline-review' when a diff renders in a
 conversation buffer, and off again the moment the review resolves or is
 dismissed.  C-c C-c accepts, C-c C-k rejects, C-c C-e jumps to a full
 ediff session."
   :lighter " diff"
   :keymap mcp-emacs--apply-diff-inline-mode-map)
 
+(defvar outline-minor-mode)
+(defvar outline-regexp)
+
+(defconst mcp-emacs--apply-diff-outline-regexp "^@@ "
+  "Outline regexp marking diff hunk headers as foldable headings.
+`mcp-emacs--inline-review' sets this as the conversation buffer's
+`outline-regexp' while a large inline diff is on screen, so each
+unified-diff hunk header (\"@@ -N +M @@\") is an outline heading the
+human can collapse; the buffer's previous regexp and minor-mode state
+are restored when the review resolves.")
+
 (defun mcp-emacs--inline-review (buffer-a buffer-b entry-content result
                                    &optional on-resolve diff-text)
-  "Render a small-diff apply-diff review inline in the conversation buffer.
+  "Render an apply-diff review inline in the conversation buffer.
 Displays the unified diff (DIFF-TEXT, or computed from BUFFER-A's entry
 content against BUFFER-B) as text with the file path in the conversation
 buffer the review was started from, and turns on
 `mcp-emacs--apply-diff-inline-mode' so accept/reject/jump keys are
-bound locally.  Accepting applies the proposal exactly as the ediff
-accept does (`mcp-emacs--apply-diff-accept') and reports the same
+bound locally.  A diff above `mcp-emacs-apply-diff-inline-limit'
+renders folded: its hunk headers become outline headings the human can
+collapse, and the conversation buffer's prior outline state is restored
+when the review resolves.  Accepting applies the proposal exactly as the
+ediff accept does (`mcp-emacs--apply-diff-accept') and reports the same
 outcome via ON-RESOLVE; rejecting leaves the file alone; the jump key
 starts `mcp-emacs--ediff-review' on the same two buffers and result
 cell, so whichever surface the human resolves first is the only answer.
@@ -1461,7 +1488,19 @@ fell back."
                               "(no differences)\n" "")
                           "C-c C-c accept, C-c C-k reject, C-c C-e ediff\n"))
                 (setq-local mcp-emacs--apply-diff-inline-data st)
-                (mcp-emacs--apply-diff-inline-mode 1))
+                (mcp-emacs--apply-diff-inline-mode 1)
+                ;; A diff above the inline limit would dump an unreadable
+                ;; wall into the conversation; fold it hunk by hunk instead.
+                ;; The prior outline state goes into the session plist so the
+                ;; teardown can put the buffer back.
+                (when (and text
+                           (> (length (split-string text "\n" t))
+                              mcp-emacs-apply-diff-inline-limit))
+                  (plist-put st :outline
+                             (list outline-minor-mode outline-regexp))
+                  (unless outline-minor-mode (outline-minor-mode 1))
+                  (setq-local outline-regexp
+                              mcp-emacs--apply-diff-outline-regexp)))
               (message
                "mcp diff: C-c C-c to accept, C-c C-k to reject, C-c C-e for ediff")
               ;; The timeout path: claim + tear down the inline surface,
