@@ -51,12 +51,15 @@ exactly, drawers and all)."
   source)
 
 (cl-defstruct (orgspec-change (:constructor orgspec-change-create))
-  "A parsed change: its id and the delta requirements it carries.
-ID is the change directory name.  TRACKER and ISSUE are the change's
-back-link to its origin discussion on an external issue tracker (from the
-buffer-level `#+PROPERTY:' keywords); either may be nil.  REQUIREMENTS is a
-list of `orgspec-requirement', each with a non-nil OP."
+  "A parsed change: its id, title and the delta requirements it carries.
+ID is the change directory name.  TITLE is the change's human-readable
+title (the buffer-level `#+TITLE:' keyword), a friendlier face for the id.
+TRACKER and ISSUE are the change's back-link to its origin discussion on
+an external issue tracker (from the buffer-level `#+PROPERTY:' keywords);
+either may be nil.  REQUIREMENTS is a list of `orgspec-requirement', each
+with a non-nil OP."
   id
+  title
   tracker
   issue
   (requirements nil))

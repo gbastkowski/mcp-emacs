@@ -47,23 +47,39 @@
                                    (car c) (cadr c) (cddr c)))
                alist "\n")))
 
+(defun orgspec-mcp--back-link (change)
+  "Render CHANGE's external back-link as a quiet line, or nil.
+Returns a `↳ <tracker>#<issue>' string when the change carries a TRACKER or
+ISSUE buffer property, else nil.  The ISSUE property may hold a full
+`owner/repo#N' reference; the quiet line takes the trailing `#N' tail so it
+reads `↳ github#63' rather than repeating the repo (issue #114)."
+  (let ((tracker (orgspec-change-tracker change))
+        (issue (orgspec-change-issue change)))
+    (when (or tracker issue)
+      (let* ((tail (and issue
+                        (if (string-match "#" issue)
+                            (substring issue (match-beginning 0))
+                          (concat "#" issue))))
+             (ref (cond ((and tracker tail) (concat tracker tail))
+                        (tail tail)
+                        (tracker tracker))))
+        (format "↳ %s" ref)))))
+
 (defun orgspec-mcp--format-change (change)
   "Render an `orgspec-change' CHANGE as a readable per-requirement summary.
-Prefixes the requirements with the change id and its tracker/issue back-link
-when one is present, so an agent reading a change sees where its discussion
-lives."
-  (let ((reqs (orgspec-change-requirements change))
-        (head (concat (orgspec-change-id change)
-                      (when (or (orgspec-change-tracker change)
-                                (orgspec-change-issue change))
-                        (format " (from %s%s)"
-                                (or (orgspec-change-tracker change) "-")
-                                (if (orgspec-change-issue change)
-                                    (format ":%s" (orgspec-change-issue change))
-                                  ""))))))
+Leads with the change's human title (its `#+TITLE:', falling back to its
+id) -- not an id prefix -- and, when a back-link to an external tracker
+exists, a quiet `↳ tracker#issue' second line (see
+`orgspec-mcp--back-link'), so an agent reading a change sees its title and
+where its discussion lives without machinery shouting over it."
+  (let* ((reqs (orgspec-change-requirements change))
+         (head (or (orgspec-change-title change)
+                   (orgspec-change-id change)))
+         (backlink (orgspec-mcp--back-link change))
+         (preamble (if backlink (concat head "\n" backlink) head)))
     (if (null reqs)
-        (format "%s: no delta requirements" head)
-      (concat head "\n"
+        (format "%s: no delta requirements" preamble)
+      (concat preamble "\n"
               (mapconcat
                (lambda (r)
                  (format "- %s [%s] area=%s%s scenarios=%d"

@@ -50,6 +50,8 @@
 
     (describe "orgspec-mcp--parse"
       (let ((s (orgspec-mcp--parse '((id . "add-auth")))))
+        (it "leads with the change title, falling back to the id"
+          (check (string-prefix-p "add-auth" s) t))
         (it "includes each delta requirement's heading"
           (check-that (string-match-p "Login required" s)))
         (it "includes the requirement's area property"
@@ -65,10 +67,31 @@
                   "** Login required :ADDED:\n:PROPERTIES:\n:AREA: auth\n:END:\n"
                   "The system SHALL require login.\n*** happy\n- GIVEN x\n"))
         (let ((s (orgspec-mcp--parse '((id . "with-backlink")))))
-          (it "names the tracker in the rendered change"
-            (check-that (string-match-p "(from github" s)))
-          (it "names the issue in the rendered change"
-            (check-that (string-match-p ":gbastkowski/mcp-emacs#63" s))))))
+          (it "leads with the change id when the change is untitled"
+            (check (string-prefix-p "with-backlink" s) t))
+          (it "renders the back-link as a quiet line, not an inline preamble"
+            (check-that (string-match-p "↳ github#63" s)))
+          (it "shows no inline `(from …)' preamble"
+            (check (string-match-p "(from github" s) nil)))))
+
+    (describe "orgspec-mcp--parse renders the change title"
+      (let ((f (orgspec-commands--change-file "titled")))
+        (orgspec-mcp-call "orgspec_new" `((id . "titled") (root . ,root)))
+        (with-temp-file f
+          (insert "#+TITLE: concept-drive-orgspec-changes-from-an-issue-tracker\n"
+                  "#+PROPERTY: TRACKER github\n"
+                  "#+PROPERTY: ISSUE gbastkowski/mcp-emacs#63\n"
+                  "* Tasks\n- [ ] a\n* Delta\n"
+                  "** Login required :ADDED:\n:PROPERTIES:\n:AREA: auth\n:END:\n"
+                  "The system SHALL require login.\n*** happy\n- GIVEN x\n"))
+        (let ((s (orgspec-mcp--parse '((id . "titled")))))
+          (it "leads with the human title, not the id"
+            (check (string-prefix-p "concept-drive-orgspec-changes-from-an-issue-tracker" s) t))
+          (it "shows the title on the first line and the back-link quietly under it"
+                      (check-that (string-match-p
+                                   (concat "\\`concept-drive-orgspec-changes-from-an-issue-tracker\n"
+                                           "↳ github#63\n")
+                                   s))))))
 
     (describe "orgspec-mcp--advance"
       (it "moves a requirement to the active todo keyword"
