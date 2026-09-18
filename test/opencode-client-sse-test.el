@@ -430,7 +430,7 @@
                                                     (options . (((label . "main") (description . ""))
                                                                 ((label . "dev") (description . "")))))))))))
           (it "publishes a `question-request' event on the shared hook"
-            (check (member 'question-request seen) t))
+            (check-that (member 'question-request seen)))
           (it "raises an answer menu for the question"
             (check (buffer-live-p (get-buffer "*agent-question: qreq1*")) t))
           (it "answers the question through the reply path on resolve"
