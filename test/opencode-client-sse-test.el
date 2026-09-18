@@ -428,7 +428,7 @@
                                      (questions . (((header . "Pick a branch")
                                                     (question . "Which branch?")
                                                     (options . (((label . "main") (description . ""))
-                                                                ((label . "dev") (description . "")))))))))))
+                                                                ((label . "dev") (description . ""))))))))))))
           (it "publishes a `question-request' event on the shared hook"
             (check-that (member 'question-request seen)))
           (it "raises an answer menu for the question"
@@ -436,7 +436,7 @@
           (it "answers the question through the reply path on resolve"
             (agent-question--resolve "qreq1" "main")
             (sit-for 0.2)
-            (check (nreverse answers) '(("sesQ" "qreq1" "main"))))))))))
+            (check (nreverse answers) '(("sesQ" "qreq1" "main")))))))))
 
 (test-helper-summary)
 
