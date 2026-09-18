@@ -1,0 +1,25 @@
+* Release v1.12.5
+
+## What changed
+
+- #124 Add a menu of possible answers when the agent asks a question
+- #123 Render change title with a quiet back-link in orgspec parse output
+- #122 Open report buffers in org-mode and file as markdown
+- #121 Remove the prompting questions in the feature request buffer
+- #120 Let the human edit a proposed text before approving it (propose_text)
+- #119 Render small apply_diff diffs inline in the conversation buffer
+- #118 Add a ten-minute side-window tutor for newcomers
+- #117 Add a What's-new command showing release notes since the last seen version
+- #116 Add a git_commit tool that defers to magit's commit dialog
+- #115 Rewind a conversation to an earlier turn
+- #112 Allow all tool calls for the rest of the session
+- #111 Surface the background agents a conversation spawns
+- #110 Fold the tracker/issue back-link into change parses
+- #109 Stand on the conversation turn state and its elapsed time
+- #105 Show the effective Claude permission allowlist in Emacs
+- #104 Dispatch async tools through :async-handler outside HTTP
+- #102 Cut releases per batch, not per merge
+- #101 Reuse the conversation window on re-display
+- #100 apply_diff: acceptance writes to disk; async timeout reported honestly
+
+_Generated on batch completion._
