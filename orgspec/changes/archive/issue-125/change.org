@@ -1,0 +1,125 @@
+#+TITLE: issue-125
+
+* Intent
+~mcp-emacs-apply-diff-inline-limit~ is an integer cutoff: a unified diff at or
+below it renders inline in the conversation buffer, a larger one opens
+~mcp-emacs--ediff-review~.  Setting it to ~0~ forces ediff for everything;
+there is no way to express the opposite — "always review inline, whatever the
+size".  Opening ediff is a much heavier interruption than the per-diff value
+justifies when the human is mid-task: with the default
+~mcp-emacs-ediff-window-direction~ of ~plain~ it takes over the whole frame,
+and the layout churn costs more attention than reading the diff does.  The
+inline surface already supplies accept, reject, and ~C-c C-e~ to escape into a
+full ediff for the diff that actually wants one, so dropping
+ediff-by-default loses nothing — the human opts in per diff instead of opting
+out per diff.
+
+The fix: treat a negative ~mcp-emacs-apply-diff-inline-limit~ (concretely ~-1~)
+as "never open ediff by default", so every review renders inline regardless of
+size.  Two invariants must survive: the forced-ediff *fallbacks* are not a
+"default" — when no conversation buffer can be resolved, or the conversation
+cannot take the review (~condition-case~), ediff is still the surface, so
+~-1~ means "no ediff by default", not "no ediff ever"; and a very large diff
+pasted inline is its own kind of unusable, so the inline view SHALL keep a
+large diff navigable (fold/scroll) rather than dumping an unreadable wall into
+the conversation buffer.
+
+* Scope
+In scope:
+- ~-1~ for ~mcp-emacs-apply-diff-inline-limit~ (any negative value) makes
+  ~mcp-emacs--apply-diff-inline-p~ return non-nil for any diff that could be
+  produced; a diff that could not be produced (nil text) still goes to ediff.
+- ~0~ and positive values keep their current meaning unchanged.
+- The two ediff fallbacks stay live under ~-1~: an unresolvable conversation
+  buffer and the ~condition-case~ for a conversation that cannot take the
+  review both still open ediff.
+- ~C-c C-e~ keeps escaping an inline review into a full ediff under ~-1~.
+- A large inline diff renders folded/navigable: its hunk headers are
+  outline headings so the human can collapse it, and hold state is
+  cleaned/reverted when the review resolves (accept / reject / jump / timeout).
+
+Out of scope:
+- The IDE ~open_diff~ path in ~elisp/mcp-emacs-ide.el~, which goes straight to
+  ~mcp-emacs--ediff-review~ and never consults the inline gate — the issue
+  flags it as possibly its own issue.
+- Changing the default value (~40~) or the meaning of ~0~ / positive limits.
+- Changing the ediff window-layout behaviour (~mcp-emacs-ediff-window-direction~).
+
+* Approach
+- ~elisp/mcp-emacs.el, mcp-emacs--apply-diff-inline-p~: return non-nil for
+  any non-nil DIFF-TEXT when the limit is negative:
+  ~(and diff-text (or (< mcp-emacs-apply-diff-inline-limit 0)
+  (<= (length (split-string diff-text "\\n" t)) limit)))~.  Nil DIFF-TEXT still
+  short-circuits to nil.
+- Update the ~mcp-emacs-apply-diff-inline-limit~ defcustom docstring to say a
+  negative value means every producible diff renders inline (ediff stays the
+  forced fallback and reachable via ~C-c C-e~); extend ~:type~ to admit
+  negative integers.
+- ~mcp-emacs--inline-review~: when the rendered diff is larger than a fold
+  threshold, enable folding in the conversation buffer so each diff hunk
+  header (~^@@ ~) is a collapsible outline heading.  Preserve and restore the
+  conversation buffer's prior outline state (minor-mode + regexp) around the
+  review so tearing the surface down leaves the buffer as it was.  The existing
+  teardown path (accept / reject / jump / timeout) runs the restore.
+- Tests in ~test/mcp-emacs-apply-diff-test.el~: ~-1~ inlines a diff above any
+  positive limit; ~-1~ still treats nil DIFF-TEXT as too large (dispatch → ediff);
+  ~-1~ with no conversation buffer still opens ediff (fallback preserved); a
+  large inline diff gets collapsible outline headings that revert on resolve.
+- Verify with the repository's own entry point on a separate Emacs:
+  ~bin/test-emacs.sh --compile --strict~ and the full suite in the work tree
+  on akiko (Emacs 31.1), plus CI as the authoritative cross-check.
+
+* Tasks
+- [ ] ~-1~ handling in ~mcp-emacs--apply-diff-inline-p~ (any negative limit → inline whenever the diff is producible)
+- [ ] Docstring + ~:type~ update for ~mcp-emacs-apply-diff-inline-limit~
+- [ ] Fold/scroll affordance for large inline diffs in ~mcp-emacs--inline-review~ with state restore on teardown
+- [ ] Tests: -1 always-inline size gate, nil-diff ediff fallback under -1, no-conversation ediff fallback under -1, hunk-header folding + restore
+- [ ] ~bin/test-emacs.sh --compile~ clean and full suite green in a separate Emacs (akiko, Emacs 31.1)
+- [ ] orgspec change validated and the fold archived into ~specs/mcp-tools.org~ when green
+
+* Delta
+** A negative inline limit never opens ediff by default                 :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+A negative ~mcp-emacs-apply-diff-inline-limit~ SHALL render every ~apply_diff~
+review inline in the conversation buffer regardless of diff size, so ediff is
+not opened by default; ~0~ and positive values SHALL keep their current
+meaning, and the two forced-ediff fallbacks — an unresolvable conversation
+buffer and a conversation that cannot take the review — SHALL still open ediff
+rather than lose the review.
+*** Any producible diff renders inline under a negative limit
+- GIVEN an ~apply_diff~ whose diff exceeds every positive inline limit
+- AND ~mcp-emacs-apply-diff-inline-limit~ is ~-1~
+- WHEN the review starts
+- THEN it renders as text in the conversation buffer rather than opening ediff
+*** A diff that could not be produced still falls back to ediff
+- GIVEN an ~apply_diff~ whose unified diff cannot be produced (nil text)
+- AND the inline limit is ~-1~
+- WHEN the review starts
+- THEN it opens ediff as before, so the review is never lost
+*** Ediff stays the forced fallback when no conversation buffer resolves
+- GIVEN an ~apply_diff~ whose conversation buffer cannot be resolved
+- AND the inline limit is ~-1~
+- WHEN the review starts
+- THEN it opens ediff as before rather than rendering into an arbitrary buffer
+*** Ediff stays reachable from an inline view under -1
+- GIVEN an inline diff review on screen with a negative inline limit
+- WHEN the human presses the jump key
+- THEN a real ediff session against the same buffers opens
+** A large inline diff renders folded and navigable                      :ADDED:
+:PROPERTIES:
+:AREA: mcp-tools
+:END:
+When ~apply_diff~ renders inline a diff larger than ~mcp-emacs-apply-diff-inline-limit~,
+the review SHALL render it folder/navigable hunk by hunk rather than as an
+unusable paste, and SHALL revert any fold scaffolding when the review resolves
+so the conversation buffer is left as it was.
+*** Large inline hunks can be collapsed
+- GIVEN an inline diff review showing a diff above the inline limit
+- WHEN the human runs the fold command on a hunk header
+- THEN that hunk collapses and the review remains answerable
+*** Fold scaffolding is reverted on resolve
+- GIVEN an inline diff review with fold scaffolding active
+- WHEN the human accepts, rejects, jumps to ediff, or the review times out
+- THEN the conversation buffer's outline state returns to what it was before

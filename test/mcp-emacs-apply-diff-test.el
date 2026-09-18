@@ -466,6 +466,18 @@ and `control' is the fake control buffer."
              nil)))
   (it "treats a diff that could not be produced as too large"
     (let ((mcp-emacs-apply-diff-inline-limit 1000))
+      (check (mcp-emacs--apply-diff-inline-p nil) nil)))
+  (it "inlines any producible diff when the limit is negative"
+    (let ((mcp-emacs-apply-diff-inline-limit -1))
+      (check (mcp-emacs--apply-diff-inline-p
+              (concat "--- a\n+++ b\n"
+                      (mapconcat
+                       (lambda (n)
+                         (format "@@ -%d +%d @@\n-old\n+new" n n))
+                       (number-sequence 1 60) "\n")))
+             t)))
+  (it "still treats an unproducible diff as too large under -1"
+    (let ((mcp-emacs-apply-diff-inline-limit -1))
       (check (mcp-emacs--apply-diff-inline-p nil) nil))))
 
 ;; The dispatch shared by the sync and async callers must route a small
@@ -500,6 +512,28 @@ and `control' is the fake control buffer."
               (check ediff-called t))
             (it "does not render a large diff inline"
               (check inline-called nil))))
+      (kill-buffer a) (kill-buffer b))))
+
+;; A negative inline limit means every producible diff takes the inline
+;; path -- but the forced-ediff fallbacks stay live.  When no conversation
+;; buffer can be resolved, the review still opens ediff under -1 rather
+;; than rendering into an arbitrary buffer.
+(describe "a negative inline limit keeps the no-conversation ediff fallback"
+  (let* ((a (generate-new-buffer " *neg-limit-a*"))
+         (b (generate-new-buffer " *neg-limit-b*"))
+         (result (list nil))
+         (ediff-called nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'mcp-emacs--apply-diff-conversation-buffer)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'mcp-emacs--ediff-review)
+                   (lambda (&rest _) (setq ediff-called t) nil)))
+          (with-current-buffer a (insert "old\n"))
+          (with-current-buffer b (insert "new\n"))
+          (let ((mcp-emacs-apply-diff-inline-limit -1))
+            (mcp-emacs--apply-diff-review a b "old\n" result)
+            (it "opens ediff when no conversation buffer can be resolved"
+              (check ediff-called t))))
       (kill-buffer a) (kill-buffer b))))
 
 (defun mcp--conversation-buffer ()
@@ -707,6 +741,49 @@ and `control' is the fake control buffer."
               (kill-buffer buf)))
       (when (buffer-live-p conv) (kill-buffer conv))
       (delete-file file))))
+
+;; A diff above the inline limit renders folded while it reviews: each
+;; unified-diff hunk header becomes an outline heading the human can
+;; collapse, and the scaffolding is reverted when the review resolves,
+;; leaving the conversation buffer's outline state as it was.
+(require 'outline)
+
+(describe "a large inline diff folds hunk by hunk"
+  (let* ((s (mcp--make-session "old\n" "new\n"))
+         (a (nth 0 s)) (b (nth 1 s)) (entry (nth 2 s)) (result (nth 3 s))
+         (conv (mcp--conversation-buffer))
+         (big-diff (concat "--- a\n+++ b\n"
+                           "@@ -1 +1 @@\n-old\n+new\n"
+                           "@@ -10 +10 @@\n-old\n+new\n"
+                           "@@ -20 +20 @@\n-old\n+new\n")))
+    (unwind-protect
+        (let* ((prior (with-current-buffer conv
+                        (list (bound-and-true-p outline-minor-mode)
+                              outline-regexp)))
+               (mcp-emacs-apply-diff-inline-limit 3))
+          (with-current-buffer conv
+            (mcp-emacs--inline-review a b entry result nil big-diff))
+          (it "turns each hunk header into an outline heading"
+            (check-that (with-current-buffer conv
+                          (and outline-minor-mode
+                               (string-match-p outline-regexp "@@ -1 +1 @@")))))
+          (it "collapses a hunk when the fold command runs on its header"
+            (with-current-buffer conv
+              (goto-char (point-min))
+              (re-search-forward "^@@ ")
+              (outline-hide-subtree)
+              (forward-line 1)
+              (check (outline-invisible-p (point)) t)))
+          (with-current-buffer conv
+            (mcp-emacs--apply-diff-inline-accept))
+          (it "restores the conversation buffer's prior outline state"
+            (check (with-current-buffer conv
+                     (equal (list (bound-and-true-p outline-minor-mode)
+                                  outline-regexp)
+                            prior))
+                   t)))
+      (kill-buffer a) (kill-buffer b)
+      (when (buffer-live-p conv) (kill-buffer conv)))))
 
 ;;;; Org-task domain events (issue #39)
 ;;
