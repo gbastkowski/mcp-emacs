@@ -38,6 +38,9 @@
 (defvar ediff-quit-hook)
 (declare-function ediff-buffers "ediff" (buffer-a buffer-b &optional startup-hooks job-name))
 (declare-function ediff-really-quit "ediff-util" (reverse-default-keep-variants))
+;; agent-backend is a soft dependency here: only the client modes load it,
+;; so the review resolution consults it behind an `fboundp' guard.
+(declare-function agent-backend--visible-conversation "agent-backend" ())
 
 ;; magit and with-editor are soft dependencies: the `git_commit' helpers
 ;; below defer to magit's commit dialog and refuse clearly when magit is
@@ -1304,15 +1307,21 @@ fallback."
 (defun mcp-emacs--apply-diff-conversation-buffer (from)
   "Return the conversation buffer an inline review renders into.
 FROM is the buffer the review was started from (the caller's current
-buffer).  It is used as is when it is an agent conversation buffer;
-otherwise the buffer of the currently selected window is returned when
-it is not a file buffer, which for a Claude turn is the conversation
-buffer the apply_diff request belongs to.  Returns nil when neither is
-usable, so the review falls back to ediff rather than landing in an
-arbitrary file."
+buffer).  It is used as is when it is an agent conversation buffer.
+Otherwise -- a foreign request, such as an MCP-over-HTTP session, where
+FROM carries no conversation -- a live conversation buffer that is
+visible on screen is preferred first, so the review renders where the
+human can actually see it; the currently selected window's buffer is
+only the fallback when no conversation is visible, and only when it is
+not a file buffer, which for a Claude turn is the conversation buffer
+the apply_diff request belongs to.  Returns nil when neither is usable,
+so the review falls back to ediff rather than landing in an arbitrary
+file."
   (or (and (buffer-live-p from)
            (with-current-buffer from
              (when (derived-mode-p 'agent-backend-mode) from)))
+      (and (fboundp 'agent-backend--visible-conversation)
+           (agent-backend--visible-conversation))
       (let ((window-buffer (mcp-emacs--current-buffer)))
         (and (buffer-live-p window-buffer)
              (not (with-current-buffer window-buffer buffer-file-name))
@@ -1467,7 +1476,10 @@ fell back."
                         (with-current-buffer ctl
                           (if (fboundp 'ediff-really-quit)
                               (ignore-errors (ediff-really-quit nil))
-                            (kill-buffer ctl)))))))))
+                            (kill-buffer ctl)))
+                        ;; A jumped-to ediff must not strand its stacked
+                        ;; panels when the review times out.
+                        (mcp-emacs--apply-diff-kill-ediff-scratch-buffers)))))))
           (error
            ;; The conversation could not take the review; do not lose it.
            (mcp-emacs--ediff-review buffer-a buffer-b entry-content result
@@ -1491,21 +1503,33 @@ returned."
       (mcp-emacs--ediff-review buffer-a buffer-b entry-content result
                                on-resolve))))
 
+(defun mcp-emacs--apply-diff-kill-ediff-scratch-buffers ()
+  "Kill the ediff scratch buffers a force-closed review may leave.
+Reclaims the diff, fine-diff and errors panels `ediff-buffers' created
+for a session, so a review that never went through the control panel
+cannot strand a stacked panel set.  Guarded on liveness: killing a
+missing buffer is a no-op."
+  (dolist (name '("*ediff-diff*" "*ediff-fine-diff*" "*ediff-errors*"))
+    (let ((buffer (get-buffer name)))
+      (when (buffer-live-p buffer) (kill-buffer buffer)))))
+
 (defun mcp-emacs--apply-diff-force-quit (handle)
   "Force-close an apply-diff review HANDLE on timeout.
 HANDLE is either the ediff control buffer `mcp-emacs--ediff-review'
 returned, or the dismiss function the inline review returned.  A
 function handle tears the inline surface down and force-quits any ediff
-the jump key started, so a timeout cannot orphan either surface.
-Closing is a no-op once the review resolved; the caller reports
-`timeout' regardless."
+the jump key started; an ediff handle closes the control buffer and
+reclaims the session's scratch buffers -- so a timeout cannot orphan
+either surface or leave a stacked panel set behind.  Closing is a no-op
+once the review resolved; the caller reports `timeout' regardless."
   (cond
    ((functionp handle) (ignore-errors (funcall handle)))
    ((and handle (buffer-live-p handle))
     (with-current-buffer handle
       (if (fboundp 'ediff-really-quit)
           (ignore-errors (ediff-really-quit nil))
-        (kill-buffer handle))))))
+        (kill-buffer handle)))
+    (mcp-emacs--apply-diff-kill-ediff-scratch-buffers))))
 
 (defun mcp-emacs-apply-diff-async (path new-content timeout on-done)
   "Review NEW-CONTENT against the file at PATH without blocking.
