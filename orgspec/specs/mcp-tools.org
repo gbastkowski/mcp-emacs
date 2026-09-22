@@ -567,6 +567,40 @@ returned is exactly the text the human ended up with.
 - WHEN the human has not yet answered
 - THEN the handler returns to the event loop immediately and the response is
   written later, once the human answers or the timeout elapses
+* A timed-out review reclaims its ediff panels
+Force-closing an ~apply_diff~ review SHALL reclaim every ediff surface
+it opened — the control buffer and the ediff scratch buffers (diff,
+fine-diff and errors panels) — so a review that times out can never
+leave a stacked panel set behind to block the next review. This holds
+for both the plain ediff handle and the inline timeout path.
+** Force-quit reclaims the ediff scratch buffers
+- GIVEN an ~apply_diff~ review that opened an ediff session
+- WHEN the review is force-closed on timeout (inline path or plain ediff handle)
+- THEN the ediff control buffer is closed
+- AND the ediff diff, fine-diff and errors scratch buffers are reclaimed
+** Inline timeout reclaims the panels it may have started
+- GIVEN an inline ~apply_diff~ review from which the human jumped to ediff
+- WHEN the review times out while that ediff is still open
+- THEN the jumped-to ediff control buffer is closed
+- AND its scratch buffers are reclaimed
+* A foreign-session review prefers a visible conversation
+For a request that cannot be tied to an agent conversation (a
+non-~agent-backend-mode~ ~from~, as with an MCP-over-HTTP session), the
+inline review SHALL prefer a conversation buffer that is visible on
+screen over the currently selected window's buffer, and SHALL fall back
+to window focus only when no conversation buffer is available.
+** Foreign-session reviews prefer a visible conversation
+- GIVEN an ~apply_diff~ review started from a non-conversation ~from~
+- AND a live conversation buffer is visible on screen
+- WHEN the review renders inline
+- THEN it renders into that visible conversation buffer
+- AND it does not use the currently selected window's buffer unless that
+  buffer is itself the chosen conversation
+** Window focus is the last resort
+- GIVEN an ~apply_diff~ review started from a non-conversation ~from~
+- AND no live conversation buffer is visible on screen
+- WHEN the review renders inline
+- THEN it falls back to the currently selected window's buffer as today
 * A negative inline limit never opens ediff by default
 A negative ~mcp-emacs-apply-diff-inline-limit~ SHALL render every ~apply_diff~
 review inline in the conversation buffer regardless of diff size, so ediff is
