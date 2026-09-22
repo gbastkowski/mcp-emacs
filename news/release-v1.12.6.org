@@ -1,0 +1,9 @@
+* Release v1.12.6
+
+## What changed
+
+- #129 Reclaim ediff scratch buffers and prefer a visible conversation for apply_diff reviews
+- #128 Support -1 for mcp-emacs-apply-diff-inline-limit to never open ediff by default
+- #124 Add a menu of possible answers when the agent asks a question
+
+_Generated on batch completion._
