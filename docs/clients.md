@@ -410,10 +410,9 @@ transcript work regardless of which backend is driving the session.
 **Switching backends.** `agent-backend-preference` chooses which backend
 `agent-backend-start` launches: `opencode`, `claude`, or `auto` (the default,
 which probes for a reachable opencode server and otherwise falls back to
-Claude). Change it interactively with `M-x agent-backend-switch`, or set
-`(setq agent-backend-preference 'opencode)` in your config.
-`agent-backend-switch` only records the preference; launch the chosen backend
-with `M-x agent-backend-start`. Set the preference per machine where only one
+Claude). Change it with `M-x customize-variable agent-backend-preference`, or
+`(setq agent-backend-preference 'opencode)` in your config, then launch with
+`M-x agent-backend-start`. Set the preference per machine where only one
 backend is usable — for example `opencode` on a machine without a Claude
 subscription.
 
