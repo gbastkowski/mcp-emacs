@@ -977,6 +977,24 @@ never, `auto' when a healthy opencode server answers."
                 (opencode-client--health)))))
 
 ;;;###autoload
+(defun agent-backend-switch (backend)
+  "Set the agent BACKEND preference for this machine.
+Interactively, prompt for `opencode', `claude', or `auto' (defaulting
+to the current preference), set `agent-backend-preference', and report
+the choice.  This only records the preference; run `agent-backend-start'
+to launch the chosen backend."
+  (interactive
+   (list (intern (completing-read
+                  (format "Backend (default %s): " agent-backend-preference)
+                  '("opencode" "claude" "auto")
+                  nil t nil nil
+                  (symbol-name agent-backend-preference)))))
+  (unless (memq backend '(opencode claude auto))
+    (user-error "Invalid backend %S; expected opencode, claude, or auto" backend))
+  (setq agent-backend-preference backend)
+  (message "Agent backend set to %s (M-x agent-backend-start to launch)" backend))
+
+;;;###autoload
 (defun agent-backend-start ()
   "Start the preferred backend for this machine.
 Dispatch to the opencode or Claude client according to

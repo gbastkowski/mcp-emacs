@@ -407,6 +407,16 @@ backends ([#41](https://github.com/gbastkowski/mcp-emacs/issues/41)). Both
 view: the same keybindings, the same event consumers, and the same Org
 transcript work regardless of which backend is driving the session.
 
+**Switching backends.** `agent-backend-preference` chooses which backend
+`agent-backend-start` launches: `opencode`, `claude`, or `auto` (the default,
+which probes for a reachable opencode server and otherwise falls back to
+Claude). Change it interactively with `M-x agent-backend-switch`, or set
+`(setq agent-backend-preference 'opencode)` in your config.
+`agent-backend-switch` only records the preference; launch the chosen backend
+with `M-x agent-backend-start`. Set the preference per machine where only one
+backend is usable — for example `opencode` on a machine without a Claude
+subscription.
+
 **The interface.** The base class declares a `cl-defgeneric` lifecycle
 interface — `agent-backend-connect`, `-quit`, `-send`, `-interrupt`,
 `-add-note`, `-note-policy`, `-reply-permission`, `-reply-question`,
