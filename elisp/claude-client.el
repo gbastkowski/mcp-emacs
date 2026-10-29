@@ -43,9 +43,9 @@
 ;;
 ;; A past session can be reopened with `claude-client-resume' (`r'), which
 ;; reuses the same on-disk session store the eat runner's picker reads, so a
-;; session started in either runner can be continued in the other.  Only the
-;; model's context comes back -- the rendered log lives in the buffer, not on
-;; disk.
+;; session started in either runner can be continued in the other.  The
+;; rendered log is replayed from that store (see "History replay"), so the
+;; conversation reads on even though it only ever lived in the buffer.
 ;;
 ;; The conversation window is an ordinary window placed with
 ;; `display-buffer-in-direction' (`claude-client-window-direction'), matching
@@ -1345,9 +1345,8 @@ one already running.
 
 With RESUME-ID, reopen that past session instead of starting a new one,
 so the model still has its history; `claude-client-resume' picks one
-interactively.  The log itself does not come back -- it lives in this
-buffer, not on disk -- so the rendered conversation restarts even though
-the model's context does not.
+interactively.  The rendered log is replayed from that session's on-disk
+transcript, so the conversation reads on rather than restarting empty.
 
 Edits are routed through the mcp-emacs server's `apply_diff', so any
 file change opens an ediff for the human to accept or reject."
@@ -1390,6 +1389,7 @@ file change opens an ediff for the human to accept or reject."
               claude-client--turn-active t
               claude-client--turn-started (float-time))
         (when resume-id
+          (claude-client--seed-from-transcript resume-id)
           (claude-client--push-event buffer (list :kind 'resumed
                                                   :session resume-id)))
         (claude-client--push-event buffer (list :kind 'prompt :text prompt))
@@ -1404,6 +1404,86 @@ file change opens an ediff for the human to accept or reject."
 (declare-function mcp-emacs-run-resume--store-dir "mcp-emacs-run-resume" (root))
 (declare-function mcp-emacs-run-resume--content-text "mcp-emacs-run-resume" (content))
 (declare-function mcp-emacs-run-resume--noise-p "mcp-emacs-run-resume" (text))
+
+;;;; History replay (issue #131)
+
+;; The rendered log lives in the buffer, not on disk, so a crash used to
+;; lose it even though the CLI's own store has the raw transcript.  Resuming
+;; now replays that transcript into the event log, so the prompts, prose,
+;; tool calls, and tool results come back instead of an empty buffer.
+
+(defun claude-client--events-for-user-message (msg)
+  "Return render events for a user MSG's content blocks.
+A `tool_result' block becomes a `tool-result' event and a human `text'
+block becomes a `prompt' event, mirroring how `claude-client--handle-
+message' maps the live stream.  Injected command wrappers are skipped --
+the same noise test the resume picker's first-prompt uses."
+  (delq nil
+        (mapcar
+         (lambda (block)
+           (let ((bt (alist-get 'type block)))
+             (cond
+              ((equal bt "tool_result")
+               (let ((content (alist-get 'content block)))
+                 (list :kind 'tool-result
+                       :text (if (stringp content)
+                                 content
+                               (mapconcat
+                                (lambda (c) (or (alist-get 'text c) ""))
+                                content "\n")))))
+              ((equal bt "text")
+               (let ((text (string-trim (or (alist-get 'text block) ""))))
+                 (unless (or (string-empty-p text)
+                             (mcp-emacs-run-resume--noise-p text))
+                   (list :kind 'prompt :text text))))
+              (t nil))))
+         (alist-get 'content msg))))
+
+(defun claude-client--transcript-events (file)
+  "Return render events for the conversation recorded in transcript FILE.
+FILE is a Claude Code session store (NDJSON).  `assistant' lines
+contribute their prose and tool calls, `user' lines their prompts and
+tool results; the store's bookkeeping lines (queue-operation,
+attachment, atis-latch, last-prompt) are skipped."
+  (let ((json-object-type 'alist)
+        (json-array-type 'list)
+        (events nil))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (while (not (eobp))
+        (let* ((line (buffer-substring-no-properties
+                      (line-beginning-position) (line-end-position)))
+               (obj (unless (string-empty-p (string-trim line))
+                      (ignore-errors (json-read-from-string line)))))
+          (when obj
+            (let ((type (alist-get 'type obj)))
+              (cond
+               ((equal type "assistant")
+                (setq events
+                      (append events
+                              (claude-client--events-for-message
+                               (alist-get 'message obj)))))
+               ((equal type "user")
+                (setq events
+                      (append events
+                              (claude-client--events-for-user-message
+                               (alist-get 'message obj)))))))))
+        (forward-line 1)))
+    events))
+
+(defun claude-client--seed-from-transcript (session-id)
+  "Set this buffer's event log from SESSION-ID's on-disk transcript.
+A no-op when the transcript is missing or unreadable, so a resume never
+fails just because the store is gone -- the CLI still reopens the
+session's context from its own copy."
+  (require 'mcp-emacs-run-resume)
+  (let ((file (expand-file-name
+               (concat session-id ".jsonl")
+               (mcp-emacs-run-resume--store-dir (claude-client--project-root)))))
+    (when (file-readable-p file)
+      (setq claude-client--events
+            (claude-client--transcript-events file)))))
 
 ;;;###autoload
 (defun claude-client-resume ()
@@ -1836,10 +1916,13 @@ count (issue #76)."
       (with-current-buffer buffer
         (claude-client-resume)))))
 
-;; History seeding is a no-op for Claude: the rendered log lives in the
-;; buffer, not on disk, so there is nothing to replay (the base default
-;; applies).  project-root is likewise nil -- Claude's session store is
-;; project-scoped but the backend itself does not report a root.
+;; History seeding is handled on the resume path (`claude-client-start'
+;; replays the on-disk transcript -- see "History replay"), not through the
+;; generic: Claude's render model is buffer-local events, and the seed needs
+;; the session id, which only the resume path knows at seed time.  The base
+;; default applies otherwise.  project-root is likewise nil -- Claude's
+;; session store is project-scoped but the backend itself does not report a
+;; root.
 
 (cl-defmethod agent-backend-render ((backend claude-client-backend))
   "Re-render BACKEND's conversation buffer."

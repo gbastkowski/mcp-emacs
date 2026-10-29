@@ -90,8 +90,9 @@ and its context carry across turns.
 - `M-x claude-client-open` — open a conversation and compose its first prompt.
 - `M-x claude-client-resume` — reopen a past session. It reads the same on-disk
   session store the terminal runner's picker uses, so a session started in
-  either runner continues in the other. Only the model's context comes back —
-  the rendered log lives in the buffer, not on disk.
+  either runner continues in the other. The rendered log is replayed from the
+  session's on-disk transcript, so the conversation reads on rather than
+  restarting empty.
 - `M-x claude-client-list` / `-switch` / `-toggle` / `-quit` — manage conversations.
 - `M-x claude-client-send-prompt` — compose the next turn. Worth binding
   globally: run from any buffer it sends to this project's most recently used

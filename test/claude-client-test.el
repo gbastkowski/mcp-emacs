@@ -2498,6 +2498,61 @@ list at all, so the file exists but contributes nothing."
       (check (cadr (member "--resume" (claude-client--command "fork-9")))
              "fork-9"))))
 
+(defconst claude-test--transcript
+  (mapconcat
+   'identity
+   '("{\"type\":\"queue-operation\",\"operation\":\"enqueue\"}"
+     "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"Add a test.\"}]}}"
+     "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"I'll add one.\"},{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"path\":\"/tmp/t\"}}]}}"
+     "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"applied\"}]}}"
+     "{\"type\":\"attachment\",\"attachment\":{\"type\":\"date\"}}"
+     "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Done.\"}]}}"
+     "{\"type\":\"atis-latch\",\"atis\":\"\"}"
+     "{\"type\":\"last-prompt\",\"lastPrompt\":\"Add a test.\"}")
+   "\n")
+  "A Claude Code session store: NDJSON, one object per line.
+
+The real store interleaves bookkeeping lines (attachment, queue-operation,
+atis-latch, last-prompt) with the user/assistant messages that matter.
+History replay keeps only the latter.")
+
+(defun claude-test--user-events (json-line)
+  "Return history events for JSON-LINE, a store user message."
+  (let ((json-object-type 'alist) (json-array-type 'list))
+    (claude-client--events-for-user-message
+     (alist-get 'message (json-read-from-string json-line)))))
+
+(describe "claude-client--transcript-events"
+  (let ((file (make-temp-file "claude-test-transcript" nil ".jsonl"
+                              claude-test--transcript)))
+    (unwind-protect
+        (let ((events (claude-client--transcript-events file)))
+          (it "replays prompts, prose, tool calls and results in order"
+            (check (mapcar (lambda (e) (plist-get e :kind)) events)
+                   '(prompt text tool-use tool-result text)))
+          (it "records the human prompt"
+            (check (plist-get (nth 0 events) :text) "Add a test."))
+          (it "records the tool call's name"
+            (check (plist-get (nth 2 events) :name) "Write"))
+          (it "records the tool result"
+            (check (plist-get (nth 3 events) :text) "applied")))
+      (delete-file file))))
+
+(describe "claude-client--events-for-user-message"
+  (it "turns a human text block into a prompt"
+    (check (claude-test--user-events
+            "{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}}")
+           '((:kind prompt :text "hello"))))
+  (it "skips an injected command wrapper as noise"
+    (check (claude-test--user-events
+            "{\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<command-name>x</command-name>\"}]}}")
+           nil))
+  (it "turns a tool result into a tool-result event"
+    (check (claude-test--user-events
+            "{\"message\":{\"content\":[{\"type\":\"tool_result\",\"content\":\"applied\"}]}}")
+           '((:kind tool-result :text "applied")))))
+
+
 (test-helper-summary)
 
 ;;; claude-client-test.el ends here
