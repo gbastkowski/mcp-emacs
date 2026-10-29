@@ -220,11 +220,14 @@ It requires the [`plz`](https://github.com/alphapapa/plz.el) package, loaded as
 an optional dependency — installing `mcp-emacs` does not pull it in, and client
 commands report clearly if it is missing.
 
-One opencode server runs **per project**, each on its own free port (probing
-upward from `opencode-client-port`, default 4096). `opencode-client-serve`
-starts the server for the current `default-directory` and registers it, so
-several projects can run opencode sessions in parallel without colliding on a
-fixed address — switch projects and each keeps its own session list.
+The client prefers opencode's shared background server when one is running: it
+reads the service registration file (`opencode serve --service` writes
+`~/.local/state/opencode/service.json` with the endpoint and password) and
+reuses that server.  Otherwise `opencode-client-serve` starts one server
+**per project**, each on its own free port (probing upward from
+`opencode-client-port`, default 4096), and registers it, so several projects
+can run opencode sessions in parallel without colliding on a fixed address —
+switch projects and each keeps its own session list.
 
 Configure `opencode-client-host`, `-port`, and optional `-password`, then:
 

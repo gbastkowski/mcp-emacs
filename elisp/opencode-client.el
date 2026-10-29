@@ -110,6 +110,8 @@ child process.  When nil, the server is started as a child process."
          :documentation "Host of this backend's own server, or nil for the default.")
    (port :initarg :port :initform nil
          :documentation "Port of this backend's own server, or nil for the default.")
+   (password :initarg :password :initform nil
+             :documentation "Basic-auth password for this backend's server, or nil to resolve from the defcustoms.")
    (messages :initarg :messages :initform nil
              :documentation "Ordered list of message IDs seen in this chat buffer.")
    (parts :initarg :parts
@@ -147,23 +149,23 @@ When BACKEND carries its own host/port (a per-project server started by
           (or (and backend (oref backend host)) opencode-client-host)
           (or (and backend (oref backend port)) opencode-client-port)))
 
-(defun opencode-client--password ()
-  "Return the server password, or nil.
-Prefer `opencode-client-password'; otherwise run
-`opencode-client-password-command' and use its trimmed stdout."
-  (cond
-   (opencode-client-password opencode-client-password)
-   (opencode-client-password-command
-    (let ((out (string-trim
-                (shell-command-to-string opencode-client-password-command))))
-      (unless (string-empty-p out) out)))
-   (t nil)))
+(defun opencode-client--password (&optional backend)
+  "Return the server password for BACKEND, or nil.
+A discovered server carries its own password (its `password' slot), which
+wins; otherwise the defcustoms apply."
+  (or (and backend (oref backend password))
+      opencode-client-password
+      (and opencode-client-password-command
+           (let ((out (string-trim
+                       (shell-command-to-string opencode-client-password-command))))
+             (unless (string-empty-p out) out)))))
 
-(defun opencode-client--headers ()
-  "Return request headers, including basic auth when a password resolves."
+(defun opencode-client--headers (&optional backend)
+  "Return BACKEND's request headers, adding basic auth when a password
+resolves."
   (append
    '(("Content-Type" . "application/json"))
-   (when-let ((pw (opencode-client--password)))
+   (when-let ((pw (opencode-client--password backend)))
      (list (cons "Authorization"
                  (concat "Basic "
                          (base64-encode-string
@@ -181,7 +183,7 @@ Errors are surfaced as user errors rather than raw signals."
              (json-array-type 'list)
              (res (apply #'plz method url
                          (append
-                          (list :headers (opencode-client--headers)
+                          (list :headers (opencode-client--headers backend)
                                 :as (lambda () (ignore-errors (json-read))))
                           (when body
                             (list :body (json-encode body)))))))
@@ -201,11 +203,58 @@ no `data' key) are returned unchanged."
 ;;;; Connection
 
 (defun opencode-client--health (&optional backend)
-  "Return non-nil when BACKEND's server is reachable and healthy.
-nil BACKEND probes the default server."
+  "Return non-nil when BACKEND's server answers its liveness probe.
+nil BACKEND probes the default server.  opencode 2.x removed `/api/health';
+`/api/info' (which reports version and pid) is the probe for a live server."
   (ignore-errors
-    (let ((res (opencode-client--request 'get "/api/health" nil backend)))
-      (and res (alist-get 'healthy res)))))
+    (and (opencode-client--request 'get "/api/info" nil backend) t)))
+
+;;;; Discovery (shared background server)
+
+;; opencode runs one shared background server per user account
+;; (`opencode serve --service'), which registers its endpoint and password
+;; in a service file.  Reading that file -- rather than assuming the fixed
+;; `opencode-client-port' -- is how opencode's own clients find it, and lets
+;; this client reuse it instead of spawning a duplicate.
+
+(defun opencode-client--service-file ()
+  "Return opencode's service registration file path.
+`opencode serve --service' writes its endpoint and password here, under
+the XDG state directory (default ~/.local/state)."
+  (expand-file-name
+   "opencode/service.json"
+   (or (getenv "XDG_STATE_HOME")
+       (expand-file-name "~/.local/state"))))
+
+(defun opencode-client--url-host-port (url)
+  "Return (HOST . PORT) parsed from URL, or nil.
+URL is a service endpoint such as \"http://127.0.0.1:49374\"."
+  (when (and url (string-match "\\`https?://\\([^/:]+\\):\\([0-9]+\\)/?\\'" url))
+    (cons (match-string 1 url)
+          (string-to-number (match-string 2 url)))))
+
+(defun opencode-client--discover ()
+  "Return a backend for the registered shared server, or nil.
+Reads `opencode-client--service-file' and, when the server it names
+answers its liveness probe, returns a backend bound to that endpoint and
+password.  Nil when no healthy server is registered."
+  (let ((json-object-type 'alist)
+        (json-array-type 'list)
+        (file (opencode-client--service-file)))
+    (when (file-readable-p file)
+      (let* ((reg (ignore-errors
+                    (with-temp-buffer
+                      (insert-file-contents file)
+                      (goto-char (point-min))
+                      (json-read))))
+             (host-port (opencode-client--url-host-port
+                         (and reg (alist-get 'url reg)))))
+        (when host-port
+          (let ((backend (make-instance 'opencode-client-backend
+                                        :host (car host-port)
+                                        :port (cdr host-port)
+                                        :password (and reg (alist-get 'password reg)))))
+            (and (opencode-client--health backend) backend)))))))
 
 ;;;###autoload
 (defun opencode-client-connect ()
@@ -241,10 +290,12 @@ concurrently could race -- acceptable for an interactive tool."
 
 (defun opencode-client--ensure-server ()
   "Return the backend for the current project, starting one if needed.
-The server is registered under `default-directory' so switching
-projects uses that project's server and its sessions."
+Tries, in order: the project's registered server, opencode's shared
+background server (discovered from its service file), then a fresh
+server started by this client."
   (or (cdr (assoc (expand-file-name default-directory)
                   opencode-client--servers))
+      (opencode-client--discover)
       (opencode-client-serve)))
 
 ;;;###autoload
@@ -377,7 +428,8 @@ hook."
                                     :session-id id
                                     :buffer buf
                                     :host (and server (oref server host))
-                                    :port (and server (oref server port)))))
+                                    :port (and server (oref server port))
+                                    :password (and server (oref server password)))))
         (setq-local agent-backend--instance backend)
         (agent-backend-seed-history backend)
         (agent-backend-render backend)
@@ -648,7 +700,7 @@ the part's output, so a spawned agent leaves `running'."
       (oset backend stream-buffer "")
       (oset backend stream-process
             (plz 'get url
-              :headers (opencode-client--headers)
+              :headers (opencode-client--headers backend)
               :as 'response
               :filter (lambda (proc chunk)
                         (opencode-client--stream-filter buffer proc chunk))
