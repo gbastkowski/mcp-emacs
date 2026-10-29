@@ -948,6 +948,7 @@ The backend instance lives in the buffer-local `agent-backend--instance'."
 ;; shared core still byte-compiles standalone (the clients require
 ;; this file, so agent-backend cannot require them back at load).
 (declare-function opencode-client--health "opencode-client" ())
+(declare-function opencode-client--discover "opencode-client" ())
 (declare-function mcp-emacs-popup-show "mcp-emacs-run" (content &optional kind))
 (declare-function opencode-client-create-session "opencode-client" (&optional title))
 (declare-function claude-client-start "claude-client" (prompt &optional resume-id))
@@ -969,12 +970,13 @@ but every request would fail at auth time."
 (defun agent-backend-prefer-opencode-p ()
   "Return non-nil when `agent-backend-start' should use opencode.
 Honours `agent-backend-preference': explicit `opencode' always, `claude'
-never, `auto' when a healthy opencode server answers."
+never, `auto' when opencode's shared server (or a fixed-port one) answers."
   (pcase agent-backend-preference
     ('opencode t)
     ('claude nil)
     ('auto (and (require 'opencode-client nil t)
-                (opencode-client--health)))))
+                (or (opencode-client--discover)
+                    (opencode-client--health))))))
 
 ;;;###autoload
 (defun agent-backend-start ()
