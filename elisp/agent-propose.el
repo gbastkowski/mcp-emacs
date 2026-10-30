@@ -1,7 +1,7 @@
 ;;; agent-propose.el --- Let the human edit proposed text before approving it -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.12.0
+;; Version: 1.13.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
