@@ -383,6 +383,24 @@ several projects can run their own opencode server in parallel."
     id))
 
 ;;;###autoload
+(defun opencode-client-open ()
+  "Create a session and open a prompt composition for it.
+Mirrors `claude-client-open': a bare `opencode-client-create-session'
+lands you in an empty, read-only conversation buffer with no obvious way
+to type.  This shows the conversation and opens its prompt buffer right
+away, so you start typing instead of facing a dead buffer."
+  (interactive)
+  (opencode-client-create-session)
+  (let ((buffer (window-buffer (selected-window))))
+    (when (with-current-buffer buffer (derived-mode-p 'opencode-client-mode))
+      (agent-prompt-read
+       (lambda (text)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (opencode-client-send-prompt text))))
+       nil (buffer-name buffer) (selected-window)))))
+
+;;;###autoload
 (defun opencode-client-switch-session ()
   "Choose an opencode session on the current project's server.
 Lists sessions from this project's server (starting it on demand), so
