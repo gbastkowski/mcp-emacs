@@ -125,7 +125,11 @@ child process.  When nil, the server is started as a child process."
    (stream-process :initarg :stream-process :initform nil
                    :documentation "The SSE stream process for this chat buffer, or nil.")
    (stream-buffer :initarg :stream-buffer :initform ""
-                  :documentation "Accumulated, not-yet-framed SSE bytes."))
+                  :documentation "Accumulated, not-yet-framed SSE bytes.")
+   (turn-active :initarg :turn-active :initform nil
+                :documentation "Non-nil while a turn is in flight.")
+   (turn-started :initarg :turn-started :initform nil
+                 :documentation "Time the current turn started, for elapsed display."))
   "An opencode chat backend (an `agent-backend' subclass).
 Holds the per-buffer conversation state -- session id, part model, and
 SSE stream -- and implements the shared lifecycle generics.")
@@ -624,6 +628,14 @@ model the renderer reads, and the shared event vocabulary is published."
                    (opencode-client--render))))
               ((or "session.tool.success" "session.tool.failed" "session.tool.error")
                (opencode-client--apply-tool-result buffer backend data type))
+              ("session.execution.started"
+               (oset backend turn-active t)
+               (oset backend turn-started (float-time))
+               (opencode-client--render))
+              ((or "session.execution.succeeded" "session.execution.failed")
+               (oset backend turn-active nil)
+               (oset backend turn-started nil)
+               (opencode-client--render))
               ("session.step.ended"
                (opencode-client--render)
                (agent-backend--publish
@@ -859,6 +871,18 @@ the part's output, so a spawned agent leaves `running'."
       (message "opencode: connected to %s" (opencode-client--base-url backend))
     (user-error "opencode: cannot reach a healthy server at %s"
                 (opencode-client--base-url backend))))
+
+(cl-defmethod agent-backend-turn-state ((backend opencode-client-backend))
+  "Return BACKEND's turn state: `working', `idle', or `finished'."
+  (cond ((oref backend turn-active) 'working)
+        ((process-live-p (oref backend stream-process)) 'idle)
+        (t 'finished)))
+
+(cl-defmethod agent-backend-turn-elapsed ((backend opencode-client-backend))
+  "Return the seconds BACKEND's current turn has run, or nil."
+  (when (oref backend turn-active)
+    (let ((started (oref backend turn-started)))
+      (and started (- (float-time) started)))))
 
 (cl-defmethod agent-backend-quit ((backend opencode-client-backend))
   "Stop the SSE stream for BACKEND's chat buffer, if any."
