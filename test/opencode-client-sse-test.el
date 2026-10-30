@@ -105,8 +105,8 @@
           (check (alist-get 'tool (gethash "p3" (oref backend parts))) "read"))
         (opencode-client--render)
         (it "renders the seeded history as text, reasoning and tool lines"
-          (check (buffer-string)
-                 "Hi there\nHello\n  · thinking\n  [tool: read completed]\n"))))))
+          (check (buffer-substring-no-properties (point-min) (point-max))
+                 "\n>>> Hi there\nHello\n  · thinking\n  [tool: read] completed\n"))))))
 
 (with-temp-buffer
   (opencode-client-mode)

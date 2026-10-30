@@ -51,6 +51,11 @@
 (require 'agent-question)
 (require 'agent-permission)
 
+;; Soft dependency: prose is fontified as markdown when `markdown-mode' is
+;; installed, and rendered plain when it is not.
+(require 'markdown-mode nil t)
+(declare-function gfm-view-mode "markdown-mode" ())
+
 (declare-function plz "plz"
                   (method url &rest rest))
 
@@ -512,6 +517,7 @@ call under `name' and carry its lifecycle in `state'."
    ((equal mtype "user")
     (list `((id . ,(format "%s:text" mid))
             (type . "text")
+            (role . "user")
             (text . ,(or (alist-get 'text msg) "")))))
    ((equal mtype "assistant")
     (mapcar
@@ -572,7 +578,7 @@ Registers MID and PID's order.  Returns the stored part alist."
       (let ((mid (or (alist-get 'inboxID data) "inbox")))
         (opencode-client--upsert-part
          backend mid (format "user:%s" mid)
-         `((type . "text") (text . ,text)))
+         `((type . "text") (role . "user") (text . ,text)))
         (opencode-client--render)
         (agent-backend--publish buffer (list :kind 'prompt :text text))))))
 
@@ -670,6 +676,8 @@ model the renderer reads, and the shared event vocabulary is published."
                (opencode-client--render)
                (agent-backend--publish
                 buffer (list :kind 'finished :subtype (alist-get 'finish data))))
+              ("form.created"
+               (opencode-client--apply-form buffer backend (alist-get 'form data)))
               ((or "permission.v2.asked" "permission.asked")
                (opencode-client--ask-permission backend buffer data))
               ("question.asked"
@@ -771,6 +779,42 @@ arrives."
          (lambda (answer)
            (agent-backend-reply-question backend request-id answer)))))))
 
+(defun opencode-client--apply-form (buffer backend form)
+  "Raise a created question FORM as an answer menu in BUFFER.
+opencode 2.x asks through a `question' tool that creates a form: the
+answer is posted to `/api/session/ID/form/FORM/reply' and the tool then
+completes.  Only the first field is prompted, which is the common case."
+  (when (and form
+             (equal (alist-get 'sessionID form) (oref backend session-id))
+             (equal (alist-get 'kind (alist-get 'metadata form)) "question"))
+    (let* ((form-id (alist-get 'id form))
+           (fields (append (alist-get 'fields form) nil))
+           (first (car fields))
+           (key (and first (alist-get 'key first)))
+           (question (or (and first (alist-get 'description first))
+                         (and first (alist-get 'title first))
+                         "opencode would like an answer"))
+           (labels (delq nil (mapcar (lambda (o) (alist-get 'label o))
+                                     (append (and first (alist-get 'options first)) nil)))))
+      (when form-id
+        (agent-backend--publish buffer (list :kind 'question-request :id form-id))
+        (unless (member form-id (agent-question-pending-ids))
+          (agent-question-request
+           form-id question labels
+           :window (get-buffer-window buffer)
+           :resolve
+           (lambda (answer)
+             (opencode-client--reply-form backend form-id key answer))))))))
+
+(defun opencode-client--reply-form (backend form-id key answer)
+  "Submit ANSWER for field KEY of form FORM-ID on BACKEND."
+  (when (and form-id key)
+    (opencode-client--request
+     'post (format "/api/session/%s/form/%s/reply"
+                   (oref backend session-id) form-id)
+     `((answer . ((,key . ,answer))))
+     backend)))
+
 (defun opencode-client--publish-part (buffer part)
   "Publish PART from BUFFER as a shared `:kind' event, when renderable.
 Maps opencode part types onto the shared vocabulary: a text part becomes
@@ -800,18 +844,107 @@ the part's output, so a spawned agent leaves `running'."
                           (and result (list :text result))))))))
     (_ nil)))
 
+;;;; Faces
+
+(defface opencode-client-prompt-face
+  '((t :inherit font-lock-keyword-face :weight bold))
+  "Face for a prompt the human sent."
+  :group 'opencode-client)
+
+(defface opencode-client-reasoning-face
+  '((t :inherit shadow :slant italic))
+  "Face for the model's reasoning."
+  :group 'opencode-client)
+
+(defface opencode-client-tool-face
+  '((t :inherit font-lock-function-name-face))
+  "Face for a tool call's name."
+  :group 'opencode-client)
+
+(defface opencode-client-tool-running-face
+  '((t :inherit warning))
+  "Face for a tool call still running."
+  :group 'opencode-client)
+
+(defface opencode-client-tool-ok-face
+  '((t :inherit success))
+  "Face for a tool call that succeeded."
+  :group 'opencode-client)
+
+(defface opencode-client-tool-error-face
+  '((t :inherit error))
+  "Face for a tool call that failed."
+  :group 'opencode-client)
+
+;;;; Rendering
+
+(defvar opencode-client--fontify-buffer nil
+  "Scratch buffer used to fontify markdown, or nil before first use.")
+
+(defun opencode-client--fontify-markdown (text)
+  "Return TEXT with markdown text properties applied.
+Fontification happens in a scratch buffer whose properties are copied
+out, so no markdown mode is active in the conversation buffer.  When
+`markdown-mode' is absent TEXT is returned unchanged, so prose reads
+plain rather than not at all."
+  (if (or (string-empty-p text) (not (fboundp 'gfm-view-mode)))
+      text
+    (unless (buffer-live-p opencode-client--fontify-buffer)
+      (setq opencode-client--fontify-buffer
+            (get-buffer-create " *opencode-client-fontify*")))
+    (with-current-buffer opencode-client--fontify-buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert text)
+        (setq-local markdown-fontify-code-blocks-natively t)
+        (delay-mode-hooks (gfm-view-mode))
+        (setq-local markdown-fontify-code-blocks-natively t)
+        (font-lock-flush)
+        (font-lock-ensure)
+        (buffer-string)))))
+
+(defun opencode-client--faced (text face)
+  "Return TEXT propertized with FACE.
+Uses the `face' property: the conversation buffer is `special-mode' with
+font-lock off, where `font-lock-face' would have no effect."
+  (propertize text 'face face))
+
+(defun opencode-client--tool-status-face (part)
+  "Return the face for PART's tool status."
+  (pcase (opencode-client--tool-status part)
+    ("completed" 'opencode-client-tool-ok-face)
+    ("error" 'opencode-client-tool-error-face)
+    (_ 'opencode-client-tool-running-face)))
+
 (defun opencode-client--render-part (pid)
-  "Return a rendered string for part PID, or nil to skip it."
+  "Return a rendered string for part PID, or nil to skip it.
+The human's prompt is bold and prefixed with `>>>'; the model's prose is
+fontified as markdown; reasoning is dimmed and italic; a tool call shows
+its name and a colour-coded status."
   (when-let ((backend (opencode-client--instance)))
     (let* ((part (gethash pid (oref backend parts)))
            (type (alist-get 'type part)))
       (pcase type
-        ("text" (alist-get 'text part))
-        ("reasoning" (concat "  · " (or (alist-get 'text part) "")))
-        ("tool" (format "  [tool: %s %s]"
-                          (or (alist-get 'name part) (alist-get 'tool part))
-                          (opencode-client--tool-status part)))
-        ((or "step-start" "step-finish") nil)
+        ("text"
+         (if (equal (alist-get 'role part) "user")
+             (opencode-client--faced
+              (concat "\n>>> " (or (alist-get 'text part) ""))
+              'opencode-client-prompt-face)
+           (opencode-client--fontify-markdown (or (alist-get 'text part) ""))))
+        ("reasoning"
+         (opencode-client--faced
+          (concat "  · " (or (alist-get 'text part) ""))
+          'opencode-client-reasoning-face))
+        ("tool"
+         (concat "  "
+                 (opencode-client--faced
+                  (format "[tool: %s]"
+                          (or (alist-get 'name part) (alist-get 'tool part)))
+                  'opencode-client-tool-face)
+                 " "
+                 (opencode-client--faced
+                  (or (opencode-client--tool-status part) "")
+                  (opencode-client--tool-status-face part))))
         (_ nil)))))
 
 (defun opencode-client--render ()
