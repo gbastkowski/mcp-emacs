@@ -784,7 +784,7 @@ promises, so opencode needs no `agent-backend-input' method of its own
     (unless id (user-error "opencode: no active session"))
     (opencode-client--request
      'post (format "/api/session/%s/prompt" id)
-     `((prompt . ((text . ,prompt)))
+     `((text . ,prompt)
        (delivery . "queue"))
      backend)
     (when-let ((buffer (oref backend buffer)))
@@ -810,7 +810,7 @@ opencode notes ARE steering prompts: the note is posted with delivery
     (when (string-empty-p note) (user-error "Empty note"))
     (opencode-client--request
      'post (format "/api/session/%s/prompt" id)
-     `((prompt . ((text . ,note)))
+     `((text . ,note)
        (delivery . "steer"))
      backend)
     (when-let ((buffer (oref backend buffer)))
@@ -924,7 +924,7 @@ throwaway session is never orphaned."
         (progn
           (opencode-client--request
            'post (format "/api/session/%s/prompt" session)
-           `((prompt . ((text . ,prompt))))
+           `((text . ,prompt))
            backend)
           (while (and (not done) (< (float-time) deadline))
             ;; `sit-for' rather than `sleep-for': this runs from a
