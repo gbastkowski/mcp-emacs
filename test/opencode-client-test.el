@@ -54,8 +54,8 @@
               ((symbol-function 'opencode-client--open-buffer)
                (lambda (_id _title _resumed _server) nil)))
       (opencode-client-create-session)
-      (it "sends an empty object body, not nil, when no title is given"
-        (check (json-encode captured) "{}"))
+      (it "scopes the session to the current project (a location directory)"
+        (check (stringp (alist-get 'directory (alist-get 'location captured))) t))
       (opencode-client-create-session "My title")
       (it "sends the title when one is given"
         (check (alist-get 'title captured) "My title")))))

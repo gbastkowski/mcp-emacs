@@ -364,17 +364,27 @@ a child process."
       (message "opencode: no sessions"))))
 
 ;;;###autoload
+(defun opencode-client--project-root ()
+  "Return the project root to scope a session to, or `default-directory'."
+  (require 'project nil t)
+  (or (and (fboundp 'project-current)
+           (when-let ((proj (project-current nil)))
+             (expand-file-name (project-root proj))))
+      (expand-file-name default-directory)))
+
 (defun opencode-client-create-session (&optional title)
   "Create a new opencode session on the current project's server.
 The server is started on demand if none exists for this project, so
 several projects can run their own opencode server in parallel."
   (interactive (list (read-string "Session title: ")))
   (let* ((backend (opencode-client--ensure-server))
-         ;; opencode 2.x requires a JSON object body on session creation; an
-         ;; empty title still sends `{}', not an empty (null) body.
+         ;; opencode 2.x scopes a session to a location directory; without one
+         ;; it inherits the server's cwd (e.g. $HOME), so the model has no idea
+         ;; which project it is in.
+         (root (opencode-client--project-root))
          (body (if (and title (not (string-empty-p title)))
-                   `((title . ,title))
-                 (make-hash-table :test 'equal)))
+                   `((title . ,title) (location . ((directory . ,root))))
+                 `((location . ((directory . ,root))))))
          (session (opencode-client--request 'post "/api/session" body backend))
          (id (alist-get 'id session)))
     (setq opencode-client--active-session id)
@@ -446,8 +456,10 @@ host/port (so the buffer talks to the right project server), loads and
 renders the session's existing message history, then starts the live
 stream.  Publishes `started' or, when RESUMED, `resumed' on the shared
 hook."
-  (let ((buf (get-buffer-create (opencode-client--buffer-name title))))
+  (let ((buf (get-buffer-create (opencode-client--buffer-name title)))
+        (root (opencode-client--project-root)))
     (with-current-buffer buf
+      (setq default-directory root)
       (unless (derived-mode-p 'opencode-client-mode)
         (opencode-client-mode))
       (let ((backend (make-instance 'opencode-client-backend
@@ -981,8 +993,8 @@ Use `opencode-client-switch-session' to pick a past session instead."
   (opencode-client--seed-history backend))
 
 (cl-defmethod agent-backend-project-root ((_backend opencode-client-backend))
-  "Return nil: opencode sessions carry no project scoping."
-  nil)
+  "Return the project root the session is scoped to."
+  (opencode-client--project-root))
 
 (cl-defmethod agent-backend-render ((backend opencode-client-backend))
   "Re-render BACKEND's conversation buffer."
@@ -1050,7 +1062,8 @@ throwaway session is never orphaned."
                       (opencode-client--ensure-server)))
          (session (alist-get 'id (opencode-client--request
                                   'post "/api/session"
-                                  (make-hash-table :test 'equal) backend)))
+                                  `((location . ((directory . ,(opencode-client--project-root)))))
+                                  backend)))
          (deadline (+ (float-time) opencode-client-query-timeout))
          (done nil))
     (unless session

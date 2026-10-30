@@ -203,8 +203,8 @@
     (describe "the opencode backend's shared-surface metadata"
       (it "declares a `:steer' note policy, since notes are steering prompts"
         (check (agent-backend-note-policy backend) :steer))
-      (it "has no project root, as the session id drives the HTTP call instead"
-        (check (agent-backend-project-root backend) nil)))))
+      (it "reports the project root the session is scoped to"
+        (check (stringp (agent-backend-project-root backend)) t)))))
 
 (with-temp-buffer
   (opencode-client-mode)
