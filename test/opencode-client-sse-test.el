@@ -5,43 +5,66 @@
 (require 'test-helper)
 (require 'cl-lib)
 (require 'opencode-client)
-(defun mk (seq part)
-  (json-encode `((type . "sync") (syncEvent . ((type . "message.part.updated.1") (seq . ,seq) (data . ((part . ,part))))))))
 (defun new-backend ()
   "Return a fresh opencode backend bound to the current buffer."
   (let ((b (make-instance 'opencode-client-backend :buffer (current-buffer))))
     (setq-local agent-backend--instance b)
     b))
+
+(defun mk-frame (alist)
+  "Return an SSE `data:' frame carrying the JSON for event ALIST."
+  (format "data: %s\n\n" (json-encode alist)))
+
 (with-temp-buffer
   (opencode-client-mode)
   (let ((backend (new-backend))
-        (buf (current-buffer))
-        (f1 (mk 1 '((id . "p1") (messageID . "m") (type . "text") (text . "Hello"))))
-        (f2 (mk 2 '((id . "p1") (messageID . "m") (type . "text") (text . "Hello world"))))
-        (f3 (mk 3 '((id . "p2") (messageID . "m") (type . "tool") (tool . "read") (state . ((status . "completed"))))))
-        (stale (mk 1 '((id . "p1") (type . "text") (text . "STALE")))))
-    (describe "opencode-client--stream-filter"
-      (let* ((payload (concat "data: " f1 "\n\n")) (m (/ (length payload) 2)))
-        (opencode-client--stream-filter buf nil (substring payload 0 m))
+        (buf (current-buffer)))
+    (oset backend session-id "ses1")
+    (describe "opencode-client--stream-filter (2.x events)"
+      (let* ((frame (mk-frame '((type . "session.text.delta")
+                                (data . ((sessionID . "ses1")
+                                         (assistantMessageID . "m1")
+                                         (ordinal . 0)
+                                         (delta . "Hello"))))))
+             (m (/ (length frame) 2)))
+        (opencode-client--stream-filter buf nil (substring frame 0 m))
         (it "applies nothing until an event's terminating blank line arrives"
           (check (hash-table-count (oref backend parts)) 0))
-        (opencode-client--stream-filter buf nil (substring payload m)))
-      (it "upserts the part once the split event is complete"
-        (check (hash-table-count (oref backend parts)) 1))
-      (opencode-client--stream-filter buf nil (concat "data: " f2 "\n\ndata: " f3 "\n\n"))
-      (it "handles several events in one chunk, adding the new part"
-        (check (hash-table-count (oref backend parts)) 2))
-      (it "tracks the highest sequence number seen"
-        (check (oref backend seq) 3))
-      (it "replaces an existing part's text when its id repeats"
-        (check (alist-get 'text (gethash "p1" (oref backend parts))) "Hello world"))
-      (opencode-client--stream-filter buf nil (concat "data: " stale "\n\n"))
-      (it "ignores an out-of-order event rather than overwriting newer text"
-        (check (alist-get 'text (gethash "p1" (oref backend parts))) "Hello world"))
-      (it "leaves the sequence number alone for a stale event"
-        (check (oref backend seq) 3)))
-    (opencode-client--render)
-    (princ "=== buffer ===\n") (princ (buffer-string))))
+        (opencode-client--stream-filter buf nil (substring frame m)))
+      (it "accumulates a text delta into a part"
+        (check (alist-get 'text (gethash "m1:text:0" (oref backend parts))) "Hello"))
+      (opencode-client--stream-filter
+       buf nil
+       (concat
+        (mk-frame '((type . "session.text.delta")
+                    (data . ((sessionID . "ses1") (assistantMessageID . "m1")
+                             (ordinal . 0) (delta . " world")))))
+        (mk-frame '((type . "session.text.ended")
+                    (data . ((sessionID . "ses1") (assistantMessageID . "m1")
+                             (ordinal . 0) (text . "Hello world")))))))
+      (it "appends further deltas and the ended text"
+        (check (alist-get 'text (gethash "m1:text:0" (oref backend parts))) "Hello world"))
+      (opencode-client--stream-filter
+       buf nil
+       (mk-frame '((type . "session.text.delta")
+                   (data . ((sessionID . "other") (assistantMessageID . "m2")
+                            (ordinal . 0) (delta . "IGNORED"))))))
+      (it "ignores an event for another session"
+        (check (gethash "m2:text:0" (oref backend parts)) nil))
+      (opencode-client--stream-filter
+       buf nil
+       (concat
+        (mk-frame '((type . "session.tool.input.started")
+                    (data . ((sessionID . "ses1") (assistantMessageID . "m1")
+                             (id . "call_1") (name . "read")))))
+        (mk-frame '((type . "session.tool.success")
+                    (data . ((sessionID . "ses1") (assistantMessageID . "m1")
+                             (id . "call_1")
+                             (content . (((type . "text") (text . "file contents"))))))))))
+      (it "records a tool call completed by its result"
+        (let ((part (gethash "call_1" (oref backend parts))))
+          (check (list (alist-get 'name part) (opencode-client--tool-status part))
+                 '("read" "completed")))))))
 
 ;; Response envelope unwrapping (opencode 1.18.0 wraps most responses in `data').
 (describe "opencode-client--unwrap"
@@ -423,14 +446,10 @@
         (add-hook 'agent-backend-event-functions
                   (lambda (_b ev) (push (plist-get ev :kind) seen)))
         (describe "a question.asked event for the active session"
-          (opencode-client--apply-sync-event
-           buf '((syncEvent (type . "question.asked") (seq . 1)
-                            (data . ((id . "qreq1")
-                                     (sessionID . "sesQ")
-                                     (questions . (((header . "Pick a branch")
-                                                    (question . "Which branch?")
-                                                    (options . (((label . "main") (description . ""))
-                                                                ((label . "dev") (description . ""))))))))))))
+          (opencode-client--apply-event
+           buf (let ((json-object-type 'alist) (json-array-type 'list))
+                 (json-read-from-string
+                  "{\"type\":\"question.asked\",\"data\":{\"id\":\"qreq1\",\"sessionID\":\"sesQ\",\"questions\":[{\"header\":\"Pick a branch\",\"question\":\"Which branch?\",\"options\":[{\"label\":\"main\",\"description\":\"\"},{\"label\":\"dev\",\"description\":\"\"}]}]}}")))
           (it "publishes a `question-request' event on the shared hook"
             (check-that (member 'question-request seen)))
           (it "raises an answer menu for the question"

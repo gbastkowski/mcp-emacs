@@ -470,68 +470,164 @@ text part; an assistant message contributes its `content' items
                            (oref backend message-parts)))))))))))
 
 (defun opencode-client--history-parts (mid mtype msg)
-  "Return render-model parts for history message MSG with id MID, type MTYPE."
-  (if (equal mtype "user")
-      (list `((id . ,(format "%s:text" mid))
-              (type . "text")
-              (text . ,(or (alist-get 'text msg) ""))))
-    ;; assistant (and other content-bearing) messages carry a `content' array
+  "Return render-model parts for history message MSG with id MID, type MTYPE.
+A `user' message carries top-level `text'; an `assistant' message carries
+a `content' array of text / reasoning / tool parts.  Tool parts name the
+call under `name' and carry its lifecycle in `state'."
+  (cond
+   ((equal mtype "user")
+    (list `((id . ,(format "%s:text" mid))
+            (type . "text")
+            (text . ,(or (alist-get 'text msg) "")))))
+   ((equal mtype "assistant")
     (mapcar
      (lambda (item)
        (if (equal (alist-get 'type item) "tool")
-           ;; renderer reads the `tool' key; history uses `name'.
            (cons (cons 'tool (alist-get 'name item)) item)
          item))
-     (alist-get 'content msg))))
+     (alist-get 'content msg)))
+   (t nil)))
 
-(defun opencode-client--apply-sync-event (buffer event)
-  "Apply a parsed sync EVENT to the conversation model in BUFFER.
-Ignores stale/duplicate `seq' and unknown event types, and publishes
-translated events on `agent-backend-event-functions'."
+(defun opencode-client--event-part-key (data kind &optional ordinal)
+  "Return a stable part id for DATA's KIND (text/reasoning) at ORDINAL."
+  (format "%s:%s:%s"
+          (or (alist-get 'assistantMessageID data) "assistant")
+          kind
+          (or ordinal 0)))
+
+(defun opencode-client--upsert-part (backend mid pid fields)
+  "Store part PID of message MID in BACKEND, merging FIELDS into it.
+Registers MID and PID's order.  Returns the stored part alist."
+  (when (and mid pid)
+    (unless (member mid (oref backend messages))
+      (oset backend messages (append (oref backend messages) (list mid))))
+    (let ((merged (append fields (list (cons 'id pid) (cons 'messageID mid)))))
+      (puthash pid merged (oref backend parts)))
+    (let ((order (gethash mid (oref backend message-parts))))
+      (unless (member pid order)
+        (puthash mid (append order (list pid)) (oref backend message-parts))))
+    (gethash pid (oref backend parts))))
+
+(defun opencode-client--part-append (backend mid pid kind delta)
+  "Append DELTA to the KIND text of part PID (message MID) in BACKEND."
+  (when (and mid pid (stringp delta))
+    (let ((old (gethash pid (oref backend parts))))
+      (opencode-client--upsert-part
+       backend mid pid
+       `((type . ,kind)
+         (text . ,(concat (or (alist-get 'text old) "") delta)))))))
+
+(defun opencode-client--part-set-text (backend mid pid kind text)
+  "Set the KIND text of part PID (message MID) in BACKEND to TEXT."
+  (when (and mid pid (stringp text))
+    (opencode-client--upsert-part backend mid pid `((type . ,kind) (text . ,text)))))
+
+(defun opencode-client--result-content-text (content)
+  "Return the text of a tool result CONTENT: a string or a list of parts."
+  (cond
+   ((stringp content) content)
+   ((listp content) (mapconcat (lambda (c) (or (alist-get 'text c) "")) content ""))
+   (t nil)))
+
+(defun opencode-client--apply-user-prompt (buffer backend data)
+  "Record the user prompt in DATA for BACKEND and publish a `prompt' event."
+  (let* ((item (alist-get 'item data))
+         (payload (alist-get 'payload item))
+         (text (or (alist-get 'text payload) "")))
+    (when (and (stringp text) (not (string-empty-p (string-trim text))))
+      (let ((mid (or (alist-get 'inboxID data) "inbox")))
+        (opencode-client--upsert-part
+         backend mid (format "user:%s" mid)
+         `((type . "text") (text . ,text)))
+        (opencode-client--render)
+        (agent-backend--publish buffer (list :kind 'prompt :text text))))))
+
+(defun opencode-client--apply-tool-result (buffer backend data kind)
+  "Record the tool result in DATA (event KIND) and publish its `tool-result'."
+  (let* ((pid (alist-get 'id data))
+         (part (and pid (gethash pid (oref backend parts))))
+         (name (or (and part (alist-get 'name part)) "opencode"))
+         (amid (alist-get 'assistantMessageID data))
+         (content (alist-get 'content data))
+         (text (opencode-client--result-content-text content))
+         (ok (equal kind "session.tool.success")))
+    (when pid
+      (opencode-client--upsert-part
+       backend amid pid
+       `((type . "tool") (tool . ,name) (name . ,name)
+         (state . ((status . ,(if ok "completed" "error"))
+                   (content . ,content)))))
+      (opencode-client--render)
+      (agent-backend--publish
+       buffer (nconc (list :kind 'tool-result :name name
+                           :status (if ok 'done 'failed))
+                     (and (stringp text) (not (string-empty-p (string-trim text)))
+                          (list :text text)))))))
+
+(defun opencode-client--apply-event (buffer event)
+  "Apply an opencode 2.x EVENT from the global `/api/event' stream to BUFFER.
+Events for other sessions are ignored (the stream is account-wide).  The
+new vocabulary (`session.text.delta', `session.reasoning.*',
+`session.tool.*', `session.step.ended', ...) is adapted onto the part
+model the renderer reads, and the shared event vocabulary is published."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (when-let ((backend (opencode-client--instance)))
-        (let* ((sync (alist-get 'syncEvent event))
-               (etype (alist-get 'type sync))
-               (seq (or (alist-get 'seq sync) 0))
-               (data (alist-get 'data sync)))
-          ;; Ignore stale/duplicate events; the stream `seq' is monotonic.
-          (when (> seq (oref backend seq))
-            (oset backend seq seq)
-            (pcase etype
-              ("message.updated.1"
-               (let* ((info (alist-get 'info data))
-                      (mid (alist-get 'id info)))
-                 (when (and mid (not (member mid (oref backend messages))))
-                   (oset backend messages
-                         (append (oref backend messages) (list mid))))))
-              ("message.part.updated.1"
-               (let* ((part (alist-get 'part data))
-                      (pid (alist-get 'id part))
-                      (mid (alist-get 'messageID part)))
-                 (when pid
-                   (puthash pid part (oref backend parts))
-                   (when (and mid (not (member mid (oref backend messages))))
-                     (oset backend messages
-                           (append (oref backend messages) (list mid))))
-                   (let ((order (gethash mid (oref backend message-parts))))
-                     (unless (member pid order)
-                       (puthash mid (append order (list pid))
-                                (oref backend message-parts))))
-                   (opencode-client--render)
-                   (opencode-client--publish-part buffer part))))
-              ("message.part.removed.1"
-               (let* ((part (alist-get 'part data))
-                      (pid (alist-get 'id part)))
-                 (when pid
-                   (remhash pid (oref backend parts))
+        (let* ((type (alist-get 'type event))
+               (data (or (alist-get 'data event) '()))
+               (sid (alist-get 'sessionID data))
+               (amid (alist-get 'assistantMessageID data))
+               (ord (alist-get 'ordinal data)))
+          (when (or (null sid) (equal sid (oref backend session-id)))
+            (pcase type
+              ("session.inbox.enqueued"
+               (opencode-client--apply-user-prompt buffer backend data))
+              ("session.text.delta"
+               (opencode-client--part-append
+                backend amid (opencode-client--event-part-key data "text" ord)
+                "text" (alist-get 'delta data))
+               (opencode-client--render))
+              ("session.text.ended"
+               (opencode-client--part-set-text
+                backend amid (opencode-client--event-part-key data "text" ord)
+                "text" (alist-get 'text data))
+               (opencode-client--render))
+              ("session.reasoning.delta"
+               (opencode-client--part-append
+                backend amid (opencode-client--event-part-key data "reasoning" ord)
+                "reasoning" (alist-get 'delta data))
+               (opencode-client--render))
+              ("session.reasoning.ended"
+               (opencode-client--part-set-text
+                backend amid (opencode-client--event-part-key data "reasoning" ord)
+                "reasoning" (alist-get 'text data))
+               (opencode-client--render))
+              ("session.tool.input.started"
+               (let ((name (alist-get 'name data)))
+                 (opencode-client--upsert-part
+                  backend amid (alist-get 'id data)
+                  `((type . "tool") (tool . ,name) (name . ,name)
+                    (state . ((status . "running")))))
+                 (opencode-client--render)
+                 (agent-backend--publish buffer (list :kind 'tool-use :name name))))
+              ((or "session.tool.input.ended" "session.tool.called")
+               (let* ((pid (alist-get 'id data))
+                      (part (and pid (gethash pid (oref backend parts)))))
+                 (when part
+                   (opencode-client--upsert-part
+                    backend amid pid
+                    `((type . "tool")
+                      (tool . ,(alist-get 'name part))
+                      (name . ,(alist-get 'name part))
+                      (state . ((status . "running")
+                                (input . ,(alist-get 'input data))))))
                    (opencode-client--render))))
-              ;; opencode has a real gate: it asks before the tool runs and
-              ;; waits for the reply.  Both event generations are handled --
-              ;; `permission.v2.asked' names the call in `action' and
-              ;; `resources', the older `permission.asked' nests it under
-              ;; `permission' -- so the menu appears whichever the server
-              ;; speaks.
+              ((or "session.tool.success" "session.tool.failed" "session.tool.error")
+               (opencode-client--apply-tool-result buffer backend data type))
+              ("session.step.ended"
+               (opencode-client--render)
+               (agent-backend--publish
+                buffer (list :kind 'finished :subtype (alist-get 'finish data))))
               ((or "permission.v2.asked" "permission.asked")
                (opencode-client--ask-permission backend buffer data))
               ("question.asked"
@@ -585,15 +681,15 @@ continuation, and opencode holds the call open until it arrives."
 
 (defun opencode-client--tool-result-text (part)
   "Return the result text of a completed tool PART, or nil.
-A completed tool part carries its output in the `state' as `output';
-nil when the part has none, so a publisher never invents text the part
-does not carry."
-  (let ((state (alist-get 'state part)))
-    (when (listp state)
-      (let ((output (alist-get 'output state)))
-        (and (stringp output)
-             (not (string-empty-p (string-trim output)))
-             output)))))
+opencode 2.x carries the result in `state.content' (a list of parts); an
+older `state.output' string is also accepted."
+  (let* ((state (alist-get 'state part))
+         (output (and (listp state) (alist-get 'output state)))
+         (content (and (listp state) (alist-get 'content state))))
+    (cond
+     ((and (stringp output) (not (string-empty-p (string-trim output)))) output)
+     (content (opencode-client--result-content-text content))
+     (t nil))))
 
 (defun opencode-client--question-options (questions)
   "Return the proposed answer strings from QUESTIONS.
@@ -671,9 +767,8 @@ the part's output, so a spawned agent leaves `running'."
         ("text" (alist-get 'text part))
         ("reasoning" (concat "  · " (or (alist-get 'text part) "")))
         ("tool" (format "  [tool: %s %s]"
-                          (alist-get 'tool part)
-                          (let ((st (alist-get 'state part)))
-                            (if (listp st) (alist-get 'status st) st))))
+                          (or (alist-get 'name part) (alist-get 'tool part))
+                          (opencode-client--tool-status part)))
         ((or "step-start" "step-finish") nil)
         (_ nil)))))
 
@@ -698,9 +793,7 @@ the part's output, so a spawned agent leaves `running'."
   (opencode-client--stop-stream)
   (when-let ((backend (opencode-client--instance)))
     (let* ((buffer (current-buffer))
-           (id (oref backend session-id))
-           (url (format "%s/api/session/%s/event"
-                        (opencode-client--base-url backend) id)))
+           (url (format "%s/api/event" (opencode-client--base-url backend))))
       (oset backend stream-buffer "")
       (oset backend stream-process
             (plz 'get url
@@ -756,7 +849,7 @@ the part's output, so a spawned agent leaves `running'."
                                         :null-object nil
                                         :false-object nil))))
         (when event
-          (opencode-client--apply-sync-event buffer event))))))
+          (opencode-client--apply-event buffer event))))))
 
 ;;;; agent-backend methods
 
