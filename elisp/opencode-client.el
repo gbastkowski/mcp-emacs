@@ -366,7 +366,11 @@ The server is started on demand if none exists for this project, so
 several projects can run their own opencode server in parallel."
   (interactive (list (read-string "Session title: ")))
   (let* ((backend (opencode-client--ensure-server))
-         (body (when (and title (not (string-empty-p title))) `((title . ,title))))
+         ;; opencode 2.x requires a JSON object body on session creation; an
+         ;; empty title still sends `{}', not an empty (null) body.
+         (body (if (and title (not (string-empty-p title)))
+                   `((title . ,title))
+                 (make-hash-table :test 'equal)))
          (session (opencode-client--request 'post "/api/session" body backend))
          (id (alist-get 'id session)))
     (setq opencode-client--active-session id)
@@ -910,7 +914,8 @@ throwaway session is never orphaned."
                       ;; from the preference with no server attached yet.
                       (opencode-client--ensure-server)))
          (session (alist-get 'id (opencode-client--request
-                                  'post "/api/session" nil backend)))
+                                  'post "/api/session"
+                                  (make-hash-table :test 'equal) backend)))
          (deadline (+ (float-time) opencode-client-query-timeout))
          (done nil))
     (unless session

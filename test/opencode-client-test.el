@@ -43,6 +43,23 @@
                (lambda () "/nonexistent/opencode/service.json")))
       (check (opencode-client--discover) nil))))
 
+(describe "opencode-client-create-session"
+  (let ((captured nil))
+    (cl-letf (((symbol-function 'opencode-client--ensure-server)
+               (lambda () (make-instance 'opencode-client-backend :port 4096)))
+              ((symbol-function 'opencode-client--request)
+               (lambda (_method _path body _backend)
+                 (setq captured body)
+                 '((id . "ses_1"))))
+              ((symbol-function 'opencode-client--open-buffer)
+               (lambda (_id _title _resumed _server) nil)))
+      (opencode-client-create-session)
+      (it "sends an empty object body, not nil, when no title is given"
+        (check (json-encode captured) "{}"))
+      (opencode-client-create-session "My title")
+      (it "sends the title when one is given"
+        (check (alist-get 'title captured) "My title")))))
+
 (test-helper-summary)
 
 ;;; opencode-client-test.el ends here
