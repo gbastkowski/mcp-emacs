@@ -167,7 +167,7 @@
       (describe "agent-backend-add-note"
         (agent-backend-add-note backend "  steer me  ")
         (it "trims the note text before sending it as the prompt"
-          (check (alist-get 'text (cdr (assq 'prompt (caddr sent)))) "steer me"))
+          (check (alist-get 'text (caddr sent)) "steer me"))
         (it "delivers a note as a steering prompt"
           (check (alist-get 'delivery (caddr sent)) "steer"))
         (it "publishes a `note' event on the shared hook"
