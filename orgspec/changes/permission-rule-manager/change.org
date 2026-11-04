@@ -1,0 +1,130 @@
+#+TITLE: permission-rule-manager
+#+PROPERTY: TRACKER
+#+PROPERTY: ISSUE
+
+* Intent
+A permission rule can only be added today while a call is blocked (the `A` key
+in the gate buffer), and only to the project-local file.
+There is no way to add one ahead of time (`WebFetch(domain:github.com)`),
+to remove or correct one, to pick a scope, or to see `deny` and `ask` rules at
+all.
+`claude-client-show-allowlist` (#73) made the allowlist visible and deliberately
+stopped there.
+This change closes the rest: a human-driven manager for the rules in the four
+settings files the CLI layers.
+
+The manager is an interactive Emacs command, never an MCP tool.
+`mcp-emacs-server.el` already explains why for the gate: a tool the gated model
+can call is a tool it can use to approve itself.
+A tool that edits permissions has the same flaw, so the model gets no handle on
+this.
+
+* Scope
+In scope:
+- `claude-client-manage-permissions`, interactive, opening a tabulated buffer
+  with one row per rule: scope (user / user-local / project / project-local),
+  kind (allow / deny / ask), the rule text, and the file it lives in.
+- Keys in that buffer: `a` add (prompts for rule, kind and scope), `d` delete,
+  `e` edit, `m` move to another scope, `g` refresh.
+  Letter keys must work under evil, as in the conversation buffer.
+- A rule prompt that completes tool names and offers the narrow forms first
+  (`WebFetch(domain:...)`, exact `Bash(...)`) before wildcards.
+- Read `deny` and `ask` as well as `allow`, so one reader serves both
+  `claude-client-show-allowlist` and the manager.
+- Remove and edit writers beside `agent-permission-add-rule`, with the same
+  guarantees: the rest of the file is preserved, arrays stay arrays, a malformed
+  file signals instead of being overwritten.
+- Say plainly in the manager whether an edit reaches the running session or
+  only the next one (see Approach).
+- Tests for the reader, the writers and the table rows.
+
+Out of scope:
+- Any MCP tool, resource or endpoint that changes permissions.
+  A model-facing tool that only *proposes* a rule by raising an
+  `agent-permission` prompt the human answers (like `apply_diff`) is a possible
+  follow-up, not part of this change.
+- The default path of `claude-client-gate-script`, which does not resolve under
+  straight, so the `PreToolUse` hook is never installed.
+  Separate fix.
+- Adding `WebFetch` / `WebSearch` to `claude-client-gate-tools`.
+  Separate decision.
+- Other settings keys (hooks, env, model).
+- opencode: its permissions are not Claude settings files.
+
+* Approach
+- Generalise the reader: `claude-client--allowlist-source` becomes a reader over
+  a kind, or gains a sibling returning all three lists, keeping the
+  "absent file and empty file read the same" behaviour.
+  `claude-client--allowlist-text` keeps working unchanged for the allow view.
+- Writers in `agent-permission.el`: give `agent-permission-add-rule` an optional
+  KIND (default `allow`, so `A` is untouched) and add
+  `agent-permission-remove-rule (rule path &optional kind)`.
+  Edit is remove plus add and move is remove from one file plus add to another,
+  so the file layer stays two primitives.
+- The manager is a `tabulated-list-mode` buffer in `claude-client.el`, rows built
+  from the reader.
+  Every write asks for confirmation naming the exact rule and file, as `A` does.
+- Rule prompt: `completing-read` over the known tool names, then a second prompt
+  whose default is the narrow form for that tool.
+  Warn on a broad `Bash(cmd *)` for the reason documented above
+  `agent-permission-rule-prefix` (it matches `... && rm -rf x`).
+- Spike first: does a running Claude session re-read `settings.local.json`, or
+  only a new one?
+  Test it against a live session before writing the UI text.
+  If edits need a restart, the manager says "applies to the next session" after
+  each write; if they apply live, it says so.
+  Do not assume either way.
+- Keep the user scope careful: `~/.claude/settings.json` is shared with every
+  project, so writes there get an extra confirmation line.
+- Tests follow `agent-permission-test`: temp settings files, no real `~/.claude`.
+  Verify with `bin/test-emacs.sh --compile --strict` and the full suite.
+  Never test in the working Emacs.
+
+* Tasks
+- [ ] Spike: determine whether a running session picks up settings-file edits live
+- [ ] Reader returns allow, deny and ask per source, labelled by scope
+- [ ] `agent-permission-add-rule` takes an optional kind; `A` behaviour unchanged
+- [ ] `agent-permission-remove-rule` writer preserving the rest of the file
+- [ ] `claude-client-manage-permissions` tabulated buffer with scope, kind, rule, file
+- [ ] Add, delete, edit and move commands with confirmation naming rule and file
+- [ ] Rule prompt with tool-name completion and narrow-form defaults, broad-wildcard warning
+- [ ] Manager reports whether an edit applies now or next session
+- [ ] Keys work under evil; command bound and listed in the `?` help
+- [ ] Tests: reader kinds, add/remove round trip, malformed file signals, table rows
+- [ ] `bin/test-emacs.sh --compile --strict` clean and full suite green in the test Emacs
+- [ ] orgspec change validated and folded into `specs/claude-client.org` when green
+
+* Delta
+** Permission rules can be managed from Emacs                          :ADDED:
+:PROPERTIES:
+:AREA: claude-client
+:END:
+The Claude client SHALL provide an interactive command
+`claude-client-manage-permissions` that lists every `allow`, `deny` and `ask`
+rule from the four settings files the CLI layers, labelled with scope and file,
+and lets the human add, edit, move and delete rules.
+Every write SHALL name the exact rule and file and require confirmation, SHALL
+preserve the rest of the file, and SHALL refuse to rewrite a malformed file.
+Permission changes SHALL NOT be reachable through any MCP tool, resource or
+endpoint, so a gated model cannot widen its own permissions.
+*** Rules of every kind are listed with their source
+- GIVEN settings files carrying allow, deny and ask rules in different scopes
+- WHEN `claude-client-manage-permissions` runs
+- THEN each rule appears with its kind, scope and file
+*** A rule can be added ahead of any blocked call
+- WHEN the human adds `WebFetch(domain:github.com)` as an allow rule in the
+  project-local scope
+- THEN it is written to `.claude/settings.local.json` with the existing settings
+  and rules intact
+*** Deleting a rule leaves the rest of the file alone
+- GIVEN a settings file with several rules and other keys
+- WHEN the human deletes one rule
+- THEN only that entry is gone and the other keys and arrays are written back
+  unchanged
+*** A malformed settings file is never overwritten
+- GIVEN a settings file that is not valid JSON
+- WHEN the human tries to add or remove a rule in it
+- THEN the command signals an error and the file is left as it was
+*** The model cannot change permissions
+- WHEN the MCP `tools/list` is requested
+- THEN no tool that adds, edits, moves or deletes a permission rule is listed
