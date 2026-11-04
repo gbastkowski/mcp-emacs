@@ -266,3 +266,24 @@ report finished without claiming the remote execution was stopped.
 GIVEN an execution is working
 WHEN a model step ends to call tools
 THEN the backend remains working
+
+* Shared-service discovery preserves endpoint credentials
+The client SHALL discover OpenCode's registered shared service before starting
+a standalone fallback. Discovery SHALL respect ~XDG_STATE_HOME~, verify the V2
+server, and carry its password through HTTP requests, conversation creation,
+and SSE subscriptions. Separate project connections SHALL retain their own
+location directories even when they share one service. Discovery MAY be disabled
+to use only an explicitly configured endpoint.
+** A discovered password is not replaced by another server's password
+GIVEN a healthy service registration and a different global password
+WHEN its session is opened and the client subscribes to events
+THEN both control requests and streaming use the registered service credential
+
+* Opening an OpenCode conversation offers immediate composition
+The preferred OpenCode start command SHALL create a session and immediately
+offer its prompt composition buffer. Rendering SHALL distinguish human prompts,
+reasoning and tool statuses, with optional Markdown fontification of assistant
+prose and a readable plain-text fallback.
+** A fresh session is ready for input
+WHEN the human starts OpenCode through the shared backend command
+THEN the conversation and its prompt composer are shown together

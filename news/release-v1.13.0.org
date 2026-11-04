@@ -1,0 +1,14 @@
+* Release v1.13.0
+
+## What changed
+
+- Port the opencode client to the opencode 2.x API: the `/api/event` stream, request body shapes, and session location
+- Discover opencode's shared background server from its service file instead of assuming a fixed port
+- Scope opencode sessions to the current project directory
+- Answer the model's question tool through its form reply endpoint
+- Colour opencode sessions: faces for prompts, reasoning and tool status, markdown-highlighted prose
+- Show the opencode turn state in the mode line and open a prompt when a session starts
+- Re-render the Claude conversation from the on-disk store on resume
+- Document switching the agent backend via customize-variable
+
+_Generated on batch completion._

@@ -88,8 +88,9 @@ and its context carry across turns.
 - `M-x claude-client-open` — open a conversation and compose its first prompt.
 - `M-x claude-client-resume` — reopen a past session. It reads the same on-disk
   session store the terminal runner's picker uses, so a session started in
-  either runner continues in the other. Only the model's context comes back —
-  the rendered log lives in the buffer, not on disk.
+  either runner continues in the other. The rendered log is replayed from the
+  session's on-disk transcript, so the conversation reads on rather than
+  restarting empty.
 - `M-x claude-client-list` / `-switch` / `-toggle` / `-quit` — manage conversations.
 - `M-x claude-client-send-prompt` — compose the next turn. Worth binding
   globally: run from any buffer it sends to this project's most recently used
@@ -217,18 +218,27 @@ It requires the [`plz`](https://github.com/alphapapa/plz.el) package, loaded as
 an optional dependency — installing `mcp-emacs` does not pull it in, and client
 commands report clearly if it is missing.
 
-Projects share **one configured service endpoint**. Every session is created
+Projects share **one service endpoint**, preferring OpenCode's registered
+background service (`$XDG_STATE_HOME/opencode/service.json`, default
+`~/.local/state/opencode/service.json`) with its own endpoint password.
+Set `opencode-client-discover-service` to nil to use only your configured
+host, port and credential source. Otherwise a standalone server is the fallback,
+not a second server per project. Every session is created
 with an explicit `location.directory`; listing and last-selected-session lookup
 are project-scoped. Equal conversation titles cannot overwrite another session's
 buffer. The client verifies `/api/info` and rejects non-V2 servers.
 
-Configure `opencode-client-host`, `-port`, and optional `-password`, then:
+With a running shared service no endpoint configuration is needed. For a
+standalone endpoint, configure `opencode-client-host`, `-port`, and optional
+`-password`, then:
 
 - `M-x opencode-client-connect` — verify the configured endpoint and credentials.
   `opencode-client-serve` connects to it if already available, otherwise starts
   one local standalone `opencode serve` on the configured port. It never changes
   or restarts your managed OpenCode service. A child gets `OPENCODE_PASSWORD`
   from your configured credential source, or a generated in-memory password.
+- `M-x opencode-client-open` — create a session and open its prompt immediately.
+  `agent-backend-start` uses this entry point when OpenCode is selected.
 - `M-x opencode-client-create-session` / `-switch-session` — manage sessions.
   Resume reattaches to the existing ID and recovers its complete paginated history.
 - In the chat buffer: `C-c C-c` to send a prompt (prefix arg steers a running
@@ -242,13 +252,17 @@ shell command (for example `pass show private/opencode/server-password`); its
 trimmed output is used for HTTP basic auth.
 
 To keep execution alive across Emacs restarts, run the server independently.
-For the managed V2 service, obtain its address with `opencode service status`,
-set `opencode-client-host` / `-port` accordingly, and supply its password through
-the options above. For a supervised standalone server, use `opencode serve
+The managed V2 service is discovered automatically; inspect its address with
+`opencode service status`. For a supervised standalone server, use `opencode serve
 --hostname 127.0.0.1 --port 4096` with `OPENCODE_PASSWORD` from your secret store.
 On macOS, `opencode-client-launchd-label` still supports kickstarting an existing
 launchd agent; configure the **same port and password** on both sides. No random
 port is allocated for launchd.
+
+**Rendering.** Human prompts are marked `>>>`, assistant prose is fontified as
+Markdown when the optional `markdown-mode` package is present, reasoning is
+dimmed, and tool statuses are colour-coded. Without Markdown support, prose
+remains readable as plain text.
 
 **Streaming and recovery.** Each conversation subscribes to `/api/event` and
 filters by session ID. V2 subscriptions are live-only. On connection/reconnection,
@@ -443,6 +457,15 @@ backends ([#41](https://github.com/gbastkowski/mcp-emacs/issues/41)). Both
 `agent-backend`, so the backends are interchangeable from the user's point of
 view: the same keybindings, the same event consumers, and the same Org
 transcript work regardless of which backend is driving the session.
+
+**Switching backends.** `agent-backend-preference` chooses which backend
+`agent-backend-start` launches: `opencode`, `claude`, or `auto` (the default,
+which probes for a reachable opencode server and otherwise falls back to
+Claude). Change it with `M-x customize-variable agent-backend-preference`, or
+`(setq agent-backend-preference 'opencode)` in your config, then launch with
+`M-x agent-backend-start`. Set the preference per machine where only one
+backend is usable — for example `opencode` on a machine without a Claude
+subscription.
 
 **The interface.** The base class declares a `cl-defgeneric` lifecycle
 interface — `agent-backend-connect`, `-quit`, `-send`, `-interrupt`,

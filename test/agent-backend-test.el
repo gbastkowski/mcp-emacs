@@ -40,6 +40,7 @@
   (lambda () healthy))
 (unless (featurep 'opencode-client)
   (fset 'opencode-client--health (lambda () nil))
+  (fset 'opencode-client--discover (lambda () nil))
   (provide 'opencode-client))
 
 (describe "agent-backend-prefer-opencode-p on auto"
@@ -51,6 +52,13 @@
     (let ((agent-backend-preference 'auto))
       (it "falls back to claude when the server is unhealthy"
         (check (agent-backend-prefer-opencode-p) nil)))))
+
+(describe "agent-backend-prefer-opencode-p on auto with a discovered server"
+  (cl-letf (((symbol-function 'opencode-client--discover) (lambda () t))
+            ((symbol-function 'opencode-client--health) (lambda () nil)))
+    (let ((agent-backend-preference 'auto))
+      (it "picks opencode when a shared server is discovered, ignoring the fixed-port probe"
+        (check (agent-backend-prefer-opencode-p) t)))))
 
 (describe "agent-backend-preference"
   (it "defaults to auto"

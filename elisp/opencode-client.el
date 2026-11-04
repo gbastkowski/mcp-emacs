@@ -1,7 +1,7 @@
 ;;; opencode-client.el --- Native Emacs client for the opencode HTTP API -*- lexical-binding: t; -*-
 
 ;; Author: Gunnar Bastkowski
-;; Version: 1.12.0
+;; Version: 1.13.0
 ;; Package-Requires: ((emacs "28.1"))
 ;; Keywords: tools
 ;; URL: https://github.com/gbastkowski/mcp-emacs
@@ -51,6 +51,11 @@
 (require 'agent-prompt)
 (require 'agent-question)
 (require 'agent-permission)
+
+;; Soft dependency: prose is fontified as markdown when `markdown-mode' is
+;; installed, and rendered plain when it is not.
+(require 'markdown-mode nil t)
+(declare-function gfm-view-mode "markdown-mode" ())
 
 (declare-function plz "plz"
                    (method url &rest rest))
@@ -111,6 +116,12 @@ child process.  When nil, the server is started as a child process."
   :type 'number
   :group 'opencode-client)
 
+(defcustom opencode-client-discover-service t
+  "Reuse OpenCode's registered shared service when available.
+Set nil to use only the explicitly configured host, port and credentials."
+  :type 'boolean
+  :group 'opencode-client)
+
 ;;;; State
 
 (defvar opencode-client--active-session nil
@@ -129,6 +140,8 @@ child process.  When nil, the server is started as a child process."
          :documentation "Host of this backend's own server, or nil for the default.")
    (port :initarg :port :initform nil
          :documentation "Port of this backend's own server, or nil for the default.")
+   (password :initarg :password :initform nil
+             :documentation "Basic-auth password for this backend's server, or nil to resolve from the defcustoms.")
    (messages :initarg :messages :initform nil
              :documentation "Ordered list of message IDs seen in this chat buffer.")
    (parts :initarg :parts
@@ -159,8 +172,8 @@ child process.  When nil, the server is started as a child process."
     (connected :initform nil :documentation "The event stream sent its connection marker.")
    (stream-process :initarg :stream-process :initform nil
                    :documentation "The SSE stream process for this chat buffer, or nil.")
-   (stream-buffer :initarg :stream-buffer :initform ""
-                  :documentation "Accumulated, not-yet-framed SSE bytes."))
+    (stream-buffer :initarg :stream-buffer :initform ""
+                   :documentation "Accumulated, not-yet-framed SSE bytes."))
   "An opencode chat backend (an `agent-backend' subclass).
 Holds the per-buffer conversation state -- session id, part model, and
 SSE stream -- and implements the shared lifecycle generics.")
@@ -186,23 +199,24 @@ When BACKEND carries its own host/port (a per-project server started by
                 (concat "[" host "]") host)
             (or (and backend (oref backend port)) opencode-client-port))))
 
-(defun opencode-client--password ()
-  "Return the server password, or nil.
-Prefer `opencode-client-password'; otherwise run
-`opencode-client-password-command' and use its trimmed stdout."
-  (cond
-   (opencode-client-password opencode-client-password)
-   (opencode-client-password-command
-    (let ((out (string-trim
-                (shell-command-to-string opencode-client-password-command))))
-      (unless (string-empty-p out) out)))
-    (t opencode-client--generated-password)))
+(defun opencode-client--password (&optional backend)
+  "Return BACKEND's password, then configured or generated credentials.
+A discovered endpoint owns its credential; never replace it with another
+server's global password."
+  (or (and backend (oref backend password))
+      opencode-client-password
+      (and opencode-client-password-command
+           (let ((out (string-trim
+                       (shell-command-to-string opencode-client-password-command))))
+             (unless (string-empty-p out) out)))
+      opencode-client--generated-password))
 
-(defun opencode-client--headers ()
-  "Return request headers, including basic auth when a password resolves."
+(defun opencode-client--headers (&optional backend)
+  "Return BACKEND's request headers, adding basic auth when a password
+resolves."
   (append
    '(("Content-Type" . "application/json"))
-    (when-let* ((pw (opencode-client--password)))
+    (when-let* ((pw (opencode-client--password backend)))
      (list (cons "Authorization"
                  (concat "Basic "
                          (base64-encode-string
@@ -220,7 +234,7 @@ Errors are surfaced as user errors rather than raw signals."
              (json-array-type 'list)
              (res (apply #'plz method url
                          (append
-                           (list :headers (opencode-client--headers)
+                           (list :headers (opencode-client--headers backend)
                                  :timeout opencode-client-request-timeout
                                  :as (lambda ()
                                        (unless (eobp) (json-read))))
@@ -268,7 +282,7 @@ PATH selects ascending order; following pages must omit the order argument."
   (directory-file-name
    (expand-file-name
     (or (and backend (oref backend directory))
-        (agent-backend--current-project-root)))))
+        (opencode-client--project-root)))))
 
 (defun opencode-client--session-path (backend &optional suffix)
   "Return BACKEND's session route, followed by optional SUFFIX."
@@ -278,12 +292,54 @@ PATH selects ascending order; following pages must omit the order argument."
 ;;;; Connection
 
 (defun opencode-client--health (&optional backend)
-  "Return non-nil when BACKEND's server is reachable and healthy.
-nil BACKEND probes the default server."
+  "Return non-nil when BACKEND's server answers its liveness probe.
+nil BACKEND probes the default server.  opencode 2.x removed `/api/health';
+`/api/info' (which reports version and pid) is the probe for a live server."
   (ignore-errors
     (let ((version (alist-get 'version
                              (opencode-client--request 'get "/api/info" nil backend))))
       (and (stringp version) (string-prefix-p "2." version)))))
+
+;;;; Shared background service discovery
+
+(defun opencode-client--service-file ()
+  "Return the shared service registration path, respecting XDG_STATE_HOME."
+  (expand-file-name "opencode/service.json"
+                    (or (getenv "XDG_STATE_HOME")
+                        (expand-file-name "~/.local/state"))))
+
+(defun opencode-client--url-host-port (url)
+  "Return (HOST . PORT) for a local HTTP service URL, or nil.
+Only HTTP is supported by this transport; do not silently downgrade HTTPS."
+  (when (and (stringp url)
+             (string-match
+              "\\`http://\\(\\[[^]]+\\]\\|[^/:]+\\):\\([0-9]+\\)/?\\'" url))
+    (let ((host (match-string 1 url))
+          (port (string-to-number (match-string 2 url))))
+      (when (<= 1 port 65535)
+        (cons (string-remove-suffix "]" (string-remove-prefix "[" host)) port)))))
+
+(defun opencode-client--discover ()
+  "Return a healthy V2 backend from the shared service registration, or nil.
+Discovery never starts, restarts or changes the managed service."
+  (when opencode-client-discover-service
+    (let ((json-object-type 'alist)
+          (json-array-type 'list)
+          (file (opencode-client--service-file)))
+      (when (file-readable-p file)
+        (let* ((registration
+                (ignore-errors
+                  (with-temp-buffer
+                    (insert-file-contents file)
+                    (goto-char (point-min))
+                    (json-read))))
+               (host-port (opencode-client--url-host-port
+                           (and (listp registration) (alist-get 'url registration)))))
+          (when host-port
+            (let ((backend (make-instance 'opencode-client-backend
+                                          :host (car host-port) :port (cdr host-port)
+                                          :password (alist-get 'password registration))))
+              (and (opencode-client--health backend) backend))))))))
 
 ;;;###autoload
 (defun opencode-client-connect ()
@@ -301,13 +357,18 @@ nil BACKEND probes the default server."
   "Standalone server started by this client, if any.")
 
 (defun opencode-client--ensure-server ()
-  "Return the backend for the current project, starting one if needed.
-The server is registered under `default-directory' so switching
-projects uses that project's server and its sessions."
+  "Return a project-scoped connection, preferring a registered V2 service.
+Reuse healthy project connections first; otherwise discover the shared
+service before falling back to a configured standalone endpoint."
   (let* ((dir (opencode-client--directory))
-         (backend (cdr (assoc dir opencode-client--servers))))
-    (if (and backend (opencode-client--health backend)) backend
-      (opencode-client-serve))))
+          (backend (cdr (assoc dir opencode-client--servers))))
+    (cond
+     ((and backend (opencode-client--health backend)) backend)
+     ((setq backend (opencode-client--discover))
+      (oset backend directory dir)
+      (setf (alist-get dir opencode-client--servers nil nil #'equal) backend)
+      backend)
+     (t (opencode-client-serve)))))
 
 ;;;###autoload
 (defun opencode-client-serve ()
@@ -338,6 +399,7 @@ Never replace an occupied port or modify the user's managed service."
                                                 (format "%s:%s:%s" (random) (float-time)
                                                         (emacs-pid)))))))
           (setenv "OPENCODE_PASSWORD" password)
+          (oset backend password password)
           (setq opencode-client--server-process
                 (make-process
                  :name "opencode-serve" :buffer " *opencode-serve*" :noquery t
@@ -383,6 +445,11 @@ Never replace an occupied port or modify the user's managed service."
                   sessions "\n"))
       (message "opencode: no sessions"))))
 
+(defun opencode-client--project-root ()
+  "Return the project root to scope a session to, or `default-directory'."
+  (require 'project nil t)
+  (agent-backend--current-project-root))
+
 ;;;###autoload
 (defun opencode-client-create-session (&optional title)
   "Create a new opencode session on the current project's server.
@@ -398,6 +465,24 @@ several projects can run their own opencode server in parallel."
     (opencode-client--open-buffer id (or (alist-get 'title session) title id) nil backend)
     (message "opencode: created session %s" id)
     id))
+
+;;;###autoload
+(defun opencode-client-open ()
+  "Create a session and open a prompt composition for it.
+Mirrors `claude-client-open': a bare `opencode-client-create-session'
+lands you in an empty, read-only conversation buffer with no obvious way
+to type.  This shows the conversation and opens its prompt buffer right
+away, so you start typing instead of facing a dead buffer."
+  (interactive)
+  (opencode-client-create-session)
+  (let ((buffer (window-buffer (selected-window))))
+    (when (with-current-buffer buffer (derived-mode-p 'opencode-client-mode))
+      (agent-prompt-read
+       (lambda (text)
+         (when (buffer-live-p buffer)
+           (with-current-buffer buffer
+             (opencode-client-send-prompt text))))
+       nil (buffer-name buffer) (selected-window)))))
 
 ;;;###autoload
 (defun opencode-client-switch-session ()
@@ -473,6 +558,7 @@ history from the connection marker.  Publish `started' or `resumed'."
                                     :buffer buf
                                     :host (and server (oref server host))
                                     :port (and server (oref server port))
+                                    :password (and server (oref server password))
                                     :directory directory)))
         (setq-local agent-backend--instance backend)
         ;; Subscribe first.  server.connected triggers history/state recovery;
@@ -509,7 +595,8 @@ text part; an assistant message contributes its `content' items
   "Return render-model parts for history message MSG with id MID, type MTYPE."
   (if (equal mtype "user")
       (list `((id . ,(format "%s:text" mid))
-              (type . "text")
+               (type . "text")
+              (role . "user")
               (text . ,(or (alist-get 'text msg) ""))))
     ;; assistant (and other content-bearing) messages carry a `content' array
     (cl-loop for item in (alist-get 'content msg)
@@ -587,6 +674,17 @@ numbers.  Never use one global sequence to discard transient deltas."
       buffer (list :kind (if (equal type "session.execution.interrupted") 'interrupted 'finished)
                    :subtype type))
      (opencode-client--schedule-refresh backend))
+    ("session.inbox.enqueued"
+     (let* ((item (alist-get 'item data))
+            (mid (alist-get 'inboxID data))
+            (text (alist-get 'text (alist-get 'payload item))))
+       (when (and mid (equal (alist-get 'type item) "user") (stringp text))
+         (let ((pid (format "%s:text" mid)))
+           (opencode-client--put-part
+            backend mid pid `((id . ,pid) (type . "text") (role . "user") (text . ,text)))
+           ;; Local sends already publish prompt.  The inbox event updates
+           ;; the display without duplicating the transcript entry.
+           (agent-backend-render backend)))))
     ((or "session.text.started" "session.text.delta" "session.text.ended"
          "session.reasoning.started" "session.reasoning.delta" "session.reasoning.ended")
      (let* ((mid (alist-get 'assistantMessageID data))
@@ -826,19 +924,109 @@ V2 carries output blocks in state.content, not the V1 output string."
               (buffer (plist-get entry :buffer)))
     (agent-question--close buffer)))
 
+;;;; Faces
+
+(defface opencode-client-prompt-face
+  '((t :inherit font-lock-keyword-face :weight bold))
+  "Face for a prompt the human sent."
+  :group 'opencode-client)
+
+(defface opencode-client-reasoning-face
+  '((t :inherit shadow :slant italic))
+  "Face for the model's reasoning."
+  :group 'opencode-client)
+
+(defface opencode-client-tool-face
+  '((t :inherit font-lock-function-name-face))
+  "Face for a tool call's name."
+  :group 'opencode-client)
+
+(defface opencode-client-tool-running-face
+  '((t :inherit warning))
+  "Face for a tool call still running."
+  :group 'opencode-client)
+
+(defface opencode-client-tool-ok-face
+  '((t :inherit success))
+  "Face for a tool call that succeeded."
+  :group 'opencode-client)
+
+(defface opencode-client-tool-error-face
+  '((t :inherit error))
+  "Face for a tool call that failed."
+  :group 'opencode-client)
+
+;;;; Rendering
+
+(defvar opencode-client--fontify-buffer nil
+  "Scratch buffer used to fontify markdown, or nil before first use.")
+
+(defun opencode-client--fontify-markdown (text)
+  "Return TEXT with markdown text properties applied.
+Fontification happens in a scratch buffer whose properties are copied
+out, so no markdown mode is active in the conversation buffer.  When
+`markdown-mode' is absent TEXT is returned unchanged, so prose reads
+plain rather than not at all."
+  (if (or (string-empty-p text) (not (fboundp 'gfm-view-mode)))
+      text
+    (unless (buffer-live-p opencode-client--fontify-buffer)
+      (setq opencode-client--fontify-buffer
+            (get-buffer-create " *opencode-client-fontify*")))
+    (with-current-buffer opencode-client--fontify-buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert text)
+        (setq-local markdown-fontify-code-blocks-natively t)
+        (delay-mode-hooks (gfm-view-mode))
+        (setq-local markdown-fontify-code-blocks-natively t)
+        (font-lock-flush)
+        (font-lock-ensure)
+        (buffer-string)))))
+
+(defun opencode-client--faced (text face)
+  "Return TEXT propertized with FACE.
+Uses the `face' property: the conversation buffer is `special-mode' with
+font-lock off, where `font-lock-face' would have no effect."
+  (propertize text 'face face))
+
+(defun opencode-client--tool-status-face (part)
+  "Return the face for PART's tool status."
+  (pcase (opencode-client--tool-status part)
+    ("completed" 'opencode-client-tool-ok-face)
+    ("error" 'opencode-client-tool-error-face)
+    (_ 'opencode-client-tool-running-face)))
+
+(defun opencode-client--tool-status (part)
+  "Return the lifecycle status of tool PART."
+  (let ((state (alist-get 'state part)))
+    (if (listp state) (alist-get 'status state) state)))
+
 (defun opencode-client--render-part (pid)
   "Return a rendered string for part PID, or nil to skip it."
   (when-let* ((backend (opencode-client--instance)))
     (let* ((part (gethash pid (oref backend parts)))
            (type (alist-get 'type part)))
       (pcase type
-        ("text" (alist-get 'text part))
-        ("reasoning" (concat "  · " (or (alist-get 'text part) "")))
-        ("tool" (format "  [tool: %s %s]"
-                          (alist-get 'tool part)
-                          (let ((st (alist-get 'state part)))
-                            (if (listp st) (alist-get 'status st) st))))
-        ((or "step-start" "step-finish") nil)
+        ("text"
+         (if (equal (alist-get 'role part) "user")
+             (opencode-client--faced
+              (concat "\n>>> " (or (alist-get 'text part) ""))
+              'opencode-client-prompt-face)
+           (opencode-client--fontify-markdown (or (alist-get 'text part) ""))))
+        ("reasoning"
+         (opencode-client--faced
+          (concat "  · " (or (alist-get 'text part) ""))
+          'opencode-client-reasoning-face))
+        ("tool"
+         (concat "  "
+                 (opencode-client--faced
+                  (format "[tool: %s]"
+                          (or (alist-get 'name part) (alist-get 'tool part)))
+                  'opencode-client-tool-face)
+                 " "
+                 (opencode-client--faced
+                  (or (opencode-client--tool-status part) "")
+                  (opencode-client--tool-status-face part))))
         (_ nil)))))
 
 (defun opencode-client--render ()
@@ -872,7 +1060,7 @@ Each subscriber filters session IDs; unrelated sessions never reach its UI."
       (oset backend stream-buffer "")
       (oset backend stream-process
             (plz 'get url
-               :headers (opencode-client--headers)
+               :headers (opencode-client--headers backend)
                :timeout nil
                :as 'response
                :filter (lambda (proc chunk)
@@ -1283,7 +1471,7 @@ session, including on failure or timeout."
   "Return a transient backend instance for server-level operations.
 Used by commands that need a backend object but are not bound to a
 conversation buffer (connect, list-sessions)."
-  (make-instance 'opencode-client-backend))
+  (or (opencode-client--discover) (make-instance 'opencode-client-backend)))
 
 (defun opencode-client--active-backend ()
   "Return the backend instance for the active session.
@@ -1299,7 +1487,8 @@ transient instance around the current project's selected session."
           (make-instance 'opencode-client-backend
                        :session-id id :directory directory
                         :host (oref server host)
-                       :port (oref server port)))))))
+                       :port (oref server port)
+                       :password (oref server password)))))))
 
 ;;;###autoload
 (defun opencode-client-compose (&optional steer)

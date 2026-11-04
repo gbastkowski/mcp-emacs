@@ -209,7 +209,13 @@
           (check (hash-table-count (oref backend parts)) 4))
         (it "keeps rendering compatible with the shared conversation UI"
           (agent-backend-render backend)
-          (check (buffer-string) "Hi\nHello\n  · Thinking\n  [tool: read completed]\n"))))))
+          (check (buffer-substring-no-properties (point-min) (point-max))
+                 "\n>>> Hi\nHello\n  · Thinking\n  [tool: read] completed\n"))
+        (it "preserves upstream prompt and tool status highlighting"
+          (check (get-text-property (point-min) 'face) 'opencode-client-prompt-face)
+          (goto-char (point-min))
+          (search-forward "completed")
+          (check (get-text-property (1- (point)) 'face) 'opencode-client-tool-ok-face))))))
 
 (with-v2-client
   (let (replies)
@@ -424,6 +430,27 @@
           (check (mapcar #'car bindings) '(motion motion normal normal))
           (check (nth 2 (car bindings)) #'undefined)
           (check-that (functionp (nth 2 (cadr bindings)))))))))
+
+(with-v2-client
+  (describe "upstream prompt composition and inbox rendering"
+    (it "opens a composer immediately after creating an OpenCode session"
+      (let (created composition)
+        (cl-letf (((symbol-function 'opencode-client-create-session)
+                   (lambda (&rest _) (setq created t)))
+                  ((symbol-function 'window-buffer) (lambda (&rest _) buffer))
+                  ((symbol-function 'agent-prompt-read)
+                   (lambda (&rest _) (setq composition t))))
+          (opencode-client-open)
+          (check created t)
+          (check composition t))))
+    (it "shows queued prompts with the same part identity used by history"
+      (v2-emit buffer "session.inbox.enqueued"
+               '((inboxID . "user_message")
+                 (item . ((type . "user") (payload . ((text . "queued prompt")))))))
+      (check (gethash "user_message" (oref backend message-parts)) '("user_message:text"))
+      (check (alist-get 'role (gethash "user_message:text" (oref backend parts))) "user")
+      (check (string-match-p ">>> queued prompt" (buffer-string)) 1)
+      (check (seq-find (lambda (event) (eq (plist-get event :kind) 'prompt)) events) nil))))
 
 (test-helper-summary)
 ;;; opencode-client-sse-test.el ends here

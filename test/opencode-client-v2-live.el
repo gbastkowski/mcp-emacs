@@ -77,16 +77,25 @@
                 (let* ((servers (opencode-client--data 'get "/api/mcp" nil backend))
                        (entry (seq-find (lambda (s) (equal (alist-get 'name s) "test_emacs")) servers)))
                   (equal (alist-get 'status (alist-get 'status entry)) "connected"))))))
-          (it "subscribes with real plz/curl framing and recovers the initial state"
-            (setq conversation (generate-new-buffer " *opencode-v2-live-conversation*"))
-            (with-current-buffer conversation
-              (opencode-client-mode)
-              (setq backend (make-instance 'opencode-client-backend :directory sandbox
-                                           :session-id session :buffer conversation))
-              (setq-local agent-backend--instance backend)
-              (opencode-client--start-stream))
-            (check-that (opencode-v2-live--wait (lambda () (oref backend synchronized))))
-            (check (agent-backend-turn-state backend) 'idle))
+          (it "discovers sandbox credentials and keeps them through opening and streaming"
+            (let ((registration (opencode-client--service-file))
+                  (opencode-client-discover-service t))
+              (make-directory (file-name-directory registration) t)
+              (with-temp-file registration
+                (insert (json-encode
+                         `((url . ,(format "http://127.0.0.1:%d" port))
+                           (password . ,opencode-client--generated-password)))))
+              ;; Both recovery requests and the SSE connection must use the
+              ;; endpoint's credential, not a password for a different service.
+              (let* ((opencode-client-password "deliberately-wrong-global-password")
+                     (connection (opencode-client--discover)))
+                (check-that (eieio-object-p connection))
+                (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
+                  (setq conversation (opencode-client--open-buffer
+                                      session "V2 live smoke" nil connection)))
+                (setq backend (buffer-local-value 'agent-backend--instance conversation))
+                (check-that (opencode-v2-live--wait (lambda () (oref backend synchronized))))
+                (check (agent-backend-turn-state backend) 'idle))))
           (it "receives and answers a real V2 permission request in Emacs"
             (cl-letf (((symbol-function 'agent-permission--display) #'ignore))
               (let* ((request (opencode-client--data
