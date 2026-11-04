@@ -29,12 +29,10 @@
 ;;
 ;; - claude-client publishes turn events and keeps `claude-client--turn-active'
 ;;   plus a process handle, so its rows distinguish working / idle / finished.
-;; - The eat runner is a TUI with no turn events at all, and opencode
-;;   keeps no per-buffer turn state and never publishes `finished' (its
-;;   `step-finish' signal is discarded upstream).  Both report liveness
-;;   only.  Inferring working/idle from terminal output activity would
-;;   misreport a long model think as idle and a spinner as work, so it is
-;;   not done.
+;; - OpenCode V2 exposes execution lifecycle events and reconciles state
+;;   on reconnect, so its backend also reports working / idle / finished.
+;; - The eat runner is a TUI with no turn events; it reports liveness only.
+;;   Output activity is not a reliable indication that a turn is working.
 ;;
 ;; Live updates come from `agent-backend-event-functions'.  The
 ;; subscriber guards its own errors: a failure while rendering must not
@@ -46,6 +44,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'tabulated-list)
+(require 'agent-backend)
 
 (declare-function claude-client-interrupt "claude-client" ())
 (declare-function claude-client-quit "claude-client" ())
@@ -86,7 +85,7 @@
      :mode opencode-client-mode
      :regexp "\\`\\*opencode:\\(.+\\)\\*\\'"
      :project-in-name nil
-     :state agent-session-overview--process-state))
+     :state agent-session-overview--backend-state))
   "How each backend's session buffers are recognised and read.
 Each entry is (SYMBOL :label LABEL :mode MODE :regexp RE
 :project-in-name FLAG :state FN).
@@ -114,9 +113,7 @@ their internals so this module has no load-order dependency on them.")
 
 (defun agent-session-overview--process-state (buffer)
   "Return `live' or `dead' for BUFFER, from its process alone.
-Used for backends that expose no turn state: the eat runner publishes no
-turn events, and opencode publishes no `finished', so neither can be
-reported as working or idle without inventing a claim."
+Used for the eat runner, which exposes no structured turn state."
   (if (process-live-p (get-buffer-process buffer)) 'live 'dead))
 
 (defun agent-session-overview--claude-state (buffer)
@@ -128,6 +125,13 @@ between turns, `finished' once it has exited -- the same distinction
     (cond ((bound-and-true-p claude-client--turn-active) 'working)
           ((process-live-p (bound-and-true-p claude-client--process)) 'idle)
           (t 'finished))))
+
+(defun agent-session-overview--backend-state (buffer)
+  "Return BUFFER's observed backend state, or dead for an unbound buffer."
+  (with-current-buffer buffer
+    (if agent-backend--instance
+        (agent-backend-turn-state agent-backend--instance)
+      'dead)))
 
 ;;;; Enumeration
 
@@ -215,7 +219,7 @@ Errors are swallowed on purpose: this runs on
 `agent-backend-event-functions', inside the publishing session's own
 call stack, so a rendering failure here must not reach that session."
   (when (memq (plist-get event :kind)
-              '(started prompt finished interrupted resumed error))
+              '(started prompt working state-changed finished interrupted resumed error))
     (condition-case err
         (agent-session-overview--render)
       (error
@@ -261,6 +265,9 @@ keeps the binding where the muscle memory expects it."
            (mcp-emacs-run-quit buffer)
          (when-let* ((process (get-buffer-process buffer)))
            (delete-process process))))
+      ('opencode
+       (with-current-buffer buffer
+         (agent-backend-quit agent-backend--instance)))
       (_
        (if-let* ((process (get-buffer-process buffer)))
            (delete-process process)
@@ -274,7 +281,10 @@ keeps the binding where the muscle memory expects it."
          (buffer (agent-session-overview--live-buffer-at-point)))
     (unless (eq (plist-get entry :state) 'working)
       (user-error "No turn is running for this session"))
-    (with-current-buffer buffer (claude-client-interrupt))
+    (with-current-buffer buffer
+      (if agent-backend--instance
+          (agent-backend-interrupt agent-backend--instance)
+        (claude-client-interrupt)))
     (agent-session-overview--render)))
 
 ;;;; Help
@@ -361,7 +371,7 @@ needs arranging."
         (princ "\nState is only as precise as its backend allows.\n\n")
         (princ "  claude    working / idle / finished -- it publishes turn events\n")
         (princ "  eat       live / dead -- a terminal, with no turn events\n")
-        (princ "  opencode  live / dead -- publishes no turn-end event\n")
+        (princ "  opencode  working / idle / finished -- V2 execution events\n")
         (princ "\nWorking/idle is never guessed from output activity: that would\n")
         (princ "read a long model think as idle and a spinner as work.\n"))
       (when-let* ((window (get-buffer-window

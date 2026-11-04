@@ -54,13 +54,11 @@ Under evil, the single-letter keys are re-registered in normal and motion states
 (they would otherwise be shadowed — `?` searches backward, `k` moves up). `g`
 and `q` are left alone: `g r` reverts, as elsewhere in evil.
 
-**State is only as precise as the backend allows.** `claude-client` publishes
-turn events and tracks a turn flag, so its rows read `working` / `idle` /
-`finished`. The eat runner is a TUI with no turn events, and opencode keeps no
-per-buffer turn state and never publishes a turn-end event, so both report
-`live` / `dead` only. Working/idle is deliberately *not* inferred from terminal
-output activity: that would misreport a long model think as idle and a spinner
-as work.
+**State is only as precise as the backend allows.** Claude and OpenCode V2
+report `working` / `idle` / `finished` from execution state. For OpenCode,
+`finished` also means disconnected; it does not claim the remote work stopped.
+The eat runner has no turn events and reports `live` / `dead` only. Working/idle
+is never inferred from output activity.
 
 Rows update themselves off `agent-backend-event-functions`. The subscriber
 swallows its own errors, so a rendering failure cannot propagate back into the
@@ -207,45 +205,84 @@ Key options: `claude-client-executable`, `-model`, `-mcp-config`,
 
 ## opencode client
 
-`elisp/opencode-client.el` is a native Emacs client for
-[opencode](https://opencode.ai)'s local HTTP API. opencode runs headless
-(`opencode serve`); the client drives it over HTTP and renders the conversation
-incrementally from the server's Server-Sent Events stream into an ordinary Emacs
-buffer, instead of embedding the opencode TUI in a terminal. Editor-tool
-integration is provided to opencode through the `emacs` MCP server (wired via
-`opencode.json`), so the client does not reimplement editor tools.
+`elisp/opencode-client.el` targets **OpenCode V2**, smoke-tested against
+**v2.2.5**. It drives the HTTP API and renders SSE events into an ordinary Emacs
+buffer, without a terminal or JavaScript sidecar. V1's server API is no longer
+supported. Editor tools remain on the `emacs` MCP server in `opencode.json`;
+orgspec and live buffer ownership remain in Emacs.
+The V2 API is experimental; use the tested release or verify compatibility
+before changing versions.
 
 It requires the [`plz`](https://github.com/alphapapa/plz.el) package, loaded as
 an optional dependency — installing `mcp-emacs` does not pull it in, and client
 commands report clearly if it is missing.
 
-One opencode server runs **per project**, each on its own free port (probing
-upward from `opencode-client-port`, default 4096). `opencode-client-serve`
-starts the server for the current `default-directory` and registers it, so
-several projects can run opencode sessions in parallel without colliding on a
-fixed address — switch projects and each keeps its own session list.
+Projects share **one configured service endpoint**. Every session is created
+with an explicit `location.directory`; listing and last-selected-session lookup
+are project-scoped. Equal conversation titles cannot overwrite another session's
+buffer. The client verifies `/api/info` and rejects non-V2 servers.
 
 Configure `opencode-client-host`, `-port`, and optional `-password`, then:
 
-- `M-x opencode-client-connect` — verify a running server (or
-  `opencode-client-serve` to start one).
+- `M-x opencode-client-connect` — verify the configured endpoint and credentials.
+  `opencode-client-serve` connects to it if already available, otherwise starts
+  one local standalone `opencode serve` on the configured port. It never changes
+  or restarts your managed OpenCode service. A child gets `OPENCODE_PASSWORD`
+  from your configured credential source, or a generated in-memory password.
 - `M-x opencode-client-create-session` / `-switch-session` — manage sessions.
-  Opening a session loads and renders its prior history before streaming, so
-  reconnecting to a persistent server shows the existing conversation.
+  Resume reattaches to the existing ID and recovers its complete paginated history.
 - In the chat buffer: `C-c C-c` to send a prompt (prefix arg steers a running
   turn), `C-c C-k` to interrupt. Permission and question requests are answered
-  from Emacs.
+  from Emacs. Ordinary input queues; steering is explicit. Working/idle comes
+  from execution events, not individual model steps.
 
 The password may be resolved from a secret store instead of set directly: leave
 `opencode-client-password` nil and set `opencode-client-password-command` to a
 shell command (for example `pass show private/opencode/server-password`); its
 trimmed output is used for HTTP basic auth.
 
-To keep sessions alive across Emacs restarts, run the server independently of
-Emacs. On macOS, define an on-demand launchd user agent for `opencode serve`
-(loaded at login but not started) and set `opencode-client-launchd-label` to its
-label; `opencode-client-serve` then starts it with `launchctl kickstart` so the
-server is owned by launchd and outlives Emacs, rather than as a child process.
+To keep execution alive across Emacs restarts, run the server independently.
+For the managed V2 service, obtain its address with `opencode service status`,
+set `opencode-client-host` / `-port` accordingly, and supply its password through
+the options above. For a supervised standalone server, use `opencode serve
+--hostname 127.0.0.1 --port 4096` with `OPENCODE_PASSWORD` from your secret store.
+On macOS, `opencode-client-launchd-label` still supports kickstarting an existing
+launchd agent; configure the **same port and password** on both sides. No random
+port is allocated for launchd.
+
+**Streaming and recovery.** Each conversation subscribes to `/api/event` and
+filters by session ID. V2 subscriptions are live-only. On connection/reconnection,
+the client fetches history, active execution, pending permissions and forms;
+it never retries prompts or approvals automatically. Deltas racing a snapshot
+trigger another snapshot rather than being appended twice. Explicit quit or
+killing the conversation cancels retries and closes local approval menus without
+deleting the remote session or stopping the shared server. Interrupt work first
+if that is what you intend. Missed events are not replayed into external transcript
+subscribers, although the conversation display recovers from stored history.
+
+**Approvals and forms.** Permission choices are `a` once, `d` reject, and `A`
+save in OpenCode, never in `.claude/settings.local.json`. Forms collect all fields,
+preserve option values and typed answers, and submit once. Multiselect uses
+comma-separated labels; `C-c C-k` cancels a form. URL/external forms are shown but
+must be completed in OpenCode's web or terminal interface. Requests answered
+elsewhere are dismissed locally without a second reply.
+
+**Review policy is separate.** This migration preserves existing tool permissions;
+connecting MCP does not force every write through ediff. To require `apply_diff`,
+deny native `edit` and alternative mutators (including `emacs_eval`,
+`emacs_edit_file_region` and `emacs_insert_at_point`), and gate shell/delegation
+paths that could bypass review. These permissions are not an OS sandbox.
+The repository uses native V2 `mcp.servers` and `commands` config; its Emacs MCP
+execution timeout is ten minutes for human review and Org wait calls.
+Session/UI scoping is not an editor sandbox: current-buffer MCP tools still
+observe the foreground Emacs state. Coordinate simultaneous writers and prefer
+explicit file/session arguments when available.
+
+Tests: `bin/test-emacs.sh test/opencode-client-sse-test.el` covers V2 contracts.
+With OpenCode V2 installed, `bin/test-emacs.sh test/opencode-client-v2-live.el`
+starts a disposable server with separate storage and credentials and connects only
+to the test Emacs MCP port. It makes **no model calls** and never uses your managed
+service, provider keys, or production MCP connections.
 
 ## Claude runner (terminal)
 
@@ -458,14 +495,12 @@ One-shot answers render in the popup output window near your code, and touch no
 session state. `agent-backend-explain-prompt` (default `"explain %s"`) is the
 template.
 
-Answering without a session is `agent-backend-query`, and how a backend manages
-it differs: Claude shells out to its one-shot CLI mode (`claude -p`), while
-opencode — session-only over HTTP — opens a session, asks, and deletes it, so
-the effect is one-shot even though the transport is not. Its prompt endpoint
-only acknowledges the request, so the answer is polled from the message list
-until the turn reports finished (`opencode-client-query-timeout`, default 120s);
-the throwaway session is deleted even on failure or timeout. Backends that can
-do neither inherit a default that refuses by name rather than pretending.
+Answering without a session is `agent-backend-query`. Claude shells out to
+`claude -p`; OpenCode uses a throwaway agent session so it can read selection
+references through tools (unlike a text-only generation request). The answer is
+polled until the execution finishes, not merely a tool-calls step
+(`opencode-client-query-timeout`, default 120s). The temporary session is
+interrupted and deleted even on failure or timeout.
 
 **The event vocabulary.** Every conversation event is published as a plist with
 a `:kind` symbol on the abnormal hook `agent-backend-event-functions`, run with

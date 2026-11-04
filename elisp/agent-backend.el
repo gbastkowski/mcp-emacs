@@ -319,7 +319,7 @@ shown in another window (issue #76)."
 ;; of them, isolates each one's output in its own buffer, and offers a
 ;; live list over the registry.
 
-(defcustom agent-backend-spawn-tool-names '("task" "delegate_task" "developer")
+(defcustom agent-backend-spawn-tool-names '("task" "delegate_task" "developer" "subagent")
   "Tool names whose calls fan out to a background agent.
 A `tool-use' event whose `:name' is in this list opens a running entry in
 the conversation's spawned-agent registry (see `agent-backend--track-agent');

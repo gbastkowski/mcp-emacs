@@ -1,6 +1,6 @@
 * opencode-client implements agent-backend and publishes shared events
 
-The opencode client MUST define an agent-backend subclass, MUST
+The OpenCode V2 client MUST define an agent-backend subclass, MUST
 translate its SSE stream events into the shared :kind vocabulary and
 publish them on agent-backend-event-functions, MUST derive its major
 mode from agent-backend-mode, and MUST keep its public
@@ -21,7 +21,8 @@ THEN it dispatches through agent-backend-send and behaves as before
 The opencode backend MUST implement agent-backend-add-note as a
 steering prompt (delivery: steer; note-policy :steer), and MUST
 implement reply-permission and reply-question against the opencode
-HTTP endpoints.
+HTTP endpoints, using ~once~/~always~/~reject~ permission decisions and
+keyed form answers rather than the V1 question protocol.
 
 ** A note steers the turn
 GIVEN a turn is active
@@ -40,23 +41,23 @@ THEN the question reply endpoint is used
 
 * opencode exposes sessions through the shared surface
 
-The opencode backend MUST implement list-sessions from the opencode
-session API, MUST make resume either reuse switch-session or signal
-user-error, and MUST report no project scoping when it has none.
+The opencode backend MUST implement list-sessions from the V2 session
+API, MUST reattach to existing IDs for resume, and MUST report the
+session's explicit location directory as its project root.
 
 ** Sessions are listed
 GIVEN opencode serve has sessions
 WHEN agent-backend-list-sessions is called
 THEN they are returned as (:id :label :time) plists
 
-** Resume without a picker fails clearly
-GIVEN no native resume picker
+** Resume recovers an existing session
+GIVEN a persisted V2 session
 WHEN agent-backend-resume is called
-THEN a user-error names the alternative (switch-session)
+THEN its location and history are restored without creating a new session
 
 * The client connects to a running opencode server
 The system SHALL connect to an ~opencode serve~ HTTP endpoint at a
-configurable host and port, verify it with a health check, and support an
+configurable host and port, verify a 2.x version through ~/api/info~, and support an
 optional server password for HTTP basic auth.
 The password MAY be configured directly or resolved by running a configured
 shell command and using its trimmed standard output, so it can come from a
@@ -93,7 +94,10 @@ child process.
 
 * The client manages opencode sessions
 The system SHALL list, create, select, and delete opencode sessions through
-the server API, and track which session is currently active.
+the V2 server API, and track the active session separately for each project.
+Creation SHALL include ~location.directory~ and listing SHALL filter by
+directory. Projects SHALL share one configured service endpoint. Sessions
+with equal titles SHALL keep distinct buffers, identified by endpoint and ID.
 ** Sessions are listed with enough detail to choose
 - GIVEN a server with sessions
 - WHEN the user lists them
@@ -126,10 +130,10 @@ session.
 - THEN the client asks the server to stop the running turn
 
 * The conversation renders incrementally from the event stream
-The system SHALL subscribe to the session's Server-Sent Events stream and
-render the conversation incrementally into an Emacs buffer, applying message
-and message-part events (message updated, part updated/removed, and
-text/reasoning/tool/step lifecycle events) as they arrive.
+The system SHALL subscribe to the shared ~/api/event~ stream, filter all
+business events by session ID before changing UI or requesting approval, and
+render text/reasoning/tool lifecycle events incrementally. Event IDs SHALL
+suppress duplicates without treating transient deltas as durable sequences.
 ** Assistant text streams in
 - GIVEN the server emits message-part update events for assistant text
 - WHEN they arrive
@@ -147,9 +151,13 @@ text/reasoning/tool/step lifecycle events) as they arrive.
   than hanging
 
 * The client surfaces and answers permission and question requests
-The system SHALL detect opencode permission requests and questions for the
+The system SHALL detect V2 permission requests and forms for the
 active session and let the user answer them from Emacs, sending the reply back
-to the server.
+to the server. Permission menus SHALL never write Claude settings. Form
+collection SHALL preserve field keys, option values, numbers, booleans and
+multiselect arrays; all fields SHALL be submitted in one reply. Conditional
+fields SHALL depend on previously collected answers. External URL forms MAY
+require the OpenCode web or terminal interface, but SHALL NOT be auto-answered.
 ** A permission request is answered
 - GIVEN the server requests permission during a turn, for example to run a
   tool
@@ -175,12 +183,12 @@ as a soft/optional dependency, so installing mcp-emacs does not require ~plz~.
   client command is invoked
 
 * The client unwraps the server response envelope
-The opencode server returns most responses wrapped in a ~data~ envelope (and
-list responses alongside a ~cursor~).
-The client SHALL unwrap this envelope before use: when a parsed JSON response
-is a map carrying a ~data~ key, the client SHALL use the value of ~data~;
-otherwise it SHALL use the parsed response unchanged, so flat responses such
-as the health check continue to work.
+The V2 server returns most responses wrapped in a ~data~ envelope and
+paginated lists alongside ~cursor.next~/~cursor.previous~. The transport SHALL
+retain the entire response. Payload consumers MAY unwrap ~data~, but session
+and history listing SHALL follow ~cursor.next~ without silently dropping older
+items. Cursor requests SHALL omit ~order~. Flat ~/api/info~ responses SHALL
+pass through unchanged.
 ** A wrapped object is unwrapped
 - GIVEN a wrapped object response such as a created session ~{"data": {"id":
   …}}~
@@ -193,21 +201,20 @@ as the health check continue to work.
 - THEN it uses the inner list as the collection
 ** A flat response passes through
 - GIVEN a flat object with no ~data~ key, such as the health check
-  ~{"healthy": true}~
+  ~{"version": "2.2.5", ...}~
 - WHEN the client reads it
 - THEN it uses the response unchanged
 
 * Session history loads when a session is opened
-When the client opens a chat buffer for a session, it SHALL fetch the
-session's existing message history from the server, seed the conversation
-model from it, and render it before subscribing to the live event stream, so
-reconnecting to a persistent session shows the prior conversation rather than
-an empty buffer.
+When the client opens a chat buffer for a session, it SHALL subscribe first
+and recover chronological, paginated history after ~server.connected~. This
+SHALL avoid the history-before-subscription gap. History items without IDs
+SHALL use stable content ordinals in the render model.
 ** Reattaching shows the prior conversation
 - GIVEN a session that already has messages on the server
 - WHEN the client opens it
-- THEN the existing messages are rendered into the chat buffer before any new
-  live events arrive
+- THEN existing messages are recovered without duplicating text that raced
+  the snapshot request
 ** A new session renders empty
 - GIVEN a freshly created session with no messages
 - WHEN the client opens it
@@ -219,20 +226,43 @@ an empty buffer.
 - THEN each part is rendered the same way the equivalent live streamed part
   would be
 
-* opencode surfaces question.asked through the shared menu
-The system SHALL, when the opencode client receives a ~question.asked~ SSE
-event for the active session, publish a ~question-request~ event on the shared
-hook and raise the answer menu offering the proposed options; the chosen
-answer SHALL be sent to the opencode question reply endpoint.
-** A question.asked event raises the menu
-- WHEN the opencode SSE stream delivers ~question.asked~ with a request-id and
-  questions
+* opencode surfaces V2 forms through the shared menu
+The system SHALL, when the client receives ~form.created~ for its session,
+publish a ~question-request~ event and collect every field through the shared
+answer menu. The keyed answer SHALL use the V2 form reply endpoint.
+** A form.created event raises the menu
+- WHEN the opencode SSE stream delivers ~form.created~ for this session
 - THEN a ~question-request~ event is published and an answer menu is shown for
   the active session
 ** The reply reaches the endpoint
 - WHEN an answer is chosen in the answer menu for an opencode question
-- THEN the answer is posted to the question reply endpoint for the session and
-  request-id
+- THEN the complete keyed answer is posted to the form reply endpoint
 ** A manually-asked question still works
 - WHEN the human invokes the manual answer command with a pending request-id
 - THEN the answer is delivered through the same reply path
+
+* V2 reconnect restores state without replaying mutations
+An unexpected EOF or error SHALL schedule one reconnect. The connection marker
+SHALL trigger reconciliation of history, active execution, pending permissions
+and pending forms. Prompts and approvals SHALL NOT be retried automatically.
+Events racing recovery SHALL trigger a new snapshot rather than append duplicate
+deltas. Requests answered elsewhere SHALL close locally without a second reply.
+Explicit quit or buffer destruction SHALL cancel timers and close local menus,
+but SHALL NOT delete the remote session or stop the shared service.
+** A missed form is recovered
+GIVEN a form was created while Emacs was disconnected
+WHEN the client reconnects
+THEN the pending form is shown from the session's form inventory
+** Explicit quit stays disconnected
+WHEN the user quits while reconnect is pending
+THEN no timer reopens the stream
+
+* V2 execution events drive turn state
+The backend SHALL report working from ~session.execution.started~ and idle
+from execution success, failure or interruption. An individual step ending
+with ~tool-calls~ SHALL NOT complete the turn. Disconnected clients SHALL
+report finished without claiming the remote execution was stopped.
+** A tool-calls step is not a completed execution
+GIVEN an execution is working
+WHEN a model step ends to call tools
+THEN the backend remains working
