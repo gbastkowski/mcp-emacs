@@ -245,6 +245,9 @@ standalone endpoint, configure `opencode-client-host`, `-port`, and optional
   turn), `C-c C-k` to interrupt. Permission and question requests are answered
   from Emacs. Ordinary input queues; steering is explicit. Working/idle comes
   from execution events, not individual model steps.
+- **`?`** toggles the available session keybindings, including the shared backend
+  keys and TAB tool expansion. This also works in Evil normal/motion states.
+  Press `?` or `q` in the help window to close only the help, not the session.
 
 The password may be resolved from a secret store instead of set directly: leave
 `opencode-client-password` nil and set `opencode-client-password-command` to a
@@ -263,6 +266,19 @@ port is allocated for launchd.
 Markdown when the optional `markdown-mode` package is present, reasoning is
 dimmed, and tool statuses are colour-coded. Without Markdown support, prose
 remains readable as plain text.
+
+Tool calls also show their arguments, result previews, error messages and file
+attachment labels. Completed calls show a duration when timestamps are available.
+**TAB** anywhere in a tool block expands or collapses its complete input and
+result; this works in plain Emacs and Evil normal/motion states. Expansion stays
+with the call across stream updates and history refreshes, and rendering keeps
+your place when earlier calls grow.
+
+Collapsed previews default to four input lines and six result lines, bounded to
+2,000 characters per section even for single-line output. Customize
+`opencode-client-tool-input-lines`, `opencode-client-tool-result-lines`, and
+`opencode-client-tool-preview-chars` to change these limits. Expansion reveals
+the stored details without making another tool call or changing remote state.
 
 **Streaming and recovery.** Each conversation subscribes to `/api/event` and
 filters by session ID. V2 subscriptions are live-only. On connection/reconnection,

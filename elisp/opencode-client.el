@@ -122,6 +122,26 @@ Set nil to use only the explicitly configured host, port and credentials."
   :type 'boolean
   :group 'opencode-client)
 
+(defcustom opencode-client-tool-input-lines 4
+  "Maximum input lines shown for a collapsed tool call, or nil for all."
+  :type '(choice (const :tag "All" nil) (integer :tag "Lines"))
+  :group 'opencode-client)
+
+(defcustom opencode-client-tool-result-lines 6
+  "Maximum result lines shown for a collapsed tool call, or nil for all."
+  :type '(choice (const :tag "All" nil) (integer :tag "Lines"))
+  :group 'opencode-client)
+
+(defcustom opencode-client-tool-preview-chars 2000
+  "Maximum characters per collapsed input or result preview.
+This also bounds single-line JSON or command output.  TAB reveals the full
+stored details without changing the underlying conversation."
+  :type 'integer
+  :group 'opencode-client)
+
+(defvar-local opencode-client--expanded-tools nil
+  "Stable part IDs of tool calls expanded in this conversation.")
+
 ;;;; State
 
 (defvar opencode-client--active-session nil
@@ -703,7 +723,15 @@ numbers.  Never use one global sequence to discard transient deltas."
     ((or "session.tool.input.started" "session.tool.called" "session.tool.success" "session.tool.failed")
      (let* ((mid (alist-get 'assistantMessageID data))
             (pid (opencode-client--part-id mid nil (alist-get 'id data)))
-            (part (or (gethash pid (oref backend parts)) `((id . ,pid) (type . "tool")))))
+            (part (or (gethash pid (oref backend parts)) `((id . ,pid) (type . "tool"))))
+            (time (copy-tree (alist-get 'time part)))
+            (created (alist-get 'created event)))
+       (when (numberp created)
+         (setf (alist-get (pcase type
+                           ("session.tool.input.started" 'created)
+                           ("session.tool.called" 'ran)
+                           (_ 'completed)) time) created)
+         (setf (alist-get 'time part) time))
        (when (alist-get 'name data) (setf (alist-get 'tool part) (alist-get 'name data)))
        (pcase type
          ("session.tool.input.started" (setf (alist-get 'state part) '((status . "streaming"))))
@@ -714,6 +742,8 @@ numbers.  Never use one global sequence to discard transient deltas."
          (_
           (setf (alist-get 'state part)
                 `((status . ,(if (equal type "session.tool.failed") "error" "completed"))
+                  ,@(when-let* ((input (assq 'input (alist-get 'state part))))
+                      (list (copy-tree input)))
                   (content . ,(alist-get 'content data)) (error . ,(alist-get 'error data))))
           (agent-backend--publish
            buffer (list :kind 'tool-result :name (alist-get 'tool part) :id (alist-get 'id data)
@@ -1001,6 +1031,134 @@ font-lock off, where `font-lock-face' would have no effect."
   (let ((state (alist-get 'state part)))
     (if (listp state) (alist-get 'status state) state)))
 
+(defun opencode-client--tool-input-text (part)
+  "Return readable arguments for tool PART, or nil before input arrives."
+  (let* ((state (alist-get 'state part))
+         (input (and (listp state) (assq 'input state))))
+    (when input
+      (let ((value (cdr input)) (json-encoding-pretty-print t))
+        (cond
+         ((null value) "(no arguments)")
+         ((stringp value) value)
+         ((and (listp value) (cl-every #'consp value))
+          (mapconcat
+           (lambda (entry)
+             (format "%s: %s" (car entry)
+                     (if (stringp (cdr entry)) (cdr entry) (json-encode (cdr entry)))))
+           value "\n"))
+         (t (json-encode value)))))))
+
+(defun opencode-client--tool-output-text (part)
+  "Return PART's result text, including readable file-attachment labels."
+  (let ((state (alist-get 'state part)))
+    (when (listp state)
+      (mapconcat
+       (lambda (content)
+         (if (equal (alist-get 'type content) "file")
+             (let ((uri (or (alist-get 'uri content) "")))
+               (format "[file: %s, %s] %s"
+                       (or (alist-get 'name content) "attachment")
+                       (or (alist-get 'mime content) "unknown type")
+                       (if (string-prefix-p "data:" uri) "(embedded file)" uri)))
+           (or (alist-get 'text content) "")))
+       (alist-get 'content state) "\n"))))
+
+(defun opencode-client--tool-detail (label text lines expanded &optional face)
+  "Render LABEL and TEXT, bounded by LINES unless EXPANDED, with optional FACE."
+  (when (and (stringp text) (not (string-empty-p text)))
+    (let* ((text (string-remove-suffix "\n" text))
+           (all (split-string text "\n"))
+           (preview (string-join (if (or expanded (null lines)) all
+                                  (seq-take all (max 0 lines))) "\n")))
+      (unless expanded
+        (setq preview (substring preview 0
+                                 (min (length preview)
+                                      (max 0 opencode-client-tool-preview-chars)))))
+      (concat
+       (opencode-client--faced (concat "    " label ":\n") (or face 'shadow))
+       (mapconcat (lambda (line) (concat "      " line)) (split-string preview "\n") "\n")
+       (when (< (length preview) (length text))
+         (opencode-client--faced
+          (format "\n      … %d more lines, %d characters hidden — TAB to expand"
+                  (max 0 (- (length all) (length (split-string preview "\n"))))
+                  (- (length text) (length preview)))
+          'shadow))
+       "\n"))))
+
+(defun opencode-client--tool-duration (part)
+  "Return a completed duration for PART, or nil when timestamps are absent."
+  (let* ((time (alist-get 'time part))
+         (start (or (alist-get 'ran time) (alist-get 'created time)))
+         (end (alist-get 'completed time)))
+    (when (and (numberp start) (numberp end) (>= end start))
+      (let ((seconds (/ (- end start) 1000.0)))
+        (if (< seconds 1) (format "%.0fms" (* seconds 1000))
+          (format "%.1fs" seconds))))))
+
+(defun opencode-client--render-tool (pid part)
+  "Render tool PART at PID with arguments, bounded results and expandable details."
+  (let* ((expanded (member pid opencode-client--expanded-tools))
+         (state (alist-get 'state part))
+         (input (opencode-client--tool-input-text part))
+         (output (opencode-client--tool-output-text part))
+         (error-text (and (listp state) (opencode-client--error-text state)))
+         (duration (opencode-client--tool-duration part)))
+    (propertize
+     (concat
+      "  "
+      (opencode-client--faced
+       (format "[tool: %s]" (or (alist-get 'name part) (alist-get 'tool part) "unknown"))
+       'opencode-client-tool-face)
+      " " (opencode-client--faced (or (opencode-client--tool-status part) "")
+                                   (opencode-client--tool-status-face part))
+      (when duration (opencode-client--faced (concat " · " duration) 'shadow))
+      (when (or input (and output (not (string-empty-p output))) error-text)
+        (opencode-client--faced (if expanded "  [TAB: collapse]" "  [TAB: expand]") 'shadow))
+      "\n"
+      (opencode-client--tool-detail "Input" input opencode-client-tool-input-lines expanded)
+      (opencode-client--tool-detail "Result" output opencode-client-tool-result-lines expanded)
+      (opencode-client--tool-detail "Error" error-text opencode-client-tool-result-lines expanded
+                                    'opencode-client-tool-error-face))
+     'opencode-client-tool-id pid
+     'help-echo "TAB: expand or collapse this tool's input and result")))
+
+(defun opencode-client-toggle-tool-details ()
+  "Expand or collapse the tool call at point, without changing remote state."
+  (interactive)
+  (let ((pid (get-text-property (point) 'opencode-client-tool-id)))
+    (unless pid (user-error "No tool call at point"))
+    (if (member pid opencode-client--expanded-tools)
+        (setq opencode-client--expanded-tools (delete pid opencode-client--expanded-tools))
+      (push pid opencode-client--expanded-tools))
+    (goto-char (text-property-any (point-min) (point-max) 'opencode-client-tool-id pid))
+    (opencode-client--render)))
+
+(defun opencode-client--view-anchor (position)
+  "Describe POSITION by stable part identity and offset, or its numeric position."
+  (let* ((id (get-text-property position 'opencode-client-part-id))
+         (start (and id (text-property-any (point-min) (point-max)
+                                          'opencode-client-part-id id))))
+    (list id (if start (- position start) position))))
+
+(defun opencode-client--anchor-position (anchor)
+  "Resolve a saved view ANCHOR after rendering, clamped to the same part."
+  (let* ((id (car anchor))
+         (start (and id (opencode-client--part-position id))))
+    (if start
+        (min (+ start (cadr anchor))
+             (1- (next-single-property-change start 'opencode-client-part-id nil (point-max))))
+      (min (point-max) (max (point-min) (cadr anchor))))))
+
+(defun opencode-client--part-position (id)
+  "Find rendered part ID by value, even after history creates new ID strings."
+  (let ((position (point-min)) found)
+    (while (and (< position (point-max)) (not found))
+      (if (equal id (get-text-property position 'opencode-client-part-id))
+          (setq found position)
+        (setq position (next-single-property-change
+                        position 'opencode-client-part-id nil (point-max)))))
+    found))
+
 (defun opencode-client--render-part (pid)
   "Return a rendered string for part PID, or nil to skip it."
   (when-let* ((backend (opencode-client--instance)))
@@ -1017,30 +1175,36 @@ font-lock off, where `font-lock-face' would have no effect."
          (opencode-client--faced
           (concat "  · " (or (alist-get 'text part) ""))
           'opencode-client-reasoning-face))
-        ("tool"
-         (concat "  "
-                 (opencode-client--faced
-                  (format "[tool: %s]"
-                          (or (alist-get 'name part) (alist-get 'tool part)))
-                  'opencode-client-tool-face)
-                 " "
-                 (opencode-client--faced
-                  (or (opencode-client--tool-status part) "")
-                  (opencode-client--tool-status-face part))))
+        ("tool" (opencode-client--render-tool pid part))
         (_ nil)))))
 
 (defun opencode-client--render ()
   "Re-render the conversation into the current chat buffer."
   (when-let* ((backend (opencode-client--instance)))
     (let ((at-end (eobp))
+          (anchor (opencode-client--view-anchor (point)))
+          (views (mapcar
+                  (lambda (window)
+                    (list window (= (window-point window) (point-max))
+                          (opencode-client--view-anchor (window-start window))
+                          (opencode-client--view-anchor (window-point window))))
+                  (get-buffer-window-list (current-buffer) nil t)))
           (inhibit-read-only t))
       (erase-buffer)
       (dolist (mid (oref backend messages))
         (dolist (pid (gethash mid (oref backend message-parts)))
           (when-let* ((s (opencode-client--render-part pid)))
-            (insert s)
-            (unless (string-suffix-p "\n" s) (insert "\n")))))
-      (when at-end (goto-char (point-max))))))
+            (let ((start (point)))
+              (insert s)
+              (unless (string-suffix-p "\n" s) (insert "\n"))
+              (add-text-properties start (point) (list 'opencode-client-part-id pid))))))
+      (goto-char (if at-end (point-max) (opencode-client--anchor-position anchor)))
+      (dolist (view views)
+        (when (window-live-p (car view))
+          (set-window-point (car view) (if (cadr view) (point-max)
+                                        (opencode-client--anchor-position (nth 3 view))))
+          (unless (cadr view)
+            (set-window-start (car view) (opencode-client--anchor-position (nth 2 view)) t)))))))
 
 ;;;; Streaming (SSE)
 
@@ -1566,6 +1730,66 @@ A form already open is left alone; no unkeyed free-form reply is sent."
         (concat (opencode-client--session-path backend "/form/")
                 (url-hexify-string request-id)) nil backend)))))
 
+;;;; Session help
+
+(defconst opencode-client--help-buffer-name "*opencode help*"
+  "Name of the session keybinding help buffer.")
+
+(defconst opencode-client--help
+  '(("C-c C-c" "compose/send a prompt; with a prefix argument, steer")
+    ("C-c C-k" "interrupt remote work, keeping the session")
+    ("TAB" "expand/collapse the tool's input and result at point")
+    ("?" "toggle this help")
+    ("C-c C-s" "send input; queue it when a turn is already running")
+    ("C-c C-i" "interrupt remote work (shared backend binding)")
+    ("C-c C-q" "disconnect this view; remote work keeps running")
+    ("C-c C-r" "resume an existing session by ID"))
+  "Session bindings as (KEY DESCRIPTION), including inherited backend keys.")
+
+(defun opencode-client--display-help (buffer _alist)
+  "Display help BUFFER in an ordinary split, without replacing the conversation.
+An ordinary window avoids popup frameworks closing the conversation when
+the human dismisses its help.  Reuse an existing help window."
+  (or (get-buffer-window buffer)
+      (let* ((base (or (get-buffer-window (current-buffer)) (selected-window)))
+             (window (split-window base nil 'below)))
+        (set-window-buffer window buffer)
+        window)))
+
+;;;###autoload
+(defun opencode-client-help ()
+  "Toggle the available OpenCode session keys in a help window."
+  (interactive)
+  (if-let* ((window (get-buffer-window opencode-client--help-buffer-name)))
+      (progn
+        (unless (ignore-errors (delete-window window) t)
+          (quit-window nil window))
+        (bury-buffer opencode-client--help-buffer-name))
+    (let ((display-buffer-alist
+           (cons `(,(regexp-quote opencode-client--help-buffer-name)
+                   (opencode-client--display-help))
+                 display-buffer-alist)))
+      (with-help-window opencode-client--help-buffer-name
+        (princ "OpenCode conversation — available keys\n\n")
+        (dolist (binding opencode-client--help)
+          (princ (format "  %-10s %s\n" (car binding) (cadr binding))))
+        (princ "\nInput normally queues; steering is explicit.\n")
+        (princ "Disconnecting is not an interrupt: stop remote work first if needed.\n")
+        (princ "\nPlain Emacs also has g (minibuffer prompt) and q (bury conversation).\n")
+        (princ "Evil keeps its usual g/q behaviour in the conversation.\n")
+        (princ "\nM-x opencode-client-open starts another conversation.\n")
+        (princ "M-x opencode-client-switch-session selects an existing one.\n")
+        (princ "\nPress ? or q in this help window to close only the help.\n"))
+      (with-current-buffer opencode-client--help-buffer-name
+        (use-local-map (copy-keymap (current-local-map)))
+        (dolist (key '("?" "q"))
+          (local-set-key (kbd key) #'opencode-client-help)
+          (when (fboundp 'evil-local-set-key)
+            (dolist (state '(normal motion))
+              (evil-local-set-key state (kbd key) #'opencode-client-help)))))
+      (when-let* ((window (get-buffer-window opencode-client--help-buffer-name)))
+        (fit-window-to-buffer window)))))
+
 ;;;; Major mode
 
 (defvar opencode-client-mode-map
@@ -1575,6 +1799,29 @@ A form already open is left alone; no unkeyed free-form reply is sent."
     (define-key map (kbd "g")       #'opencode-client-send-prompt)
     map)
   "Keymap for `opencode-client-mode'.")
+
+(declare-function evil-define-key* "evil-core" (state keymap key def &rest bindings))
+
+(defun opencode-client--install-help-key ()
+  "Bind session help, including Evil states where ? otherwise searches backward."
+  (define-key opencode-client-mode-map (kbd "?") #'opencode-client-help)
+  (when (fboundp 'evil-define-key*)
+    (evil-define-key* '(normal motion) opencode-client-mode-map
+                      (kbd "?") #'opencode-client-help)))
+
+(defun opencode-client--install-tool-keys ()
+  "Bind tool-detail expansion in both plain Emacs and optional Evil states."
+  (dolist (key '("TAB" "<tab>"))
+    (define-key opencode-client-mode-map (kbd key) #'opencode-client-toggle-tool-details)
+    (when (fboundp 'evil-define-key*)
+      (evil-define-key* '(normal motion) opencode-client-mode-map
+                        (kbd key) #'opencode-client-toggle-tool-details))))
+
+(opencode-client--install-tool-keys)
+(opencode-client--install-help-key)
+(with-eval-after-load 'evil
+  (opencode-client--install-tool-keys)
+  (opencode-client--install-help-key))
 
 (define-derived-mode opencode-client-mode agent-backend-mode "opencode"
   "Major mode for an opencode chat buffer."

@@ -287,3 +287,37 @@ prose and a readable plain-text fallback.
 ** A fresh session is ready for input
 WHEN the human starts OpenCode through the shared backend command
 THEN the conversation and its prompt composer are shown together
+
+* Tool calls expose expandable arguments and results
+Tool blocks SHALL display the tool name, lifecycle status, arguments, bounded
+result previews and structured errors. They SHALL identify file attachments
+without inserting embedded binary data, and MAY show durations when observed
+timestamps are available. TAB anywhere in the block SHALL expand or collapse
+the complete stored details without remote requests or conversation mutations.
+Collapsed previews SHALL be bounded by both lines and characters. Expansion and
+the reader's place SHALL survive stream renders and history refreshes.
+** Long output is inspectable without overwhelming the conversation
+GIVEN a tool result longer than the configured preview limits
+WHEN the conversation renders
+THEN a bounded preview and a visible expansion hint appear
+AND TAB reveals the complete stored result and can collapse it again
+** A completed call retains its arguments
+GIVEN the client observed a tool's arguments while it was running
+WHEN its result event arrives
+THEN the completed block still shows those arguments alongside the result
+
+* Session help is available from the conversation
+The conversation SHALL bind ? to a keybinding help view in plain Emacs and
+Evil normal/motion states. Help SHALL describe prompt composition, tool expansion,
+interrupt, resume and disconnect controls, including inherited backend keys.
+It SHALL open in a separate ordinary window and be dismissible with ? or q
+without closing the conversation, disconnecting its stream or changing remote
+execution. Repeated toggling SHALL NOT accumulate windows.
+** Help is reachable under Evil
+GIVEN point is in an OpenCode conversation in Evil normal or motion state
+WHEN the human presses ?
+THEN the session keybindings are shown instead of starting backward search
+** Closing help leaves the conversation open
+GIVEN the session help is visible
+WHEN the human presses q in its help window
+THEN only the help window is closed and the conversation remains available
