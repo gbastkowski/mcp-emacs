@@ -249,6 +249,16 @@ standalone endpoint, configure `opencode-client-host`, `-port`, and optional
   keys and TAB tool expansion. This also works in Evil normal/motion states.
   Press `?` or `q` in the help window to close only the help, not the session.
 
+**Ask about a selection.** Select text in any buffer, then run
+`M-x opencode-client-compose`. It targets this project's last-selected session
+(or the current conversation when invoked inside one), and opens a composition
+buffer beside that conversation. Short selections are quoted with file/line
+context; longer selections become file-and-line references, using the shared
+`agent-prompt-region-seed` settings. Add your question and send with `C-c C-c`,
+or discard with `C-c C-k`. With no selection, the composer opens empty.
+The target stays fixed while you edit the draft. A prefix argument steers a
+running turn; without it, input queues normally.
+
 The password may be resolved from a secret store instead of set directly: leave
 `opencode-client-password` nil and set `opencode-client-password-command` to a
 shell command (for example `pass show private/opencode/server-password`); its
@@ -274,11 +284,13 @@ result; this works in plain Emacs and Evil normal/motion states. Expansion stays
 with the call across stream updates and history refreshes, and rendering keeps
 your place when earlier calls grow.
 
-Collapsed previews default to four input lines and six result lines, bounded to
-2,000 characters per section even for single-line output. Customize
-`opencode-client-tool-input-lines`, `opencode-client-tool-result-lines`, and
-`opencode-client-tool-preview-chars` to change these limits. Expansion reveals
-the stored details without making another tool call or changing remote state.
+Collapsed Input, Result, and Error sections each occupy one line, with whitespace
+folded into spaces. Preview content defaults to 80 characters including a trailing
+`…` when truncated (excluding indentation and the section label). Short content
+is shown without an ellipsis. Customize `opencode-client-tool-preview-chars` to
+change the limit; the old input/result line-count options are obsolete.
+Expansion reveals the original multiline details without making another tool call
+or changing remote state.
 
 **Streaming and recovery.** Each conversation subscribes to `/api/event` and
 filters by session ID. V2 subscriptions are live-only. On connection/reconnection,

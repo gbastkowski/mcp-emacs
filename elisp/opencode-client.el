@@ -123,19 +123,30 @@ Set nil to use only the explicitly configured host, port and credentials."
   :group 'opencode-client)
 
 (defcustom opencode-client-tool-input-lines 4
-  "Maximum input lines shown for a collapsed tool call, or nil for all."
+  "Legacy input line limit, no longer used.
+Collapsed details are single-line previews; use
+`opencode-client-tool-preview-chars' to control their length."
   :type '(choice (const :tag "All" nil) (integer :tag "Lines"))
   :group 'opencode-client)
 
 (defcustom opencode-client-tool-result-lines 6
-  "Maximum result lines shown for a collapsed tool call, or nil for all."
+  "Legacy result line limit, no longer used.
+Collapsed details are single-line previews; use
+`opencode-client-tool-preview-chars' to control their length."
   :type '(choice (const :tag "All" nil) (integer :tag "Lines"))
   :group 'opencode-client)
 
-(defcustom opencode-client-tool-preview-chars 2000
+(make-obsolete-variable 'opencode-client-tool-input-lines
+                        'opencode-client-tool-preview-chars "2026-11-25")
+(make-obsolete-variable 'opencode-client-tool-result-lines
+                        'opencode-client-tool-preview-chars "2026-11-25")
+
+(defcustom opencode-client-tool-preview-chars 80
   "Maximum characters per collapsed input or result preview.
-This also bounds single-line JSON or command output.  TAB reveals the full
-stored details without changing the underlying conversation."
+Includes the trailing `…' when truncated, but excludes indentation and
+the section label.  Values below 1 are treated as 1.  Whitespace is folded
+onto one line.  TAB reveals the full original multiline details without
+changing the underlying conversation."
   :type 'integer
   :group 'opencode-client)
 
@@ -1063,27 +1074,23 @@ font-lock off, where `font-lock-face' would have no effect."
            (or (alist-get 'text content) "")))
        (alist-get 'content state) "\n"))))
 
-(defun opencode-client--tool-detail (label text lines expanded &optional face)
-  "Render LABEL and TEXT, bounded by LINES unless EXPANDED, with optional FACE."
+(defun opencode-client--tool-detail (label text _lines expanded &optional face)
+  "Render LABEL and TEXT as a compact preview or full details when EXPANDED.
+The legacy _LINES argument is ignored.  FACE styles the section label."
   (when (and (stringp text) (not (string-empty-p text)))
-    (let* ((text (string-remove-suffix "\n" text))
-           (all (split-string text "\n"))
-           (preview (string-join (if (or expanded (null lines)) all
-                                  (seq-take all (max 0 lines))) "\n")))
-      (unless expanded
-        (setq preview (substring preview 0
-                                 (min (length preview)
-                                      (max 0 opencode-client-tool-preview-chars)))))
-      (concat
-       (opencode-client--faced (concat "    " label ":\n") (or face 'shadow))
-       (mapconcat (lambda (line) (concat "      " line)) (split-string preview "\n") "\n")
-       (when (< (length preview) (length text))
-         (opencode-client--faced
-          (format "\n      … %d more lines, %d characters hidden — TAB to expand"
-                  (max 0 (- (length all) (length (split-string preview "\n"))))
-                  (- (length text) (length preview)))
-          'shadow))
-       "\n"))))
+    (if expanded
+        (concat
+         (opencode-client--faced (concat "    " label ":\n") (or face 'shadow))
+         (mapconcat (lambda (line) (concat "      " line))
+                    (split-string (string-remove-suffix "\n" text) "\n") "\n")
+         "\n")
+      (let* ((preview (string-trim (replace-regexp-in-string "[ \t\r\n]+" " " text)))
+             (limit (max 1 opencode-client-tool-preview-chars)))
+        (when (> (length preview) limit)
+          (setq preview (concat (substring preview 0 (1- limit)) "…")))
+        (concat
+         (opencode-client--faced (concat "    " label ": ") (or face 'shadow))
+         preview "\n")))))
 
 (defun opencode-client--tool-duration (part)
   "Return a completed duration for PART, or nil when timestamps are absent."
@@ -1115,9 +1122,9 @@ font-lock off, where `font-lock-face' would have no effect."
       (when (or input (and output (not (string-empty-p output))) error-text)
         (opencode-client--faced (if expanded "  [TAB: collapse]" "  [TAB: expand]") 'shadow))
       "\n"
-      (opencode-client--tool-detail "Input" input opencode-client-tool-input-lines expanded)
-      (opencode-client--tool-detail "Result" output opencode-client-tool-result-lines expanded)
-      (opencode-client--tool-detail "Error" error-text opencode-client-tool-result-lines expanded
+      (opencode-client--tool-detail "Input" input nil expanded)
+      (opencode-client--tool-detail "Result" output nil expanded)
+      (opencode-client--tool-detail "Error" error-text nil expanded
                                     'opencode-client-tool-error-face))
      'opencode-client-tool-id pid
      'help-echo "TAB: expand or collapse this tool's input and result")))
@@ -1656,16 +1663,25 @@ transient instance around the current project's selected session."
 
 ;;;###autoload
 (defun opencode-client-compose (&optional steer)
-  "Compose a prompt for the active session and send it.
+  "Compose a prompt for the active session from any buffer.
+An active region in the source buffer seeds the composition with a quote
+or file-and-line reference; see `agent-prompt-region-seed'.  The prompt
+splits the conversation's window, displaying it first if necessary.
 With prefix arg STEER, deliver it as a steering message mid-turn."
   (interactive "P")
-  (let ((conversation (current-buffer)))
+  (let* ((source (current-buffer))
+         (backend (opencode-client--active-backend))
+         (id (oref backend session-id))
+         (conversation (or (opencode-client--conversation id backend)
+                           (opencode-client--open-buffer id id t backend)))
+         (window (or (get-buffer-window conversation t)
+                     (progn (pop-to-buffer conversation) (selected-window)))))
     (agent-prompt-read
      (lambda (text)
        (when (buffer-live-p conversation)
          (with-current-buffer conversation
            (opencode-client-send-prompt text steer))))
-     nil (buffer-name conversation) (selected-window))))
+     nil (buffer-name conversation) window source)))
 
 ;;;###autoload
 (defun opencode-client-send-prompt (text &optional steer)

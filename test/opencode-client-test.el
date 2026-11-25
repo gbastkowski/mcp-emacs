@@ -99,6 +99,72 @@
       (it "sends the title when one is given"
         (check (alist-get 'title captured) "My title")))))
 
+(describe "opencode-client-compose"
+  (let ((source (generate-new-buffer " *opencode-compose-source*"))
+        (conversation (generate-new-buffer " *opencode-compose-conversation*"))
+        (other (generate-new-buffer " *opencode-compose-other*"))
+        (agent-prompt-use-minibuffer nil)
+        (agent-prompt-region-seed 'auto)
+        prompt callback sent expected-source)
+    (unwind-protect
+        (save-window-excursion
+          (let ((backend (make-instance 'opencode-client-backend
+                                        :session-id "selected" :buffer conversation))
+                (other-backend (make-instance 'opencode-client-backend
+                                              :session-id "other" :buffer other)))
+            (with-current-buffer conversation
+              (opencode-client-mode)
+              (setq-local agent-backend--instance backend))
+            (with-current-buffer other
+              (opencode-client-mode)
+              (setq-local agent-backend--instance other-backend))
+            (switch-to-buffer source)
+            (insert "selected code")
+            (setq-local transient-mark-mode t)
+            (goto-char (point-min))
+            (push-mark (point-max) t t)
+            (setq expected-source source)
+            (let ((read-prompt (symbol-function 'agent-prompt-read)))
+              (cl-letf (((symbol-function 'opencode-client--active-backend)
+                         (lambda () backend))
+                        ((symbol-function 'opencode-client-send-prompt)
+                         (lambda (text &optional steer)
+                           (setq sent (list (current-buffer) text steer))))
+                        ((symbol-function 'agent-prompt-read)
+                         (lambda (fn initial label window origin)
+                           (setq callback fn)
+                           (check origin expected-source)
+                           (check (window-buffer window) conversation)
+                           (setq prompt (funcall read-prompt fn initial label window origin)))))
+                (it "quotes the selection from a source buffer into the selected conversation"
+                  (opencode-client-compose)
+                  (check-that (buffer-live-p prompt))
+                  (check-that
+                   (with-current-buffer prompt
+                     (string-match-p "selected code" (buffer-string)))))
+                (it "keeps the chosen conversation when the active session changes during composition"
+                  (setq backend other-backend)
+                  (funcall callback "Explain this")
+                  (check sent (list conversation "Explain this" nil)))
+                (when (buffer-live-p prompt)
+                  (with-current-buffer prompt (agent-prompt-abort)))
+                (setq backend (buffer-local-value 'agent-backend--instance conversation))
+                (switch-to-buffer conversation)
+                (setq expected-source conversation)
+                (it "preserves prefix-argument steering when composed in a conversation"
+                  (opencode-client-compose t)
+                  (funcall callback "Try this instead")
+                  (check sent (list conversation "Try this instead" t)))
+                (it "does not send a draft after its conversation was killed"
+                  (kill-buffer conversation)
+                  (setq sent nil)
+                  (funcall callback "Do not send")
+                  (check sent nil))))))
+      (when (buffer-live-p prompt)
+        (with-current-buffer prompt (agent-prompt-abort)))
+      (dolist (buffer (list source conversation other))
+        (when (buffer-live-p buffer) (kill-buffer buffer))))))
+
 (test-helper-summary)
 
 ;;; opencode-client-test.el ends here

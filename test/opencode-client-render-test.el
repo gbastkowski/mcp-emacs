@@ -17,9 +17,7 @@
                               (input . ((command . "git status --short") (cwd . "/project")))
                               (content . (((type . "text")
                                            (text . "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n"))))))))
-            (opencode-client-tool-input-lines 4)
-            (opencode-client-tool-result-lines 3)
-            (opencode-client-tool-preview-chars 2000))
+            (opencode-client-tool-preview-chars 80))
        (setq-local agent-backend--instance backend)
        (opencode-client--put-part backend "m" "m:call" (copy-tree part))
        (unwind-protect (progn ,@body)
@@ -31,11 +29,12 @@
       (opencode-client--render)
       (check-that (string-match-p "command: git status --short" (buffer-string)))
       (check-that (string-match-p "cwd: /project" (buffer-string))))
-    (it "shows bounded result lines and an explicit expansion hint"
-      (check-that (string-match-p "one\n      two\n      three" (buffer-string)))
-      (check (string-match-p "      four" (buffer-string)) nil)
-      (check-that (string-match-p "5 more lines" (buffer-string)))
-      (check-that (string-match-p "TAB to expand" (buffer-string))))
+    (it "shows each collapsed section on one line with an expansion hint"
+      (check-that (string-match-p "    Result: one two three four five six seven eight\n"
+                                  (buffer-string)))
+      (check (string-match-p "more lines" (buffer-string)) nil)
+      (check-that (string-match-p "TAB: expand" (buffer-string)))
+      (check (length (split-string (string-trim-right (buffer-string)) "\n")) 3))
     (it "shows an observed completed duration"
       (check-that (string-match-p "1.5s" (buffer-string))))
     (it "retains the complete result in the model"
@@ -43,11 +42,46 @@
              "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n"))
     (it "bounds a very long single line by characters too"
       (let ((opencode-client-tool-preview-chars 12))
-        (check-that (string-match-p "characters hidden"
-                                   (opencode-client--tool-detail
-                                    "Result" (make-string 1000 ?x) 3 nil)))
-        (check-that (< (length (opencode-client--tool-detail
-                               "Result" (make-string 1000 ?x) 3 nil)) 200))))))
+        (check (substring-no-properties
+                (opencode-client--tool-detail "Result" (make-string 1000 ?x) 3 nil))
+               "    Result: xxxxxxxxxxx…\n")))))
+
+(describe "single-line tool preview boundaries"
+  (let ((opencode-client-tool-preview-chars 80))
+    (it "keeps short text intact without an ellipsis"
+      (check (substring-no-properties
+              (opencode-client--tool-detail "Input" "short" nil nil))
+             "    Input: short\n"))
+    (it "keeps exactly 80 characters without truncation"
+      (check (substring-no-properties
+              (opencode-client--tool-detail "Result" (make-string 80 ?x) nil nil))
+             (concat "    Result: " (make-string 80 ?x) "\n")))
+    (it "includes the ellipsis within the 80-character budget"
+      (check (substring-no-properties
+              (opencode-client--tool-detail "Result" (make-string 81 ?x) nil nil))
+             (concat "    Result: " (make-string 79 ?x) "…\n")))
+    (it "folds newlines and tabs without adding an extra elision line"
+      (check (substring-no-properties
+              (opencode-client--tool-detail "Result" "  one\n\ttwo\r\nthree\n" 6 nil))
+             "    Result: one two three\n"))
+    (it "truncates Unicode by characters without corrupting the text"
+      (check (substring-no-properties
+              (opencode-client--tool-detail "Result" (make-string 81 ?界) nil nil))
+             (concat "    Result: " (make-string 79 ?界) "…\n")))
+    (it "uses only the ellipsis for a one-character preview budget"
+      (let ((opencode-client-tool-preview-chars 1))
+        (check (substring-no-properties
+                (opencode-client--tool-detail "Result" "long" nil nil))
+               "    Result: …\n")))
+    (it "expands the original whitespace and content without the preview limit"
+      (let ((text (concat "one\n\ttwo\n" (make-string 100 ?x))))
+        (check (substring-no-properties
+                (opencode-client--tool-detail "Result" text nil t))
+               (concat "    Result:\n      one\n      \ttwo\n      "
+                       (make-string 100 ?x) "\n"))))
+    (it "omits absent sections"
+      (check (opencode-client--tool-detail "Result" nil nil nil) nil)
+      (check (opencode-client--tool-detail "Result" "" nil nil) nil))))
 
 (with-tool-view
   (describe "tool detail expansion"
@@ -57,7 +91,7 @@
       (search-forward "two")
       (opencode-client-toggle-tool-details)
       (check-that (string-match-p "      eight" (buffer-string)))
-      (check (string-match-p "characters hidden" (buffer-string)) nil)
+      (check-that (string-match-p "TAB: collapse" (buffer-string)))
       (check (get-text-property (point) 'opencode-client-tool-id) "m:call"))
     (it "stays expanded across repeated stream renders"
       (opencode-client--render)

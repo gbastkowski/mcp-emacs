@@ -1,0 +1,25 @@
+* Release v1.14.0
+
+** OpenCode prompts from any buffer
+
+- Select text and run =M-x opencode-client-compose= to ask the current project's selected session about it.
+- Short selections are quoted with file/line context; longer selections become file-and-line references.
+- The composer opens beside the conversation and keeps its target while you edit the draft.
+- Send with =C-c C-c=, discard with =C-c C-k=, or use a prefix argument to steer a running turn.
+
+** Compact tool details
+
+- Collapsed Input, Result, and Error sections each occupy one line.
+- Previews default to 80 characters, including a Unicode ellipsis (=…=) when truncated.
+- TAB expands the original multiline content and collapses it again without discarding tool data.
+- Customize =opencode-client-tool-preview-chars= to change the limit; the old line-count options are obsolete.
+- Tool arguments, results, errors, file attachment labels, and observed durations are visible in the conversation.
+- Expansion state and your reading position survive stream updates and history refreshes.
+
+** Session help and V2 integration
+
+- Press =?= in an OpenCode conversation to toggle keybinding help, including in Evil normal and motion states.
+- Improve OpenCode V2 service discovery, project-scoped sessions, event recovery, and permission/form handling.
+- Add a proposal for a permission rule manager.
+
+Fixes GitHub issue #136.
